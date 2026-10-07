@@ -177,12 +177,21 @@ def check_phoenix(trace: bool, boot_wait_s: int = 20) -> Check:
                  "cd ~/Projects/DebugAssist && docker compose up -d phoenix   (or pass --no-trace)")
 
 
+def check_base(profile) -> Check:
+    from . import checkout
+    ok, fact = checkout.check_base(profile)
+    return Check("Base checkout", "PASS" if ok else "FAIL", fact,
+                 "" if ok else "uv run python scripts/prepare_base.py " + profile.repo)
+
+
 def run_preflight(issue_url: str, demo: bool = False, trace: bool = True) -> list[Check]:
     checks = []
     owner, repo, _ = parse_issue_url(issue_url)
     try:
-        image = profile_for(owner, repo).image
+        prof = profile_for(owner, repo)
+        image = prof.image
         checks.append(Check("Repo profile", "PASS", f"{owner}/{repo} has a sandbox profile"))
+        checks.append(check_base(prof))
     except UnknownRepo as e:
         image = None
         checks.append(Check("Repo profile", "FAIL", str(e), "add the repo to profiles.py"))

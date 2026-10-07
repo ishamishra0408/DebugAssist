@@ -8,6 +8,8 @@
   uv run debug-assist status <run-id>                               show the run
   uv run debug-assist events <run-id>                               every model call, sandbox command and decision
 
+--focus=TEXT            the one problem in the issue to reproduce (default: the issue's title)
+--focus-heading=HEADING the same, taken from the issue's section under that markdown heading
 --demo      use the demo model (Claude Opus) under the demo cap ($2.50) instead of Qwen3-Coder-Next ($0.50 cap)
 --no-trace  allowed only on purpose: the run proceeds without Phoenix and records trace OFF
 """
@@ -38,7 +40,7 @@ def _tagged(run_id: str, trace: bool) -> ExitStack:
 
 def _summary(state: dict, run_id: str) -> str:
     from . import meter
-    keys = ["outcome", "triage", "profile", "fix_clock", "repro", "attempts", "cause", "condition", "guard",
+    keys = ["outcome", "focus", "triage", "profile", "fix_clock", "repro", "attempts", "cause", "condition", "guard",
             "backtest", "approval", "published", "demo", "trace"]
     out = {k: state.get(k) for k in keys if k in state}
     m = meter.snapshot(run_id)
@@ -86,6 +88,7 @@ def main() -> None:
         sys.exit(2)
     cmd, arg = args[0], args[1]
     demo, trace = "--demo" in flags, "--no-trace" not in flags
+    opts = dict(f[2:].split("=", 1) for f in flags if "=" in f)
 
     if cmd == "events":
         _print_events(arg)
@@ -146,7 +149,8 @@ def main() -> None:
         if cmd == "run":
             meter.open_run(run_id, run_cap({"demo": demo}), CFG.sandbox_budget_s)
             app.invoke({"run_id": run_id, "issue_url": arg, "log": [], "demo": demo, "trace": trace,
-                        "preflight": as_records(checks)}, cfg)
+                        "preflight": as_records(checks), "focus": opts.get("focus", ""),
+                        "focus_heading": opts.get("focus-heading", "")}, cfg)
         elif cmd == "resume":
             meter.open_run(run_id, run_cap({"demo": demo}), CFG.sandbox_budget_s)  # no-op if it exists (runs from before Thursday get one)
             print(f"resuming {run_id} from after its last finished step")

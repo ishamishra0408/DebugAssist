@@ -20,6 +20,8 @@ class RepoProfile:
     build_cmd: str = ""  # between them, network OFF (monorepos whose tests import sibling packages' builds)
     env: str = ""        # shell prefix for every command in this repo's sandbox (never host secrets)
     recorded_fixtures: bool = False  # the repo ships recorded streams the ladder's integration rung can cut
+    base_commit: str = ""            # the pinned commit runs start from (checkout.py), unmodified
+    filters: str = ""                # which packages to install and build (monorepos), for {filters}
 
 
 # vercel/ai, proven 2026-10-06 at e7f55a4 in NODE_IMAGE: install 55 s, build 63 s, then provider-utils 1,064, gateway 645
@@ -39,7 +41,12 @@ PROFILES = {
         build_cmd="pnpm {filters} build",
         test_cmd="cd packages/{package} && pnpm test:node {test_path}",
         env=_PNPM,
-        recorded_fixtures=True,  # e.g. packages/openai-compatible/src/chat/__fixtures__/*.chunks.txt (by-hand run, rung 2)
+        recorded_fixtures=True,
+        base_commit="e7f55a481fe2c39bd2540162ee8b45bd8de3354b",  # main on 2026-10-07; baseline green offline
+        # ai, gateway and every provider using the streaming tool-call tracker (the #21439 blast radius)
+        filters=" ".join(f"--filter '{p}...'" for p in ("ai", "@ai-sdk/gateway", "@ai-sdk/openai-compatible",
+                         "@ai-sdk/openai", "@ai-sdk/groq", "@ai-sdk/deepseek", "@ai-sdk/alibaba", "@ai-sdk/mistral",
+                         "@ai-sdk/moonshotai", "@ai-sdk/xai")),  # e.g. packages/openai-compatible/src/chat/__fixtures__/*.chunks.txt (by-hand run, rung 2)
     ),
     "langchain-ai/langchain": RepoProfile(
         "langchain-ai/langchain", "python", PYTHON_IMAGE,

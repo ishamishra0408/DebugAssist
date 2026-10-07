@@ -26,14 +26,15 @@ from langgraph.checkpoint.mongodb import MongoDBSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from . import events, ladder
+from . import events, ladder, testwriter
+from .checkout import run_copy
 from .config import CFG, REPRO_ATTEMPT_CAP
 from .github_read import get_issue
 from .issue_text import TRIAGE_QUESTIONS, clean
 from .guardrails import (GuardrailViolation, assert_no_names, fingerprint, freeze_condition, now,
                          record_approval, verify_approval, verify_condition_frozen)
 from .models import decide, embedder, write
-from .profiles import profile_for
+from .profiles import PROFILES, profile_for
 from .sandbox import secrets_visible
 from .store import client, db
 
@@ -66,6 +67,8 @@ class RunState(TypedDict, total=False):
     profile: dict
     preflight: list
     turns: dict
+    focus: str          # the ONE problem in the issue this run reproduces (--focus, or a section via --focus-heading)
+    focus_heading: str
     attempts: Annotated[list, operator.add]  # append-only: every attempt and how it ended (also in the event log)
     outcome: dict                            # set when the run stops: {"exit": ..., "why": ..., "at": ...}
     log: Annotated[list, operator.add]
@@ -112,7 +115,12 @@ def read_issue(s: RunState):
            "profile": {"repo": prof.repo, "language": prof.language, "image": prof.image,
                        "recorded_fixtures": prof.recorded_fixtures},
            "log": [f"read_issue: {issue['repo']}#{issue['number']} triaged {triage}"]}
-    if triage["needs_person"]:
+    focus = focus_of(issue, s.get("focus"), s.get("focus_heading"))
+    out["focus"] = focus or issue["title"]
+    if s.get("focus_heading") and not focus:
+        out["outcome"] = stop(NEEDS_PERSON, f"the issue has no section headed '{s['focus_heading']}'; "
+                                            "a person picks the problem to reproduce")
+    elif triage["needs_person"]:
         out["outcome"] = stop(NEEDS_PERSON, f"triage confidence {max(p, 1 - p):.2f} is below the "
                                             f"{CFG.triage_review_below} review bar; a person reads the issue first")
     elif p < 0.5:
@@ -122,15 +130,24 @@ def read_issue(s: RunState):
     return out
 
 
-# Friday: the writer drafts each rung's test, informed by the attempts before it. Until the by-hand run of #21439 shows
-# what a good test looks like, the ladder is planned but not climbed.
-TEST_WRITER_READY = False
+def focus_of(issue: dict, focus: str | None, heading: str | None) -> str:
+    """The problem to reproduce: given outright, or the text under a markdown heading of the issue (e.g. #21439's
+    "Secondary observation"). Empty when the heading isn't there."""
+    if focus:
+        return focus.strip()
+    if not heading:
+        return ""
+    import re
+    m = re.search(rf"^#+\s*{re.escape(heading)}\s*$\n(.*?)(?=^#+\s|\Z)", issue.get("body", ""), re.M | re.S | re.I)
+    return m.group(1).strip() if m else ""
 
 
-def _write_and_run_test(s: RunState, rung: ladder.Rung, n: int, history: list) -> ladder.Attempt:
-    """One rung attempt: the writer drafts a test for this rung (seeing every earlier attempt and its evidence), the
-    sandbox runs it with the network off, classify() decides RED / GREEN / ERROR. Built Friday."""
-    raise NotImplementedError("test writer arrives Friday, after the by-hand run")
+def _write_and_run_test(s: RunState, rung: ladder.Rung, n: int, history: list, ctx, checkout) -> ladder.Attempt:
+    """One rung attempt (testwriter.py): the writer drafts a test for this rung, seeing every earlier attempt and its
+    evidence; the sandbox runs it with the network off; classify() and the right-reason check decide."""
+    drafts = run_dir(s) / "writer"
+    drafts.mkdir(exist_ok=True)
+    return testwriter.attempt(s, rung, n, history, ctx, checkout, PROFILES[s["profile"]["repo"]], drafts=drafts)
 
 
 def _record_attempt(s: RunState, a: ladder.Attempt) -> ladder.Attempt:
@@ -148,21 +165,20 @@ def reproduce(s: RunState):
         raise GuardrailViolation(f"sandbox exposes secrets or failed its probe: {seen}")
     rungs, skipped = ladder.plan(s["triage"]["has_repro_p"], s["profile"].get("recorded_fixtures", False))
     plan = {"rungs": [r.name for r in rungs], "skipped": skipped, "cap": REPRO_ATTEMPT_CAP}
-    if not TEST_WRITER_READY:
-        return {"repro": {"status": "PLACEHOLDER", "ladder_plan": plan, "failing_test": None,
-                          "sandbox_image": s["profile"]["language"], "sandbox_secrets_visible": seen},
-                "log": [f"reproduce: PLACEHOLDER; ladder planned {plan['rungs']} (skipped {list(skipped)}); "
-                        f"{s['profile']['language']} sandbox probe saw 0 secrets"]}
+    checkout = run_copy(PROFILES[s["profile"]["repo"]], run_dir(s) / "checkout")  # this run's own unmodified code
+    ctx = testwriter.locate(checkout, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"])
     before = [{k: v for k, v in e.items() if k in ladder.Attempt.__dataclass_fields__}
               for e in events.for_run(s["run_id"]) if e["kind"] == "attempt" and e["step"] == "reproduce"]
-    result = ladder.climb(rungs, lambda r, n, h: _record_attempt(s, _write_and_run_test(s, r, n, h)),
+    result = ladder.climb(rungs, lambda r, n, h: _record_attempt(s, _write_and_run_test(s, r, n, h, ctx, checkout)),
                           already=before, skipped=skipped)
     new = [{"step": "reproduce", **a} for a in ladder.as_records(result.attempts[len(before):])]
     red = next((a for a in result.attempts if a.outcome == ladder.RED), None)
     out = {"repro": {"status": result.status, "rung": result.rung, "ladder_plan": plan,
                      "confirmed": result.confirmed, "confirmed_by": result.confirmed_by,
                      "failing_test": red.test_path if red else None, "evidence": red.evidence if red else None,
-                     "attempts_used": len(result.attempts), "sandbox_secrets_visible": seen},
+                     "attempts_used": len(result.attempts), "sandbox_secrets_visible": seen,
+                     "located": ctx.source, "checkout": str(checkout),
+                     "confirm_tries": (len(result.attempts) - result.attempts.index(red) - 1) if red else 0},
            "attempts": new,
            "log": [f"reproduce: {result.status}" + (f" at rung {result.rung}" if result.rung else "") +
                    f" after {len(result.attempts)} of {REPRO_ATTEMPT_CAP} attempts"
@@ -266,12 +282,33 @@ def test_past_bugs(s: RunState):
 
 
 # ── Phase 3: Ship it ────────────────────────────────────────────────────────────────────────────
+def reproduction_lines(r: dict) -> list[str]:
+    """What the ladder found, said plainly, including when the recorded stream did NOT confirm it."""
+    if r.get("status") != ladder.REPRODUCED:
+        return []
+    shown = next((l for l in (r.get("evidence") or "").splitlines() if "AssertionError" in l),
+                 (r.get("evidence") or "").splitlines()[0] if r.get("evidence") else "")
+    confirm = {True: f"confirmed on a recorded stream (rung `{r.get('confirmed_by')}`)",
+               False: "**NOT confirmed**: the recorded-stream test passed, so the made-up input may be unrealistic",
+               None: (f"recorded-stream check tried {r['confirm_tries']}× without a valid result: neither confirmed "
+                      "nor refuted" if r.get("confirm_tries") else "not checked on a recorded stream (none available)")
+               }[r.get("confirmed")]
+    return ["## Reproduction",
+            "Reproduced before any fix, in a sandbox with the network off, with staged input; **not observed live**.",
+            f"- Failing test (rung `{r.get('rung')}`): `{r.get('failing_test')}`",
+            f"- It shows: `{shown.strip()[:300]}`",
+            f"- {confirm}",
+            f"- Attempts: {r.get('attempts_used')} of {REPRO_ATTEMPT_CAP}",
+            ""]
+
+
 def compose_pr_body(s: RunState) -> str:
     """Deterministic (no timestamps): the approval fingerprint must match on resume."""
     i, g, b = s["issue"], s["guard"], s["backtest"]
     return "\n".join([
         f"Fixes #{i['number']}",
         "",
+        *reproduction_lines(s.get("repro") or {}),
         "## Fix",
         "PLACEHOLDER: the patch and the failing test it turns green.",
         "",

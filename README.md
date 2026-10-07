@@ -25,12 +25,23 @@ under the $2.50 demo cap; `--no-trace` runs without Phoenix on purpose (recorded
 
 ## Run it
 ```bash
-uv run debug-assist run https://github.com/vercel/ai/issues/21439   # runs until it pauses for approval or stops
+uv run debug-assist run https://github.com/vercel/ai/issues/21439 "--focus-heading=Secondary observation"
+                                                                     # runs until it pauses for approval or stops
 uv run debug-assist resume  <run-id>                                 # after a crash: continues after the last finished step
 uv run debug-assist approve <run-id>                                 # your go-word; prints the sha it approves
 uv run debug-assist reject  <run-id>
 uv run debug-assist events  <run-id>                                 # every model call, sandbox command, decision, attempt
-uv run pytest                                                        # 64 tests (Mongo + Docker ones skip if those are down)
+uv run pytest                                                        # 95 tests (Mongo + Docker ones skip if those are down)
+```
+`--focus-heading=…` picks the ONE problem to reproduce from a section of the issue (or `--focus="…"` gives it
+outright); without either, the title is the focus. A missing section stops the run as NEEDS PERSON.
+
+## Base checkouts (one per repo, prepared once)
+Each run copies a clean, installed, built checkout of the repo at the commit pinned in `profiles.py`
+(`~/Projects/checkouts/base/<owner>-<repo>@<sha7>`; APFS copy-on-write, ~20 s, little new disk). Preflight refuses a
+run when the base is missing, at another commit, or edited.
+```bash
+uv run python scripts/prepare_base.py vercel/ai      # clone at the pinned commit, install (network on), build (off)
 ```
 A run ends one of these ways (the `outcome` field, printed as `STOPPED: ...`):
 
@@ -42,8 +53,8 @@ A run ends one of these ways (the `outcome` field, printed as `STOPPED: ...`):
 | paused at approval | Waiting for your go-word |
 | `REJECTED` / `READY FOR YOU TO PUBLISH` | After your answer |
 
-Status (2026-10-06, Thursday's work done): **walking skeleton**. Steps marked PLACEHOLDER (the test writer for
-each ladder rung, the fix, the second story, the guard) get real logic Fri–Sat. Real today: GitHub read, Laya
+Status (2026-10-07): **reproduce is real** (the test writer climbs the ladder on the run's own copy of the code).
+Steps still marked PLACEHOLDER (find the cause, the fix, the second story, the guard) get real logic next. Real today: GitHub read, Laya
 triage + typed exits, sandbox secret probe, the ladder's plan and climb logic, the spend meter, resume, the event
 log, condition freeze, vector search, approval fingerprint, read-only publish path (`runs/<id>/publish.sh`).
 
@@ -56,7 +67,10 @@ log, condition freeze, vector search, approval fingerprint, read-only publish pa
 | Spend stop that survives a crash | `meter.py`, `budget.py` | A call whose worst case could pass the run cap (checked BEFORE the call, atomically in MongoDB); calls past a step's turn cap; models with no price on file. A crash mid-call leaves the reservation counted |
 | One door to the model | `models.py` | Any generation call that skips the meter: `ChatOpenRouter` is built only in the private `_writer` (a test enforces it) |
 | Sandbox time cap | `meter.py`, `sandbox.py` | Sandbox commands past `SANDBOX_BUDGET_S` (1800 s per run); the last command gets what is left |
-| Reproduction ladder | `ladder.py` | Writing a fix before a test went red; more than 4 attempts; counting an unexplained failure as a reproduction |
+| Reproduction ladder | `ladder.py` | Writing a fix before a test went red; more than 4 attempts; counting an unexplained failure as a reproduction; a made-up-data RED goes unconfirmed (re-run on a recorded stream when the repo has one) |
+| Test writer | `testwriter.py` | A test placed anywhere but a NEW file beside the code; a "recorded stream" test that reads no fixture; a RED whose failing assertion doesn't show the focus's own strings (wrong-reason RED); env vars or real hosts in a test |
+| Pipe exit codes | `sandbox.py` | `tests \| tail` hiding a failure: every command runs under `bash -o pipefail` |
+| Pre-commit hook | `.githooks/pre-commit` | A commit while any test fails (`git config core.hooksPath .githooks` once per clone) |
 | No names in public text | `guardrails.py` | @handles outside code, and known names anywhere |
 | Condition frozen first | `guardrails.py` | A guard older than the condition, or a condition edited after freezing |
 

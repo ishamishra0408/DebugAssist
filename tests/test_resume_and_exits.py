@@ -3,6 +3,8 @@ import dataclasses
 import re
 from pathlib import Path
 
+from types import SimpleNamespace
+
 import pytest
 
 from debug_assist import events, graph, ladder, meter
@@ -47,15 +49,17 @@ def test_confident_bug_goes_on(monkeypatch):
 def _repro_state(tmp_path, monkeypatch):
     monkeypatch.setattr(graph, "secrets_visible", lambda work, image: [])
     monkeypatch.setattr(graph, "CFG", dataclasses.replace(graph.CFG, runs_dir=tmp_path))
-    monkeypatch.setattr(graph, "TEST_WRITER_READY", True)
-    return {"run_id": "r1", "profile": {"image": "img", "language": "typescript", "recorded_fixtures": True},
+    monkeypatch.setattr(graph, "run_copy", lambda prof, dest: dest)
+    monkeypatch.setattr(graph.testwriter, "locate", lambda *a: SimpleNamespace(source="packages/x/src/y.ts"))
+    return {"run_id": "r1", "issue": {"number": 1, "title": "t", "body": "b"},
+            "profile": {"repo": "vercel/ai", "image": "img", "language": "typescript", "recorded_fixtures": True},
             "triage": {"has_repro_p": 0.9}}
 
 
 def test_reproduce_stops_never_reproduced_and_records_every_attempt(scratch_db, tmp_path, monkeypatch):
     s = _repro_state(tmp_path, monkeypatch)
     monkeypatch.setattr(graph, "_write_and_run_test",
-                        lambda s, rung, n, h: ladder.Attempt(rung.name, n, ladder.ERROR, "SyntaxError"))
+                        lambda s, rung, n, h, *ctx: ladder.Attempt(rung.name, n, ladder.ERROR, "SyntaxError"))
     with events.bind("r1", "reproduce"):
         out = graph.reproduce(s)
     assert out["outcome"]["exit"] == "NEVER REPRODUCED" and len(out["attempts"]) == 4
@@ -70,7 +74,7 @@ def test_reproduce_after_a_crash_does_not_repeat_attempts(scratch_db, tmp_path, 
             events.log("attempt", rung="unit", n=n, outcome=o, evidence="…", test_path="", at="")
     made = []
     monkeypatch.setattr(graph, "_write_and_run_test",
-                        lambda s, rung, n, h: made.append((rung.name, n)) or ladder.Attempt(rung.name, n, ladder.RED, "AssertionError"))
+                        lambda s, rung, n, h, *ctx: made.append((rung.name, n)) or ladder.Attempt(rung.name, n, ladder.RED, "AssertionError"))
     with events.bind("r1", "reproduce"):
         out = graph.reproduce(s)
     assert made == [("integration", 3)]  # unit already went GREEN; the recorded-stream rung is next
@@ -115,3 +119,35 @@ def test_a_typed_exit_ends_the_graph(scratch_db, monkeypatch):
     app, cfg = graph.build(), {"configurable": {"thread_id": "exit-test"}}
     final = app.invoke({"run_id": "exit-test", "issue_url": "u", "log": []}, cfg)
     assert final["outcome"]["exit"] == "NEEDS PERSON" and "reproduce" not in calls
+
+
+def test_focus_comes_from_the_issue_section_or_is_given():
+    issue = {"body": "### Description\nGateway drops message.\n\n### Secondary observation\n\nFlush emits a half call.\n\n### Related\n#1"}
+    assert graph.focus_of(issue, None, "Secondary observation") == "Flush emits a half call."
+    assert graph.focus_of(issue, "given", "Secondary observation") == "given"
+    assert graph.focus_of(issue, None, "Not there") == ""
+
+
+def test_a_missing_focus_section_stops_for_a_person(monkeypatch):
+    monkeypatch.setattr(graph, "get_issue", lambda url: {"title": "t", "body": "### A\nx", "owner": "vercel",
+                                                         "repo": "ai", "number": 1, "reporter": "x"})
+    monkeypatch.setattr(graph, "decide", lambda text, q, which="general": (
+        {"is_defect": {"noul": 0.97}, "kind": {"choice": "bug", "answer_confidence": 0.9}} if which == "triage"
+        else {"has_repro": {"noul": 0.8}, "regression": {"noul": 0.1}}))
+    out = graph.read_issue({"issue_url": "u", "run_id": "r", "focus_heading": "Secondary observation"})
+    assert out["outcome"]["exit"] == "NEEDS PERSON" and "Secondary observation" in out["outcome"]["why"]
+
+
+def test_the_pr_text_says_how_it_was_reproduced_and_whether_it_was_confirmed():
+    r = {"status": "REPRODUCED", "rung": "unit", "failing_test": "packages/p/src/da-repro-1-unit-1.test.ts",
+         "evidence": "❯ x (1 failed)\nAssertionError: expected [ { type: 'tool-call' } ] to strictly equal []",
+         "confirmed": False, "confirmed_by": "integration", "attempts_used": 2}
+    text = "\n".join(graph.reproduction_lines(r))
+    assert "not observed live" in text and "NOT confirmed" in text and "AssertionError" in text
+    assert graph.reproduction_lines({"status": "NEVER REPRODUCED"}) == []
+
+
+def test_a_confirmation_that_never_gave_a_valid_result_is_said_as_such():
+    r = {"status": "REPRODUCED", "rung": "unit", "failing_test": "t", "evidence": "AssertionError: x",
+         "confirmed": None, "confirm_tries": 2, "attempts_used": 4}
+    assert "tried 2× without a valid result" in "\n".join(graph.reproduction_lines(r))
