@@ -119,6 +119,12 @@ def test_siblings_are_the_same_line_elsewhere(tmp_path):
     assert guard.sibling_sites(tmp_path, "toolCallTracker.flush();", "packages/a/src/m.ts") == ["packages/b/src/m.ts:2"]
 
 
+def test_bare_lines_are_not_patterns():
+    """Opus run 2026-10-07: `index,` and `});` from a fix matched hundreds of files."""
+    patch = "-    index,\n-  });\n-  id: pending.id,\n-  toolCallTracker.flush();\n-  // toolCallTracker.flush();\n"
+    assert story.signature_lines(patch) == ["toolCallTracker.flush();"]
+
+
 def test_vitest_cases_are_read_per_case():
     out = " ✓ guard > no finish reason 3ms\n × guard > error mid-stream 4ms\n × guard > length limit\n"
     assert guard.cases(out) == {"passed": ["guard > no finish reason"], "failed": ["guard > error mid-stream", "guard > length limit"]}

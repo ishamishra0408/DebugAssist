@@ -29,12 +29,14 @@ class StoryRefused(ValueError):
 
 
 def signature_lines(patch: str) -> list[str]:
-    """The code the fix removed (minus blank and comment-only lines): the line(s) the story is about."""
+    """The DISTINCTIVE code the fix removed: no blank, comment-only or bare lines like `index,` or `});` (Opus run
+    2026-10-07: those matched hundreds of files). At least 12 characters with an identifier of 8+ characters."""
     out = []
     for l in patch.splitlines():
         if l.startswith("-") and not l.startswith("---"):
             t = l[1:].strip()
-            if t and not t.startswith(("//", "#", "*", "/*")) and t not in out:
+            if (len(t) >= 12 and re.search(r"[A-Za-z_]\w{7,}", t) and not t.startswith(("//", "#", "*", "/*"))
+                    and t not in out):
                 out.append(t)
     return out
 
@@ -133,7 +135,7 @@ def gather(issue: dict, checkout: Path, cause_file: str, fix_patch: str) -> dict
     # every line the fix changed, and the call behind each: the story starts from the OLDEST origin (Opus run
     # 2026-10-07 traced only the first changed line and started at #14760, missing the older #14565)
     found = []
-    for line in sig[:3]:
+    for line in sig[:5]:
         for cand in dict.fromkeys([line, line.split("(")[0] + "(" if "(" in line and len(line.split("(")[0]) >= 12 else line]):
             o = introduced(owner, repo, path, history, cand)
             if o:

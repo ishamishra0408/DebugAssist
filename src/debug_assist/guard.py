@@ -29,18 +29,26 @@ GUARD_TRIES = 2
 VERBOSE = {"typescript": "--reporter=verbose"}
 
 
+MAX_SIBLING_FILES = 15  # a line in more files than this is ordinary code, not a pattern worth naming
+
+
 def sibling_sites(checkout: Path, lines, fixed_file: str) -> list[str]:
-    """Other source lines identical to ANY line the fix changed: the same bug, waiting elsewhere. (Opus run 2026-10-07:
-    the first changed line was specific to the fixed file; the second, `toolCallTracker.flush();`, is in 6 others.)"""
-    out = []
+    """Other files containing a distinctive line the fix changed: the same bug, waiting elsewhere. One entry per file,
+    "path:line,line". (Opus run 2026-10-07: the first changed line was specific to the fixed file; the second,
+    `toolCallTracker.flush();`, is in 6 others.)"""
+    per_file: dict[str, set] = {}
     for line in ([lines] if isinstance(lines, str) else list(lines)):
         if not line:
             continue
         got = subprocess.run(["git", "-C", str(checkout), "grep", "-n", "-F", "-e", line, "--", "packages/*/src/**",
-                              ":!*.test.ts", ":!*.test.tsx"], capture_output=True, text=True, timeout=60).stdout
-        out += [l.split(":", 2)[0] + ":" + l.split(":", 2)[1] for l in got.splitlines()
-                if not l.startswith(fixed_file + ":")]
-    return sorted(set(out))
+                              ":!*.test.ts", ":!*.test.tsx", ":!*.test-d.ts"], capture_output=True, text=True,
+                             timeout=60).stdout
+        hits = [l.split(":", 2)[:2] for l in got.splitlines() if not l.startswith(fixed_file + ":")]
+        if len({h[0] for h in hits}) > MAX_SIBLING_FILES:
+            continue
+        for path, num in hits:
+            per_file.setdefault(path, set()).add(int(num))
+    return [f"{p}:{','.join(map(str, sorted(n)))}" for p, n in sorted(per_file.items())]
 
 
 SYSTEM = """You write a LASTING GUARD: ONE vitest test file that fails whenever this CLASS of bug exists, not only the
