@@ -1,0 +1,28 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# run outputs (sandbox checkouts, draft PRs, logs)
+runs/
+.sandbox/
+
+# heavy folders live in *.nosync (iCloud skips them); the plain names are symlinks
+*.nosync
+/.venv
+/models
+/runs
+/training/.venv
+/training/artifacts
+
+# rebuilt by training/make_colab.py; holds third-party issue text
+training/colab/*.zip

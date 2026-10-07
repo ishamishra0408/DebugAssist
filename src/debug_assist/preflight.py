@@ -1,0 +1,211 @@
+"""Preflight gate: check every dependency BEFORE a run starts, and refuse with every named reason at once.
+
+harness-design review (2026-10-06): today 3 of 6 runs died mid-way (one at step 7, after the whole fix phase) on a
+missing piece. A missing dependency is a refusal at the door, not an exception in the middle.
+
+Each check returns PASS / FAIL / WARN with the fact it saw and the exact fix. The run starts only if nothing FAILs.
+Ruled 2026-10-06: Phoenix down refuses the run, unless the run is started with --no-trace (recorded as trace OFF).
+"""
+import json
+import subprocess
+import urllib.request
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+from .config import CFG
+from .github_read import parse_issue_url
+from .profiles import UnknownRepo, profile_for
+
+
+@dataclass
+class Check:
+    name: str
+    status: str  # PASS | FAIL | WARN
+    fact: str
+    fix: str = ""
+
+
+def _http(url, headers=None, timeout=4):
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers or {}), timeout=timeout) as r:
+            return r.status, json.load(r), dict(r.headers)
+    except urllib.error.HTTPError as e:
+        return e.code, None, {}
+    except Exception as e:  # unreachable is a fact, not an exception
+        return None, str(e), {}
+
+
+def check_docker(image: str | None) -> Check:
+    try:
+        up = subprocess.run(["docker", "info"], capture_output=True, timeout=8).returncode == 0
+    except Exception:
+        up = False
+    if not up:
+        return Check("Docker", "FAIL", "daemon not reachable", "Docker Desktop: whale menu ▸ Resume (or start it)")
+    if image:
+        has = subprocess.run(["docker", "image", "inspect", image], capture_output=True, timeout=15).returncode == 0
+        if not has:
+            return Check("Docker", "FAIL", f"sandbox image not present: {image[:40]}…", f"docker pull {image}")
+    return Check("Docker", "PASS", "daemon up" + (", sandbox image present" if image else ""))
+
+
+def check_mongo() -> Check:
+    try:
+        from pymongo import MongoClient
+        c = MongoClient(CFG.mongodb_uri, serverSelectionTimeoutMS=3000)
+        hello = c.admin.command("hello")
+    except Exception as e:
+        return Check("MongoDB", "FAIL", f"not reachable ({type(e).__name__})", "docker compose up -d mongodb")
+    if not hello.get("isWritablePrimary"):
+        return Check("MongoDB", "FAIL", "not a writable primary (replica set stranded?)",
+                     "keep the hostname pin and the mongo-config volume in docker-compose.yml; see README")
+    return Check("MongoDB", "PASS", f"writable primary, replica set {hello.get('setName')}")
+
+
+def check_vector_index(expected_dims: int | None) -> Check:
+    try:
+        from pymongo import MongoClient
+        coll = MongoClient(CFG.mongodb_uri, serverSelectionTimeoutMS=3000)[CFG.db_name]["conditions"]
+        n = coll.estimated_document_count()
+        idx = list(coll.list_search_indexes("conditions_vec"))
+    except Exception as e:
+        return Check("Vector index", "FAIL", f"could not read ({type(e).__name__})", "fix MongoDB first")
+    if n == 0:
+        return Check("Vector index", "PASS", "corpus empty; index is created with the first stored condition")
+    if not idx:
+        return Check("Vector index", "WARN", f"{n} conditions but no index yet", "it is created on the next run")
+    if not idx[0].get("queryable"):
+        return Check("Vector index", "FAIL", "index exists but is not queryable yet (rebuilding after restart?)",
+                     "wait ~30–90 s and rerun preflight")
+    dims = idx[0].get("latestDefinition", {}).get("fields", [{}])[0].get("numDimensions")
+    if expected_dims and dims and dims != expected_dims:
+        return Check("Vector index", "FAIL", f"index has {dims} dims but the embedding model gives {expected_dims}",
+                     "embedding model changed; rebuild the index or switch back")
+    return Check("Vector index", "PASS", f"queryable, {n} conditions, {dims} dims")
+
+
+def check_ollama() -> tuple[Check, int | None]:
+    code, tags, _ = _http(f"{CFG.ollama_url}/api/tags")
+    if code != 200:
+        return Check("Ollama + Qwen3", "FAIL", "Ollama not running", "open -a Ollama"), None
+    names = [m["name"] for m in tags.get("models", [])]
+    if not any(n.startswith(CFG.embed_model.split(":")[0]) and n.endswith(CFG.embed_model.split(":")[-1])
+               for n in names):
+        return Check("Ollama + Qwen3", "FAIL", f"model {CFG.embed_model} not pulled",
+                     f"ollama pull {CFG.embed_model}"), None
+    try:
+        from langchain_ollama import OllamaEmbeddings
+        dims = len(OllamaEmbeddings(model=CFG.embed_model, base_url=CFG.ollama_url).embed_query("preflight"))
+    except Exception as e:
+        return Check("Ollama + Qwen3", "FAIL", f"embed call failed ({type(e).__name__})", "restart Ollama"), None
+    return Check("Ollama + Qwen3", "PASS", f"{CFG.embed_model} answers, {dims} dims"), dims
+
+
+def check_laya() -> Check:
+    triage = Path(CFG.laya_triage_checkpoint) / "model.safetensors"
+    if not triage.exists():
+        return Check("Laya", "FAIL", f"fine-tuned triage model missing at {triage.parent}",
+                     "re-convert from the Colab zip (README: training)")
+    # laya-mlx downloads only the files it needs, so check exactly those (a whole-repo check falsely refuses)
+    from huggingface_hub import try_to_load_from_cache
+    needed = ["encoder/config.json", "mlx_config.json", "model.safetensors", "rl_agent_config.json",
+              "tokenizer/tokenizer.json"]  # exact paths, read from the HF cache on 2026-10-06
+    missing = [f for f in needed if not isinstance(try_to_load_from_cache(CFG.laya_checkpoint, f), str)]
+    if missing:
+        return Check("Laya", "FAIL", f"general model {CFG.laya_checkpoint} missing cached files: {missing}",
+                     "run once online: uv run python -c \"import laya_mlx; laya_mlx.load('aac6fef/laya-mlx')\"")
+    return Check("Laya", "PASS", "triage (fine-tuned) + general checkpoints on disk")
+
+
+def check_openrouter(demo: bool) -> Check:
+    if not CFG.openrouter_key:
+        return Check("OpenRouter", "FAIL", "OPENROUTER_API_KEY not set", "add it to .env yourself (never in chat)")
+    code, body, _ = _http("https://openrouter.ai/api/v1/key", {"Authorization": f"Bearer {CFG.openrouter_key}"}, 8)
+    if code != 200:
+        return Check("OpenRouter", "FAIL", f"key rejected or unreachable (HTTP {code})", "check the key / network")
+    d = body["data"]
+    need = CFG.demo_budget_usd if demo else CFG.run_budget_usd
+    if d.get("limit") is None:
+        return Check("OpenRouter", "FAIL", "key has no spending cap", "set a cap on the key in the OpenRouter dashboard")
+    if (d.get("limit_remaining") or 0) < need:
+        return Check("OpenRouter", "FAIL", f"only ${d.get('limit_remaining'):.2f} left; this run may need ${need:.2f}",
+                     "top up or raise the key cap")
+    return Check("OpenRouter", "PASS", f"key OK, ${d['limit_remaining']:.2f} of ${d['limit']:.0f} cap left "
+                                       f"(run cap ${need:.2f})")
+
+
+def check_github(owner: str, repo: str) -> Check:
+    tok = CFG.github_token
+    if not tok:
+        return Check("GitHub token", "FAIL", "GITHUB_TOKEN_READONLY not set", "add a fine-grained read-only token to .env")
+    if not tok.startswith("github_pat_"):
+        return Check("GitHub token", "FAIL", "not a fine-grained token (classic tokens carry broad scopes)",
+                     "create a fine-grained token: Public repositories (read-only)")
+    code, _, hdr = _http(f"https://api.github.com/repos/{owner}/{repo}",
+                         {"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"}, 8)
+    if code != 200:
+        return Check("GitHub token", "FAIL", f"cannot read {owner}/{repo} (HTTP {code}); expired?", "renew the token")
+    left = int(hdr.get("X-RateLimit-Remaining") or hdr.get("x-ratelimit-remaining") or 0)
+    if left < 100:
+        return Check("GitHub token", "FAIL", f"only {left} API calls left this hour", "wait for the reset")
+    return Check("GitHub token", "PASS", f"fine-grained, read OK, {left} calls left")
+
+
+def check_phoenix(trace: bool, boot_wait_s: int = 20) -> Check:
+    """Phoenix takes ~10 s to boot after `docker compose up -d`. If its container is running but not answering yet,
+    wait up to boot_wait_s before deciding, rather than refusing a service that is visibly starting."""
+    import time
+    code, _, _ = _http("http://127.0.0.1:6006/v1/projects", timeout=3)
+    if code != 200:
+        try:
+            running = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", "debugassist-phoenix-1"],
+                                     capture_output=True, text=True, timeout=5).stdout.strip() == "true"
+        except Exception:
+            running = False
+        waited = 0
+        while running and code != 200 and waited < boot_wait_s:
+            time.sleep(2)
+            waited += 2
+            code, _, _ = _http("http://127.0.0.1:6006/v1/projects", timeout=3)
+        if code == 200:
+            return Check("Phoenix", "PASS", f"tracing endpoint up (waited {waited} s for it to finish booting)")
+    if code == 200:
+        return Check("Phoenix", "PASS", "tracing endpoint up")
+    if not trace:
+        return Check("Phoenix", "WARN", "down, but run started with --no-trace (recorded as trace OFF)")
+    return Check("Phoenix", "FAIL", "down: this run would be untraced",
+                 "cd ~/Projects/DebugAssist && docker compose up -d phoenix   (or pass --no-trace)")
+
+
+def run_preflight(issue_url: str, demo: bool = False, trace: bool = True) -> list[Check]:
+    checks = []
+    owner, repo, _ = parse_issue_url(issue_url)
+    try:
+        image = profile_for(owner, repo).image
+        checks.append(Check("Repo profile", "PASS", f"{owner}/{repo} has a sandbox profile"))
+    except UnknownRepo as e:
+        image = None
+        checks.append(Check("Repo profile", "FAIL", str(e), "add the repo to profiles.py"))
+    checks.append(check_docker(image))
+    checks.append(check_mongo())
+    oll, dims = check_ollama()
+    checks.append(check_vector_index(dims))
+    checks.append(oll)
+    checks.append(check_laya())
+    checks.append(check_openrouter(demo))
+    checks.append(check_github(owner, repo))
+    checks.append(check_phoenix(trace))
+    return checks
+
+
+def report(checks: list[Check], starting: bool = False) -> tuple[bool, str]:
+    ok = not any(c.status == "FAIL" for c in checks)
+    lines = [f"{'PREFLIGHT ' + c.status:16s} {c.name:15s} {c.fact}" + (f"\n{'':32s}fix: {c.fix}" if c.fix and
+             c.status != "PASS" else "") for c in checks]
+    verdict = ("PREFLIGHT PASS: starting the run" if starting else "PREFLIGHT PASS: ready to run (nothing was started)") if ok else \
+        f"PREFLIGHT REFUSED: {sum(c.status == 'FAIL' for c in checks)} problem(s) above; nothing was started"
+    return ok, "\n".join(lines + ["", verdict])
+
+
+def as_records(checks: list[Check]) -> list[dict]:
+    return [asdict(c) for c in checks]

@@ -1,0 +1,36 @@
+[project]
+name = "debug-assist"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "ishamishra0408", email = "ishamishra0408@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "arize-phoenix-otel>=0.17.2",
+    "langchain-mcp-adapters>=0.3.2",
+    "langchain-ollama>=1.1.0",
+    "langchain-openrouter>=0.2.9",
+    "langgraph>=1.2.14",
+    "langgraph-checkpoint-mongodb>=0.5.0",
+    "laya-mlx>=0.3.0",
+    "openinference-instrumentation-langchain>=0.1.78",
+    "pymongo>=4.17.0",
+    "python-dotenv>=1.2.4",
+]
+
+[project.scripts]
+debug-assist = "debug_assist:main"
+
+[build-system]
+requires = ["uv_build>=0.10.6,<0.11.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

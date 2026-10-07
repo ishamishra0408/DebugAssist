@@ -1,0 +1,38 @@
+# Local services for Debug Assist. Ports bind to 127.0.0.1 only — nothing is reachable from your network.
+# Start: docker compose up -d     Stop: docker compose down     (data persists in named volumes)
+services:
+  mongodb:
+    # MongoDB with Atlas Search + Vector Search, locally. No cloud account needed.
+    image: mongodb/mongodb-atlas-local@sha256:3a8affee01fda1532d4083304bb6883f6fc0f1bf904c267d1785befa5391c58a  # pinned 2026-10-06 (was :latest)
+    # Atlas Local names its replica set after the container hostname and stores that in the data volume. A recreated
+    # container gets a new random hostname and the data refuses it ("REMOVED"). Pinned to the hostname the existing
+    # data was created with (2026-10-06), so recreating the container never strands the data again.
+    hostname: 151c25ce7b6e
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo-data:/data/db
+      # The image keeps its replica-set security key in /data/configdb. Without a NAMED volume here, Docker uses an
+      # anonymous one that `docker compose down` orphans, and the next start fails "Unable to acquire security key"
+      # (happened 2026-10-06 during the iCloud move; recovered by copying the key from the orphaned volume).
+      - mongo-config:/data/configdb
+    mem_limit: 1536m
+    restart: unless-stopped
+
+  phoenix:
+    # Arize Phoenix: traces of every model call, tool call and command. UI at http://localhost:6006
+    image: arizephoenix/phoenix@sha256:d240d8d4e364ee3483ed2de41ec12b760cc90bb0d4c6e2f190388772aba6fe1f  # pinned 2026-10-06 (was :latest)
+    ports:
+      - "127.0.0.1:6006:6006"   # UI + OTLP over HTTP
+      - "127.0.0.1:4317:4317"   # OTLP over gRPC
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+    volumes:
+      - phoenix-data:/mnt/data
+    mem_limit: 1g
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
+  mongo-config:
+  phoenix-data:

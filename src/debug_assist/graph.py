@@ -1,0 +1,348 @@
+"""The pipeline: 9 steps in a fixed order (Uber's fixed-plan idea), in three phases.
+
+  Fix it       read_issue → reproduce → find_cause → write_fix          (⏱ fix clock: pickup → validated fix)
+  Learn        why_it_shipped → lasting_guard → test_past_bugs          (🎯 would-have-caught)
+  Ship         approval (pauses for your go-word) → open_pr (dry run: you publish)
+
+WALKING SKELETON (2026-10-06): steps marked PLACEHOLDER return stand-in content. Everything else is real:
+GitHub read, Laya triage, sandbox secret probe, the reproduction ladder's plan, one tiny model call, the spend
+meter, condition freeze, vector search, the approval fingerprint and the read-only publish path.
+
+Typed early exits (Thursday): a run can stop on purpose, with a named reason in `outcome`, instead of pushing on:
+  NEEDS PERSON       triage confidence below the review bar (a person reads the issue first)
+  NOT A DEFECT       triage is confident it is not a bug
+  NEVER REPRODUCED   the ladder used its attempts and nothing went red (no fix for a bug we could not see)
+Resume (Thursday): `debug-assist resume <run-id>` continues from the last finished step. Every step is safe to re-run:
+the condition freeze and the stored condition are idempotent, spend and turns live in MongoDB (meter.py), and the
+ladder reads the attempts it already made from the event log.
+"""
+import functools
+import json
+import operator
+from datetime import datetime, timezone
+from typing import Annotated, TypedDict
+
+from langgraph.checkpoint.mongodb import MongoDBSaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
+
+from . import events, ladder
+from .config import CFG, REPRO_ATTEMPT_CAP
+from .github_read import get_issue
+from .issue_text import TRIAGE_QUESTIONS, clean
+from .guardrails import (GuardrailViolation, assert_no_names, fingerprint, freeze_condition, now,
+                         record_approval, verify_approval, verify_condition_frozen)
+from .models import decide, embedder, write
+from .profiles import profile_for
+from .sandbox import secrets_visible
+from .store import client, db
+
+DB = db()
+LEDGER = DB["ledger"]          # approvals and condition freezes (append-only by convention)
+CONDITIONS = DB["conditions"]  # named conditions + embeddings, for finding past bugs of the same kind
+VEC_INDEX = "conditions_vec"
+NEEDS_PERSON, NOT_A_DEFECT = "NEEDS PERSON", "NOT A DEFECT"
+
+
+class RunState(TypedDict, total=False):
+    run_id: str
+    issue_url: str
+    issue: dict
+    triage: dict
+    fix_clock: dict
+    repro: dict
+    cause: dict
+    fix: dict
+    second_story: dict
+    condition: dict
+    guard: dict
+    backtest: dict
+    pr_body: str
+    approval: dict
+    published: dict
+    spent_usd: float
+    demo: bool
+    trace: bool
+    profile: dict
+    preflight: list
+    turns: dict
+    attempts: Annotated[list, operator.add]  # append-only: every attempt and how it ended (also in the event log)
+    outcome: dict                            # set when the run stops: {"exit": ..., "why": ..., "at": ...}
+    log: Annotated[list, operator.add]
+
+
+def step(fn):
+    """Bind (run_id, step) while a step runs, so every model call, sandbox command and Laya decision inside it is
+    metered and logged under this run."""
+    @functools.wraps(fn)
+    def bound(s: RunState):
+        with events.bind(s["run_id"], fn.__name__):
+            return fn(s)
+    return bound
+
+
+def stop(exit_: str, why: str) -> dict:
+    return {"exit": exit_, "why": why, "at": now()}
+
+
+def run_dir(s: RunState):
+    d = CFG.runs_dir / s["run_id"]
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+# ── Phase 1: Fix it ─────────────────────────────────────────────────────────────────────────────
+REPRO_Q = {  # not fine-tuned: answered by general Laya
+    "has_repro": {"type": "noul", "instructions": "Does the issue include steps, code or a trace to reproduce it?"},
+    "regression": {"type": "noul", "instructions": "Does it say it worked in an earlier version?"},
+}
+
+
+def read_issue(s: RunState):
+    issue = get_issue(s["issue_url"])
+    text = clean(issue["title"], issue["body"])  # the exact input format the triage model was trained on
+    t = decide(text, TRIAGE_QUESTIONS, which="triage")
+    g = decide(text, REPRO_Q, which="general")
+    p = t["is_defect"]["noul"]
+    triage = {"is_defect_p": p, "kind": t["kind"]["choice"], "kind_p": t["kind"]["answer_confidence"],
+              "has_repro_p": g["has_repro"]["noul"], "regression_p": g["regression"]["noul"],
+              "needs_person": max(p, 1 - p) < CFG.triage_review_below, "model": "laya-triage (fine-tuned)"}
+    prof = profile_for(issue["owner"], issue["repo"])
+    out = {"issue": issue, "triage": triage, "fix_clock": {"started_at": now()}, "spent_usd": 0.0, "turns": {},
+           "profile": {"repo": prof.repo, "language": prof.language, "image": prof.image},
+           "log": [f"read_issue: {issue['repo']}#{issue['number']} triaged {triage}"]}
+    if triage["needs_person"]:
+        out["outcome"] = stop(NEEDS_PERSON, f"triage confidence {max(p, 1 - p):.2f} is below the "
+                                            f"{CFG.triage_review_below} review bar; a person reads the issue first")
+    elif p < 0.5:
+        out["outcome"] = stop(NOT_A_DEFECT, f"triage is confident this is not a bug (is_defect p={p:.2f})")
+    if "outcome" in out:
+        out["log"].append(f"read_issue: STOPPED {out['outcome']['exit']}: {out['outcome']['why']}")
+    return out
+
+
+# Friday: the writer drafts each rung's test, informed by the attempts before it. Until the by-hand run of #21439 shows
+# what a good test looks like, the ladder is planned but not climbed.
+TEST_WRITER_READY = False
+
+
+def _write_and_run_test(s: RunState, rung: ladder.Rung, n: int, history: list) -> ladder.Attempt:
+    """One rung attempt: the writer drafts a test for this rung (seeing every earlier attempt and its evidence), the
+    sandbox runs it with the network off, classify() decides RED / GREEN / ERROR. Built Friday."""
+    raise NotImplementedError("test writer arrives Friday, after the by-hand run")
+
+
+def _record_attempt(s: RunState, a: ladder.Attempt) -> ladder.Attempt:
+    a.at = now()
+    events.log("attempt", **ladder.as_records([a])[0])  # written the moment it ends: survives a crash mid-step
+    return a
+
+
+def reproduce(s: RunState):
+    work = run_dir(s) / "sandbox"
+    work.mkdir(exist_ok=True)
+    image = s["profile"]["image"]
+    seen = secrets_visible(work, image)  # in the repo's own image (node for vercel/ai, python otherwise)
+    if seen:
+        raise GuardrailViolation(f"sandbox exposes secrets or failed its probe: {seen}")
+    rungs, skipped = ladder.plan(s["triage"]["has_repro_p"], has_recorded_fixtures=False)
+    plan = {"rungs": [r.name for r in rungs], "skipped": skipped, "cap": REPRO_ATTEMPT_CAP}
+    if not TEST_WRITER_READY:
+        return {"repro": {"status": "PLACEHOLDER", "ladder_plan": plan, "failing_test": None,
+                          "sandbox_image": s["profile"]["language"], "sandbox_secrets_visible": seen},
+                "log": [f"reproduce: PLACEHOLDER; ladder planned {plan['rungs']} (skipped {list(skipped)}); "
+                        f"{s['profile']['language']} sandbox probe saw 0 secrets"]}
+    before = [{k: v for k, v in e.items() if k in ladder.Attempt.__dataclass_fields__}
+              for e in events.for_run(s["run_id"]) if e["kind"] == "attempt" and e["step"] == "reproduce"]
+    result = ladder.climb(rungs, lambda r, n, h: _record_attempt(s, _write_and_run_test(s, r, n, h)),
+                          already=before, skipped=skipped)
+    new = [{"step": "reproduce", **a} for a in ladder.as_records(result.attempts[len(before):])]
+    red = next((a for a in result.attempts if a.outcome == ladder.RED), None)
+    out = {"repro": {"status": result.status, "rung": result.rung, "ladder_plan": plan,
+                     "failing_test": red.test_path if red else None, "evidence": red.evidence if red else None,
+                     "attempts_used": len(result.attempts), "sandbox_secrets_visible": seen},
+           "attempts": new,
+           "log": [f"reproduce: {result.status}" + (f" at rung {result.rung}" if result.rung else "") +
+                   f" after {len(result.attempts)} of {REPRO_ATTEMPT_CAP} attempts"]}
+    if result.status == ladder.NEVER_REPRODUCED:
+        tried = ", ".join(f"{a.rung}:{a.outcome}" for a in result.attempts) or "no rung available"
+        out["outcome"] = stop(ladder.NEVER_REPRODUCED, f"nothing went red ({tried}); no fix is written for a bug "
+                                                       "we could not see")
+    return out
+
+
+def find_cause(s: RunState):
+    msg, upd = write(s, "find_cause", [("system", "Connectivity check. Reply with exactly: OK"), ("user", "ping")],
+                     max_tokens=16)
+    return {"cause": {"status": "PLACEHOLDER", "llm_ping": str(msg.content).strip()[:20], "model": CFG.gen_model_dev},
+            **upd, "log": [f"find_cause: PLACEHOLDER; model ping='{str(msg.content).strip()[:20]}' spent=${upd['spent_usd']:.6f}"]}
+
+
+def write_fix(s: RunState):
+    clock = dict(s["fix_clock"])
+    clock["stopped_at"] = now()
+    t0 = datetime.fromisoformat(clock["started_at"])
+    clock["seconds"] = round((datetime.fromisoformat(clock["stopped_at"]) - t0).total_seconds(), 1)
+    clock["validated"] = False  # placeholder fix: the clock only counts once red → green is real
+    return {"fix": {"status": "PLACEHOLDER", "red_to_green": None, "suite_green": None}, "fix_clock": clock,
+            "log": [f"write_fix: PLACEHOLDER; fix clock {clock['seconds']}s (not validated)"]}
+
+
+# ── Phase 2: Learn from it ──────────────────────────────────────────────────────────────────────
+def why_it_shipped(s: RunState):
+    story = ("PLACEHOLDER second story. Friday: critical junctures (written → reviewed → released → reported), "
+             "what was known at each, two or more conditions that only together let it ship, and where the "
+             "analysis stopped and why.")
+    condition = f"PLACEHOLDER condition for: {s['issue']['title']}"
+    assert_no_names(story, [s["issue"]["reporter"]])  # guardrail 2
+    freeze = freeze_condition(LEDGER, s["run_id"], condition)  # guardrail 3, before any guard exists
+    return {"second_story": {"status": "PLACEHOLDER", "text": story},
+            "condition": {"text": condition, "sha256": freeze["sha256"], "frozen_at": freeze["frozen_at"]},
+            "log": [f"why_it_shipped: PLACEHOLDER; no names; condition frozen {freeze['sha256'][:12]}"]}
+
+
+A1_Q = {"a1": {"type": "choice",
+               "instructions": "Would this guard still stop the bug if everyone forgot about it?",
+               "criteria": {"CONDITION": "a test, lint rule, type or CI check that runs by itself",
+                            "INSTRUCTION": "advice, documentation or a reminder a person must follow"}}}
+
+
+def lasting_guard(s: RunState):
+    text = "PLACEHOLDER guard: a parametrised test in CI that covers the whole class of input, not one case."
+    a = decide(text, A1_Q)["a1"]
+    guard = {"status": "PLACEHOLDER", "text": text, "created_at": now(),
+             "a1_class": a["choice"], "a1_p": a["answer_confidence"]}
+    return {"guard": guard, "log": [f"lasting_guard: PLACEHOLDER; Laya A1 → {a['choice']} p={a['answer_confidence']}"]}
+
+
+def _ensure_vector_index(dims: int, wait_s: int = 90) -> bool:
+    """Create the index if missing, then wait until it can answer. False = the instrument can't look right now
+    (e.g. it's rebuilding after a restart), which is UNEVALUABLE, never 'no siblings'."""
+    import time
+    if not list(CONDITIONS.list_search_indexes(VEC_INDEX)):
+        from pymongo.operations import SearchIndexModel
+        CONDITIONS.create_search_index(SearchIndexModel(name=VEC_INDEX, type="vectorSearch", definition={
+            "fields": [{"type": "vector", "path": "embedding", "numDimensions": dims, "similarity": "cosine"}]}))
+    for _ in range(wait_s):
+        idx = list(CONDITIONS.list_search_indexes(VEC_INDEX))
+        if idx and idx[0].get("queryable"):
+            return True
+        time.sleep(1)
+    return False
+
+
+def test_past_bugs(s: RunState):
+    cond = s["condition"]["text"]
+    verify_condition_frozen(LEDGER, s["run_id"], cond, s["guard"]["created_at"])  # guardrail 3
+    vec = embedder().embed_query(cond)  # search uses the condition only, never the guard
+    hits, searched, can_look = [], CONDITIONS.estimated_document_count(), True
+    if searched:
+        can_look = _ensure_vector_index(len(vec))
+        if can_look:
+            hits = [h for h in CONDITIONS.aggregate([
+                {"$vectorSearch": {"index": VEC_INDEX, "path": "embedding", "queryVector": vec,
+                                   "numCandidates": 50, "limit": 5}},
+                {"$project": {"_id": 0, "run_id": 1, "issue_url": 1, "text": 1,
+                              "score": {"$meta": "vectorSearchScore"}}}])
+                    if h["issue_url"] != s["issue_url"]]  # a sibling is a DIFFERENT issue, not an earlier run of this one
+    stored = not cond.startswith("PLACEHOLDER")  # placeholders would show up as false siblings for every issue
+    if stored:  # upsert: a resumed run that re-runs this step must not store its condition twice
+        CONDITIONS.update_one({"run_id": s["run_id"]}, {"$set": {
+            "issue_url": s["issue_url"], "text": cond, "embedding": vec, "sha256": s["condition"]["sha256"]}},
+            upsert=True)
+    if not can_look:
+        state = "UNEVALUABLE (search index not ready; not the same as no siblings)"
+    elif hits:
+        state = "CANDIDATES FOUND (back-test runs Friday)"
+    else:
+        state = "NO PAST SIBLING FOUND"
+    backtest = {"state": state, "searched_conditions": searched, "candidates": hits[:3],
+                "would_have_caught": None, "false_alarms": None}
+    return {"backtest": backtest, "log": [f"test_past_bugs: {backtest['state']} ({len(hits)} candidates)"]}
+
+
+# ── Phase 3: Ship it ────────────────────────────────────────────────────────────────────────────
+def compose_pr_body(s: RunState) -> str:
+    """Deterministic (no timestamps): the approval fingerprint must match on resume."""
+    i, g, b = s["issue"], s["guard"], s["backtest"]
+    return "\n".join([
+        f"Fixes #{i['number']}",
+        "",
+        "## Fix",
+        "PLACEHOLDER: the patch and the failing test it turns green.",
+        "",
+        "<details><summary>Why this shipped (conditions, not people)</summary>",
+        "",
+        s["second_story"]["text"],
+        "",
+        f"Named condition: {s['condition']['text']}",
+        "</details>",
+        "",
+        "## Lasting guard",
+        g["text"],
+        f"Would-have-caught: {b['state']}",
+        "",
+        "Does this match how it looked when the original change was written? Corrections welcome.",
+        "",
+        "_Draft generated by the Debug Assist walking skeleton; placeholder content._",
+    ])
+
+
+def approval(s: RunState):
+    body = compose_pr_body(s)
+    path = run_dir(s) / "PR.md"
+    path.write_text(body)
+    answer = interrupt({"pr_body_path": str(path), "sha256": fingerprint(body),
+                        "ask": "Reply 'go' to approve this exact text; anything else rejects it"})
+    if str(answer).strip().lower() != "go":
+        return {"approval": {"status": "REJECTED", "answer": str(answer)}, "outcome": stop("REJECTED", "you said no"),
+                "log": ["approval: REJECTED"]}
+    rec = record_approval(LEDGER, s["run_id"], body, approver="isha")  # guardrail 1
+    return {"pr_body": body, "approval": {"status": "APPROVED", "sha256": rec["sha256"], "at": rec["at"]},
+            "log": [f"approval: APPROVED {rec['sha256'][:12]}"]}
+
+
+def open_pr(s: RunState):
+    verify_approval(LEDGER, s["run_id"], s["pr_body"])  # guardrail 1: refuses changed text
+    i = s["issue"]
+    script = run_dir(s) / "publish.sh"
+    script.write_text("\n".join([
+        "#!/bin/sh",
+        "# You run this, with your own GitHub login. The pipeline holds a read-only token and cannot publish.",
+        "# SKELETON: there is no fix branch yet, so this only prints the command.",
+        f"echo gh pr create --repo {i['owner']}/{i['repo']} --draft --title \"fix: #{i['number']}\" "
+        f"--body-file \"{run_dir(s) / 'PR.md'}\"",
+    ]))
+    script.chmod(0o755)
+    return {"published": {"status": "DRY RUN: you publish", "script": str(script)},
+            "outcome": stop("READY FOR YOU TO PUBLISH", f"approved text verified; run {script}"),
+            "log": [f"open_pr: verified approval; wrote {script.name} for you to run"]}
+
+
+def _after_approval(s: RunState):
+    return "open_pr" if s.get("approval", {}).get("status") == "APPROVED" else END
+
+
+def _unless_stopped(next_step: str):
+    """A typed exit ends the run here; otherwise go on."""
+    def route(s: RunState):
+        return END if s.get("outcome") else next_step
+    route.__name__ = f"to_{next_step}_unless_stopped"
+    return route
+
+
+def build():
+    g = StateGraph(RunState)
+    steps = [read_issue, reproduce, find_cause, write_fix, why_it_shipped, lasting_guard, test_past_bugs, approval]
+    for fn in steps + [open_pr]:
+        g.add_node(fn.__name__, step(fn))
+    g.add_edge(START, steps[0].__name__)
+    can_stop = {"read_issue", "reproduce"}  # the steps with typed early exits
+    for a, b in zip(steps, steps[1:]):
+        if a.__name__ in can_stop:
+            g.add_conditional_edges(a.__name__, _unless_stopped(b.__name__), [b.__name__, END])
+        else:
+            g.add_edge(a.__name__, b.__name__)
+    g.add_conditional_edges("approval", _after_approval, ["open_pr", END])
+    g.add_edge("open_pr", END)
+    return g.compile(checkpointer=MongoDBSaver(client(), db_name=CFG.db_name))

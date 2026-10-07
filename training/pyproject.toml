@@ -1,0 +1,15 @@
+[project]
+name = "training"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "datasets>=5.1.0",
+    "laya>=0.3.28",
+    "laya-mlx>=0.3.0",
+    "numpy>=2.5.3",
+    "python-dotenv>=1.2.4",
+    "torch>=2.14.1",
+    "transformers>=5.19.0",
+]
