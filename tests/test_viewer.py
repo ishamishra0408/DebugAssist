@@ -45,3 +45,16 @@ def test_freshness_and_trials_are_shown():
     page = viewer.render(_data())
     assert "30 min ago" in page and "ai-1-x-refix: 3 events" in page and "never counted in the north stars" in page
     assert "NOT SCORED" in page
+
+
+def test_the_pipeline_card_marks_the_step_we_are_on():
+    st = {**_data()["state"], "triage": {"x": 1}, "cause": {"file": "f"}}
+    live = viewer.render(_data(state=st, interrupt={}, next=["write_fix"], since="2026-10-07T06:49:28+00:00"))
+    assert 'class="pl live"' in live and "step 4 of 9 · Write fix · 32 s" in live
+    assert live.count('class="node running"') == 1 and 'class="edge flow"' in live and 'class="dots"' in live
+    paused = viewer.render(_data())
+    assert 'class="pl waiting"' in paused and "step 8 of 9 · Your approval" in paused and 'class="node waiting"' in paused
+    assert 'class="edge flow"' not in paused  # nothing is moving while it waits for you
+    stopped = viewer.render(_data(state={**st, "outcome": {"exit": "FIX NOT VALIDATED", "why": "w"},
+                                         "log": ["write_fix: STOPPED FIX NOT VALIDATED"]}, next=[], interrupt={}))
+    assert 'class="pl stopped"' in stopped and "step 4 of 9 · Write fix" in stopped and 'class="node stopped"' in stopped
