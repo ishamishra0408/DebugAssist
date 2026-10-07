@@ -50,6 +50,10 @@ def receipts() -> tuple[dict, dict]:
     return by, example
 
 
+def _read(p: Path) -> str:
+    return p.read_text() if p.exists() else ""
+
+
 def gates() -> list[dict]:
     with open(BUNDLE / "GATES.tsv") as f:
         rows = list(csv.DictReader(f, delimiter="\t"))
@@ -59,6 +63,8 @@ def gates() -> list[dict]:
         label = {"build-eval": "build-eval"}.get(stage, stage)
         if f"{label} stage: done" in dec or f"{stage.title()} stage: DONE".lower() in dec:
             g["state"] = "PASS"
+        elif stage == "build-eval" and "conditions closed" in _read(WORK / "design" / "eval-spec-v1.md").lower():
+            g["state"] = "READY TO RULE"   # the pre-checks' conditions are closed; the stage is Isha's call
         elif stage == "build-eval" and (WORK / "design" / "eval-spec-v0.md").exists():
             g["state"] = "PREP"
         else:
@@ -125,7 +131,7 @@ ol.gates {{ list-style:none; margin:0; padding:0; display:grid; grid-template-co
 .gate p {{ margin:0; font-size:13.5px }} .cond {{ color:var(--muted) }} .cond span {{ font:12px var(--mono); text-transform:uppercase; margin-right:4px }}
 .signers {{ font:12.5px var(--mono); color:var(--accent); margin-top:4px !important }}
 .pill,.tag {{ justify-self:start; font:500 12px var(--mono); padding:2px 8px; border-radius:999px; background:var(--idlebg); color:var(--idle) }}
-.pass .pill,.tag.pass {{ background:var(--okbg); color:var(--ok) }} .prep .pill,.tag.prep {{ background:var(--warnbg); color:var(--warn) }}
+.pass .pill,.tag.pass {{ background:var(--okbg); color:var(--ok) }} .prep .pill,.tag.prep,.ready-to-rule .pill,.tag.ready-to-rule {{ background:var(--warnbg); color:var(--warn) }}
 .seat {{ background:var(--surface); border:1px solid var(--line); border-radius:10px; min-width:0 }}
 .seat + .seat {{ margin-top:10px }}
 summary {{ list-style:none; cursor:pointer; display:grid; grid-template-columns:150px 36px 1fr auto; gap:12px; align-items:center; padding:12px 14px }}
@@ -151,7 +157,7 @@ footer {{ color:var(--muted); font-size:12.5px }} code {{ font-family:var(--mono
   <section><h2>Seats · click one for every question it was asked</h2>{"".join(seat_rows)}</section>
   <footer>Every review here is a receipt in <code>usage_log.jsonl</code> (append-only; its first row is the bundle's
   example and is not counted: "{e(example.get("output_summary"))}"). Gate state comes from DECISIONS.md; build-eval reads
-  PREP while its eval spec is drafted. Regenerate with <code>uv run python scripts/seats.py</code>.</footer>
+  PREP while its eval spec is drafted and READY TO RULE once the pre-checks' conditions are closed. Regenerate with <code>uv run python scripts/seats.py</code>.</footer>
 </main>
 """
 

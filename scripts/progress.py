@@ -309,10 +309,11 @@ def page(data, svg_light, svg_dark):
     NEXT = {
         "Teardown": ["Finish the Uber teardown and pass its gate"],
         "Design": ["Harness-design review of the agent surface", "Design gate ruling"],
-        "Build-eval": ["Review the run viewer and approve (or reject) the Opus run's PR draft",
-                       "Sat: build-eval gate (qe-ic-advisor + de-advisor; ds-ic pending Devansh); ask metric-design for the 🎯 counter's bug-free reference",
-                       "Sat: turn the by-hand steps into code; build-eval gate (qe-ic-advisor)",
-                       "Ask Devansh: Sunday reader + weak seats (sent; awaiting reply)"],
+        "Build-eval": ["Rule the build-eval gate: the north stars are sealed and the pre-checks' conditions closed",
+                       "Thu 10/08: review Devansh's Advisors MCP server and Visdom pipe before anything connects",
+                       "Ask metric-design for the 🎯 counter's bug-free reference",
+                       "Devansh: ds-ic seat or gate signer (due Fri), Sunday non-author reader",
+                       "Rebuild the C4 model (Isha runs the build)"],
         "Demo": ["Sun: tune the demo to Devansh's room angle", "Run the demo issue 3–5 times for the speed number"],
     }
     nxt = "".join(f"<li>{html.escape(x)}</li>" for x in NEXT.get(stage_now, ["All stages done"]))
