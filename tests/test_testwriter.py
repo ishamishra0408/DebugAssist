@@ -87,7 +87,8 @@ def test_one_attempt_writes_a_new_file_runs_it_offline_and_classifies(repo, monk
     profile = SimpleNamespace(env="ENV && ", test_cmd="cd packages/{package} && pnpm test:node {test_path}",
                               image="node", language="typescript")
     state = {"issue": {"number": 7, "title": "t", "body": "b"}, "run_id": "r"}
-    a = testwriter.attempt(state, UNIT, 1, [], _ctx(repo), repo, profile, run_cmd=fake_run)
+    a = testwriter.attempt(state, UNIT, 1, [], _ctx(repo), repo, profile, run_cmd=fake_run, drafts=repo / "new" / "drafts")
+    assert (repo / "new" / "drafts" / "1-unit.md").exists()  # the drafts folder is created on demand
     assert a.outcome == ladder.RED and a.test_path == "packages/acme-compatible/src/chat/da-repro-7-unit-1.test.ts"
     assert (repo / a.test_path).exists() and ran["network"] is False
     assert ran["cmd"] == "ENV && cd packages/acme-compatible && pnpm test:node src/chat/da-repro-7-unit-1.test.ts"

@@ -307,6 +307,7 @@ def attempt(state: dict, rung: ladder.Rung, n: int, history: list, ctx: Context,
         msg, _ = write(state, step, messages(issue["title"], state.get("issue_text") or issue.get("body", ""),
                                                     focus, rung, history, ctx), max_tokens=4000)
         if drafts:
+            Path(drafts).mkdir(parents=True, exist_ok=True)
             (Path(drafts) / f"{n}-{label or rung.name}.md").write_text(str(msg.content))  # every raw reply, for the record
         content, symptom = parse(str(msg.content))
         validate(content, rung)
