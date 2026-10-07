@@ -31,6 +31,7 @@ uv run debug-assist resume  <run-id>                                 # after a c
 uv run debug-assist approve <run-id>                                 # your go-word; prints the sha it approves
 uv run debug-assist reject  <run-id>
 uv run debug-assist events  <run-id>                                 # every model call, sandbox command, decision, attempt
+uv run debug-assist cleanup [--yes]                                  # delete finished runs' code copies (patch kept)
 uv run pytest                                                        # 95 tests (Mongo + Docker ones skip if those are down)
 ```
 `--focus-heading=…` picks the ONE problem to reproduce from a section of the issue (or `--focus="…"` gives it
@@ -50,6 +51,8 @@ A run ends one of these ways (the `outcome` field, printed as `STOPPED: ...`):
 | `NEEDS PERSON` | Triage confidence below 0.6: a person reads the issue first |
 | `NOT A DEFECT` | Triage confident it is not a bug (is_defect p < 0.5) |
 | `NEVER REPRODUCED` | The reproduction ladder used its 4 attempts and nothing went red: no fix for a bug we could not see |
+| `CAUSE NOT FOUND` | The model could not name a real source file and lines for the cause |
+| `FIX NOT VALIDATED` | 3 fix attempts, none turned the failing test green with every affected suite still passing |
 | paused at approval | Waiting for your go-word |
 | `REJECTED` / `READY FOR YOU TO PUBLISH` | After your answer |
 
@@ -69,6 +72,7 @@ log, condition freeze, vector search, approval fingerprint, read-only publish pa
 | Sandbox time cap | `meter.py`, `sandbox.py` | Sandbox commands past `SANDBOX_BUDGET_S` (1800 s per run); the last command gets what is left |
 | Reproduction ladder | `ladder.py` | Writing a fix before a test went red; more than 4 attempts; counting an unexplained failure as a reproduction; a made-up-data RED goes unconfirmed (re-run on a recorded stream when the repo has one) |
 | Test writer | `testwriter.py` | A test placed anywhere but a NEW file beside the code; a "recorded stream" test that reads no fixture; a RED whose failing assertion doesn't show the focus's own strings (wrong-reason RED); env vars or real hosts in a test |
+| Validated fix only | `fixer.py` | A fix that edits tests, fixtures or the failing test; a SEARCH that matches 0 or 2+ places; a fix that leaves the test red or breaks any affected suite (the changed packages + every installed package depending on them). The fix clock counts only a validated fix |
 | Pipe exit codes | `sandbox.py` | `tests \| tail` hiding a failure: every command runs under `bash -o pipefail` |
 | Pre-commit hook | `.githooks/pre-commit` | A commit while any test fails (`git config core.hooksPath .githooks` once per clone) |
 | No names in public text | `guardrails.py` | @handles outside code, and known names anywhere |

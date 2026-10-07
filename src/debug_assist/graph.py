@@ -215,7 +215,7 @@ def write_fix(s: RunState):
     prof = PROFILES[s["profile"]["repo"]]
     looked = [fixer.find_definition(checkout, n) for n in c.get("looked_up", [])]
     fix = fixer.write_fix(s, checkout, c, r["failing_test"], r.get("evidence") or "", prof, looked_up=looked,
-                          stale=dirty)
+                          stale=dirty, drafts=run_dir(s) / "fixer")
     clock = dict(s["fix_clock"])
     clock["stopped_at"] = now()
     clock["seconds"] = round((datetime.fromisoformat(clock["stopped_at"])

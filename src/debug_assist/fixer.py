@@ -52,6 +52,8 @@ def find_definition(checkout: Path, name: str, max_lines: int = 260) -> str:
 # ── find_cause ───────────────────────────────────────────────────────────────────────────────────
 CAUSE_SYSTEM = """You find the cause of a bug that a failing test has already reproduced.
 You may first ask to see definitions, one per line:  NEED_DEFINITION: <identifier>   (at most 3 per reply)
+When the code shown calls into another module (a helper, a tracker, a shared class), look up that definition before
+deciding: the cause is often in the shared code, not at the call site.
 When you know the cause, reply exactly:
 CAUSE_FILE: <repo-relative path of the source file that must change>
 CAUSE_LINES: <start>-<end>
@@ -123,7 +125,8 @@ def find_cause(state: dict, checkout: Path, ctx, test_path: str, evidence: str) 
 
 # ── write_fix ────────────────────────────────────────────────────────────────────────────────────
 FIX_SYSTEM = """You fix a bug that a failing test reproduces, with the smallest correct change.
-Answer ONLY with edit blocks, as many as needed:
+If you must see code you were not shown before editing it, reply ONLY with lines  NEED_DEFINITION: <identifier>
+(at most 3); you will get the code and be asked again. Otherwise answer ONLY with edit blocks, as many as needed:
 FILE: <repo-relative path>
 <<<<<<< SEARCH
 <exact lines from the file, copied character for character, enough to match ONE place>
@@ -144,13 +147,29 @@ class Edit:
     replace: str
 
 
-_EDIT = re.compile(r"FILE:\s*`?([^\s`]+)`?\s*\n<<<<<<< SEARCH\n(.*?)\n=======\n(.*?)\n?>>>>>>> REPLACE", re.S)
+_BLOCK = re.compile(r"<<<<<<< SEARCH[ \t]*\n(.*?)\n=======[ \t]*\n(.*?)\n?>>>>>>> REPLACE", re.S)
+_PATH = re.compile(r"^\s*(?:FILE:\s*`?([\w./@-]+\.\w+)`?|`?((?:[\w.@-]+/)+[\w.@-]+\.\w+)`?)\s*:?\s*$")
 
 
 def parse_edits(reply: str) -> list[Edit]:
-    edits = [Edit(m.group(1), m.group(2), m.group(3)) for m in _EDIT.finditer(reply)]
+    """Each SEARCH/REPLACE block, with the file named on the nearest line above it ("FILE: path", or a bare path,
+    inside or outside a ``` fence). Dev-model run 2026-10-07: right edits, path written inside a fence, all refused."""
+    edits, last_path = [], None
+    pos = 0
+    for m in _BLOCK.finditer(reply):
+        for line in reversed(reply[pos:m.start()].splitlines()):
+            if line.strip().startswith("```") or not line.strip():
+                continue
+            p = _PATH.match(line)
+            if p:
+                last_path = p.group(1) or p.group(2)
+            break
+        if not last_path:
+            raise FixRefused("an edit block names no file (put the path on the line above <<<<<<< SEARCH)")
+        edits.append(Edit(last_path, m.group(1), m.group(2)))
+        pos = m.end()
     if not edits:
-        raise FixRefused("the reply has no FILE / SEARCH / REPLACE block")
+        raise FixRefused("the reply has no SEARCH / REPLACE block")
     return edits
 
 
@@ -237,7 +256,7 @@ FAILING TEST ({test_path}), which must pass after your change:
 
 IT PRINTS NOW:
 {evidence[:1500]}
-{('OTHER CODE YOU MAY NEED:' + chr(10) + chr(10).join(looked_up)[:8000]) if looked_up else ''}
+{('OTHER CODE (definitions looked up):' + chr(10) + chr(10).join(looked_up)[:14000]) if looked_up else ''}
 EARLIER FIX ATTEMPTS (reverted):{past}"""
     return [("system", FIX_SYSTEM), ("user", user)]
 
@@ -280,17 +299,28 @@ def _assertion(r) -> str:
 
 
 def write_fix(state: dict, checkout: Path, cause: dict, test_path: str, evidence: str, profile, run_cmd=None,
-              looked_up: list[str] | None = None, stale: list[str] | None = None) -> dict:
+              looked_up: list[str] | None = None, stale: list[str] | None = None, drafts: Path | None = None) -> dict:
     """stale: files a crashed attempt had changed (now reverted); their packages are rebuilt before validating."""
     from .sandbox import run_in_sandbox
     run_cmd = run_cmd or run_in_sandbox
     focus = state.get("focus") or state["issue"]["title"]
     test_code = (checkout / test_path).read_text()
-    history, attempts = [], []
+    history, attempts, asked = [], [], []
+    looked_up = list(looked_up or [])
     built = set(affected(checkout, stale, suite_names(profile))[0]) if stale else set()
     for n in range(1, FIX_ATTEMPTS + 1):
-        msg, _ = write(state, "write_fix", fix_messages(focus, cause, (checkout / cause["file"]).read_text(), test_path,
-                                                        test_code, evidence, history, looked_up or []), max_tokens=4000)
+        for _ in range(2):  # up to 2 lookup rounds per attempt (each one model call, under the write_fix turn cap)
+            msg, _ = write(state, "write_fix", fix_messages(focus, cause, (checkout / cause["file"]).read_text(),
+                                                            test_path, test_code, evidence, history, looked_up),
+                           max_tokens=4000)
+            wanted = [w for w in re.findall(r"NEED_DEFINITION:\s*`?([\w$]+)`?", str(msg.content)) if w not in asked][:3]
+            if not wanted or "<<<<<<< SEARCH" in str(msg.content):
+                break
+            asked += wanted
+            looked_up += [find_definition(checkout, w) for w in wanted]
+        if drafts:
+            Path(drafts).mkdir(parents=True, exist_ok=True)
+            (Path(drafts) / f"fix-{n}.md").write_text(str(msg.content))  # every raw reply, for the record
         changed: list[str] = []
         try:
             changed = apply_edits(checkout, parse_edits(str(msg.content)))

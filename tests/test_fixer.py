@@ -110,3 +110,13 @@ def test_no_validated_fix_stops_with_the_source_restored(repo, monkeypatch):
                           "AssertionError", PROFILE, run_cmd=_runner(repo, []))
     assert fix["status"] == "NOT VALIDATED" and len(fix["attempts"]) == fixer.FIX_ATTEMPTS and fix["patch"] == ""
     assert subprocess.run(["git", "diff", "--quiet"], cwd=repo).returncode == 0, "source must be back to the base"
+
+
+def test_the_file_may_be_named_bare_inside_a_fence_and_reused_for_a_second_block():
+    reply = ("Here is the fix.\n```typescript\npackages/utils/src/tracker.ts\n<<<<<<< SEARCH\n  emit(call);\n=======\n"
+             "  if (done) emit(call);\n>>>>>>> REPLACE\n```\n\n```ts\n<<<<<<< SEARCH\nflush() {\n=======\n"
+             "flush({ done = true } = {}) {\n>>>>>>> REPLACE\n```")
+    edits = parse_edits(reply)
+    assert [e.path for e in edits] == ["packages/utils/src/tracker.ts"] * 2 and edits[1].replace.startswith("flush({")
+    with pytest.raises(FixRefused, match="names no file"):
+        parse_edits("<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE")
