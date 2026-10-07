@@ -182,6 +182,17 @@ def triage():
             "look_n": sum(1 for p in f["hard"]["predictions"] if p["label"] != "bug")}
 
 
+def byhand():
+    """The by-hand run's own log (its summary table), never a typed number."""
+    log = HOME / "Projects" / "checkouts" / "byhand-21439" / "log.md"
+    if not log.exists():
+        return None
+    t = log.read_text()
+    v = re.search(r"Validated fix \(clock stop\)\*\* \| [^|]*?\*\*([^*]+)\*\*", t)
+    r = re.search(r"First RED[^|]*\| [^|]*?\*\*([^*]+)\*\*", t)
+    return {"validated": v.group(1), "first_red": r.group(1) if r else "?"} if v else None
+
+
 def latest_run():
     runs = sorted((PROJ / "runs").glob("*"), key=lambda p: p.stat().st_mtime) if (PROJ / "runs").exists() else []
     return runs[-1].name if runs else None
@@ -298,13 +309,18 @@ def page(data, svg_light, svg_dark):
     NEXT = {
         "Teardown": ["Finish the Uber teardown and pass its gate"],
         "Design": ["Harness-design review of the agent surface", "Design gate ruling"],
-        "Build-eval": ["Fri: run vercel/ai #21439 by hand, end to end (clean Claude Code session in the repo)",
-                       "Fri: build the test writer for ladder rung 1 from what the by-hand run shows",
+        "Build-eval": ["Rule the 4 open items from the by-hand run (ladder confirm, publish form, length gap, counter)",
+                       "Turn the by-hand steps into code: the test writer for rungs 1–2, then the fix and story steps",
                        "Sat: turn the by-hand steps into code; build-eval gate (qe-ic-advisor)",
                        "Ask Devansh: Sunday reader + weak seats (sent; awaiting reply)"],
         "Demo": ["Sun: tune the demo to Devansh's room angle", "Run the demo issue 3–5 times for the speed number"],
     }
     nxt = "".join(f"<li>{html.escape(x)}</li>" for x in NEXT.get(stage_now, ["All stages done"]))
+    bh = data.get("byhand")
+    ns = (f"<p class='big'>⏱ {html.escape(bh['validated'])}</p><p class='muted'>Time to validated fix, vercel/ai #21439, "
+          f"<strong>by hand</strong> (1 run; first failing test {html.escape(bh['first_red'])}). The pipeline's own runs and "
+          "🎯 would-have-caught are not measured yet.</p>") if bh else \
+         "<p class='big'>Not measured yet</p><p class='muted'>Starts with the by-hand run of vercel/ai #21439.</p>"
     badge = {"done": ("ok", "done"), "failing": ("bad", "failing"), "missing": ("bad", "missing")}
     thu = "".join(
         f"<tr><td>{html.escape(r['item'])}</td><td class='n'>"
@@ -389,7 +405,7 @@ footer code {{ font-family:var(--mono) }}
     <div class="card wide"><h2>Thursday's work, item by item (status = its tests in the live run above)</h2>
       <div class="scroll"><table class="bd"><tbody>{thu}</tbody></table></div>{ev_html}</div>
     <div class="card"><h2>Next up</h2><ol class="next">{nxt}</ol></div>
-    <div class="card"><h2>North stars</h2><p class="big">Not measured yet</p><p class="muted">⏱ Time to validated fix and 🎯 would-have-caught start with Friday's by-hand run of vercel/ai #21439.</p></div>
+    <div class="card"><h2>North stars</h2>{ns}</div>
     <div class="card"><h2>Laya triage (fine-tuned)</h2>{tri}</div>
     <div class="card"><h2>Services, at generation time</h2><ul>{svc}</ul></div>
     <div class="card"><h2>Advisor-seat receipts</h2><ul>{seats}</ul></div>
@@ -406,6 +422,7 @@ def main():
     data = {"stages": stages(), "steps": pipeline_steps(), "tests": tests(), "services": services(),
             "spend": spend(), "triage": triage(), "seats": dict(seats), "n_receipts": n, "latest_run": latest_run()}
     data["thursday"] = thursday(data["tests"].pop("each"))
+    data["byhand"] = byhand()
     data["run_evidence"] = run_evidence(data["latest_run"])
     light = render(d2_source(data["stages"], data["steps"], data["seats"], "light"), 0, "light")
     dark = render(d2_source(data["stages"], data["steps"], data["seats"], "dark"), 200, "dark")
