@@ -121,10 +121,11 @@ def thursday(each):
         ok = sum(st == "PASSED" for st in hits.values())
         rows.append({"item": label, "passed": ok, "of": len(hits),
                      "status": "done" if hits and ok == len(hits) else ("missing" if not hits else "failing")})
-    head = sh(["git", "log", "-1", "--format=%h %s"], timeout=10)
+    log = sh(["git", "log", "--reverse", "--format=%h"], timeout=10)
+    shas = log.stdout.split() if log.returncode == 0 else []
     rows.append({"item": "First git commit (local, no push)", "passed": None, "of": None,
-                 "status": "done" if head.returncode == 0 and head.stdout.strip() else "missing",
-                 "evidence": head.stdout.strip() or "no commits yet"})
+                 "status": "done" if shas else "missing",
+                 "evidence": f"{shas[0]} · {len(shas)} commit(s)" if shas else "no commits yet"})
     return rows
 
 
