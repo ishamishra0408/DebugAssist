@@ -379,7 +379,7 @@ def write_fix(state: dict, checkout: Path, cause: dict, test_path: str, evidence
             # so even the by-hand verified fix failed the test; 3 fix attempts were spent on an unpassable judge.
             rec = {"n": n, "ok": False, "changed": [], "red_to_green": False, "suites": {},
                    "evidence": f"TEST FLAWED: {flawed.group(1).strip()[:600]}"}
-            events.log("fix_attempt", **rec)
+            events.log("fix_attempt", key=f"{Path(drafts).name if drafts else 'fix'}#{n}", **rec)
             attempts.append(rec)
             return {"status": "TEST FLAWED", "attempts": attempts, "changed": [], "patch": "", "red_to_green": False,
                     "suites": {}, "why": flawed.group(1).strip()}
@@ -394,7 +394,7 @@ def write_fix(state: dict, checkout: Path, cause: dict, test_path: str, evidence
             result = {"ok": False, "red_to_green": False, "suites": {}, "evidence": f"edit refused: {e}"}
         rec = {"n": n, "ok": result["ok"], "changed": changed, "red_to_green": result["red_to_green"],
                "suites": result["suites"], "evidence": result["evidence"][:1500]}
-        events.log("fix_attempt", **rec)
+        events.log("fix_attempt", key=f"{Path(drafts).name if drafts else 'fix'}#{n}", **rec)  # round + attempt
         attempts.append(rec)
         if result["ok"]:
             patch = _git(checkout, "diff", "--", *changed)
@@ -443,7 +443,7 @@ def holdout(state: dict, profile, fixed: Path, base_copy: Path, ctx, judges: lis
         dest.write_text((base_copy / a.test_path).read_text())
         r = run_one(fixed, profile, a.test_path, run_cmd)
         outcome, line = ladder.classify(profile.language, r.returncode, (r.stdout or "") + (r.stderr or ""))
-        events.log("holdout", test=a.test_path, on_unfixed="RED", on_fixed=outcome)
+        events.log("holdout", key=a.test_path, test=a.test_path, on_unfixed="RED", on_fixed=outcome)
         if outcome == ladder.GREEN:
             return {"status": "PASSED", "test": a.test_path, "evidence": a.evidence[:800]}
         return {"status": "FIX INCOMPLETE", "test": a.test_path,

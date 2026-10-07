@@ -42,7 +42,8 @@ def gather(run_id: str) -> dict:
     calls = list(db()["calls"].find({"run_id": run_id}, {"_id": 0}).sort("at", 1))
     return {"run_id": run_id, "state": snap.values or {}, "next": list(snap.next or []), "interrupt": intr,
             "pr_text": pr_text, "pr_matches": pr_ok, "patch": patch, "events": events.for_run(run_id),
-            "meter": meter.snapshot(run_id) or {}, "calls": calls, "built": datetime.now().strftime("%H:%M:%S")}
+            "trials": events.trials_of(run_id), "meter": meter.snapshot(run_id) or {}, "calls": calls,
+            "built": datetime.now().strftime("%H:%M:%S"), "now": datetime.now().astimezone().isoformat()}
 
 
 def step_rows(d: dict) -> list[dict]:
@@ -85,6 +86,18 @@ def _evidence_line(text: str) -> str:
         if "AssertionError" in l or "RED for another" in l or "refused" in l:
             return l.strip()[:220]
     return ((text or "").splitlines() or [""])[0][:220]
+
+
+def freshness(d: dict) -> str:
+    """How old the newest event is: a stalled run and a finished run look the same without it (de-advisor review)."""
+    if not d["events"]:
+        return "no events yet"
+    try:
+        age = datetime.fromisoformat(d["now"]) - datetime.fromisoformat(d["events"][-1]["at"])
+    except (KeyError, ValueError):
+        return "unknown"
+    mins = int(age.total_seconds() // 60)
+    return f"{mins} min ago" if mins < 120 else f"{mins // 60} h ago"
 
 
 def render(d: dict) -> str:
@@ -203,10 +216,10 @@ button {{ font:inherit; font-size:13px; padding:5px 12px; border:1px solid var(-
   {f'<p class="{"note" if good else "warnbox"}">{e(outcome.get("why"))}</p>' if outcome else ''}
 </header>
 <section class="strip">
-  <div class="stat"><b>{e(clock_txt)}</b><span>⏱ time to validated fix · {e(clock_sub)}</span></div>
+  <div class="stat"><b>{e(clock_txt)}</b><span>⏱ time to validated fix · {e(clock_sub)} · from the run's checkpoint (pickup → second judge green)</span></div>
   <div class="stat"><b>${spent:.2f}</b><span>spent of ${cap:.2f} cap</span><div class="bar"><i style="width:{pct:.0f}%"></i></div></div>
   <div class="stat"><b>{e(m.get('sandbox_used_s', 0))} s</b><span>sandbox time of {e(m.get('sandbox_cap_s', '?'))} s</span></div>
-  <div class="stat"><b>{caught.split(':')[0]}</b><span>🎯 would the guard have caught it when it was written</span></div>
+  <div class="stat"><b>{e(freshness(d))}</b><span>newest event · {len(d['events'])} events in this run's log</span></div>
 </section>
 <section><h2>The nine steps</h2><ol class="tl">{timeline}</ol></section>
 <section class="grid2">
@@ -228,7 +241,7 @@ button {{ font:inherit; font-size:13px; padding:5px 12px; border:1px solid var(-
     <details><summary>Cases on the fixed code</summary><ul class="cases">{cases}</ul></details>
     <p class="note" style="margin-top:10px">Same code in {len(g.get('siblings', []))} other file(s), not fixed here:</p><ul class="cases">{sib}</ul></div>
   <div class="card"><h2>Back-test · 🎯 would have caught</h2>
-    <p><b>{e(caught)}</b> (anchor <code>{e((det.get('anchor') or {}).get('sha', ''))}</code>)</p>
+    <p><b>🎯 NOT SCORED: no past sibling (m = 0)</b>. Self-check at the anchor <code>{e((det.get('anchor') or {}).get('sha', ''))}</code>: {e(caught)} (in-sample: the guard was written from this bug)</p>
     <p class="note">On the {e(fa.get('window', '?'))} commits before: false alarms {e(fa.get('fired', '?'))} · quiet {e(fa.get('quiet', '?'))} · bug already there {e(fa.get('bug_already_there', '?'))} · unevaluable {e(fa.get('unevaluable', '?'))}</p>
     <div class="scroll"><table><tr><th>commit</th><th>date</th><th>covers</th><th>result</th><th>judge</th><th>guard</th><th>title</th></tr>{groups}</table></div></div>
 </section>
@@ -238,7 +251,8 @@ button {{ font:inherit; font-size:13px; padding:5px 12px; border:1px solid var(-
   <div class="md" id="pr"></div></section>
 <section class="grid2">
   <div class="card"><h2>Spend, call by call</h2><div class="scroll"><table><tr><th>at</th><th>step</th><th>model</th><th>in</th><th>out</th><th>cost</th><th>status</th></tr>{calls}</table></div></div>
-  <div class="card"><h2>Event log</h2><details><summary>{len(d['events'])} events</summary><div class="scroll"><table>{evs}</table></div></details></div>
+  <div class="card"><h2>Event log</h2><details><summary>{len(d['events'])} events</summary><div class="scroll"><table>{evs}</table></div></details>
+    {f'<p class="note" style="margin-top:10px">Trials on this run (scripts that re-ran one step; never counted in the north stars):</p><ul class="cases">' + "".join(f"<li>{e(k)}: {v['n']} events ({e(', '.join(v['kinds']))})</li>" for k, v in sorted(d.get('trials', {}).items())) + '</ul>' if d.get('trials') else ''}</div>
 </section>
 <p class="note">Read-only. Built from this run's MongoDB state, event log and spend meter by <code>debug-assist view</code>.</p>
 </main>
@@ -264,6 +278,8 @@ def _event_text(x: dict) -> str:
         return ", ".join(f"{q}={a.get('choice', a.get('noul'))}" for q, a in (x.get("answers") or {}).items())
     if k == "attempt":
         return f"{x.get('rung')} #{x.get('n')} {x.get('outcome')}"
+    if k == "step":
+        return f"step finished in {x.get('seconds')} s ({x.get('ended')})"
     if k == "fix_attempt":
         return f"#{x.get('n')} {'validated' if x.get('ok') else 'not validated'}"
     return json.dumps({a: b for a, b in x.items() if a not in ("run_id", "step", "kind", "at")}, default=str)[:160]

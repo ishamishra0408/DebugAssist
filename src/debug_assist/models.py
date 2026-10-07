@@ -64,13 +64,13 @@ def write(state: dict, step: str, messages, demo: bool | None = None, max_tokens
     except Exception as e:
         ms = round((time.monotonic() - t0) * 1000)
         s = meter.settle_call(call, None, None, ms, error=type(e).__name__)
-        events.log("model_call", model=model, ok=False, error=f"{type(e).__name__}: {str(e)[:200]}", ms=ms,
+        events.log("model_call", key=call["_id"], model=model, ok=False, error=f"{type(e).__name__}: {str(e)[:200]}", ms=ms,
                    call_id=call["_id"], charged_usd=s["actual_usd"], note="cost unknown: charged the full reservation")
         raise
     ms = round((time.monotonic() - t0) * 1000)
     usage = msg.usage_metadata or {}
     s = meter.settle_call(call, usage, cost_usd(model, usage), ms)
-    events.log("model_call", model=model, ok=True, ms=ms, call_id=call["_id"],
+    events.log("model_call", key=call["_id"], model=model, ok=True, ms=ms, call_id=call["_id"],
                input_tokens=usage.get("input_tokens"), output_tokens=usage.get("output_tokens"),
                reserved_usd=call["reserved_micro"] / meter.MICRO, cost_usd=s["actual_usd"])
     return msg, {"turns": turns, "spent_usd": s["spent_usd"]}

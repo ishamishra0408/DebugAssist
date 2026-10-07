@@ -19,7 +19,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from . import ladder
+from . import events, ladder
 from .budget import BudgetExceeded, TurnCapExceeded
 from .fixer import run_one
 from .models import write
@@ -149,6 +149,7 @@ def write_guard(state: dict, profile, fixed: Path, unfixed: Path, judge: str, ca
         except WriterRefused as e:
             feedback = f"refused: {e}"
             tries.append({"n": n, "result": feedback})
+            events.log("guard_try", key=f"try#{n}", n=n, result=feedback[:300])
             continue
         # 1. on the UNFIXED code: it must catch this bug, for the focus's reason
         (Path(unfixed) / rel).write_text(content)
@@ -163,6 +164,7 @@ def write_guard(state: dict, profile, fixed: Path, unfixed: Path, judge: str, ca
                         f"broken cases: {on_unfixed['broken'] or 'none'}; cases that passed (so they do not catch "
                         f"the bug): {on_unfixed['passed'] or 'none'}. Every case must fail there, showing the bug.")
             tries.append({"n": n, "result": feedback})
+            events.log("guard_try", key=f"try#{n}", n=n, result=feedback[:300], on_unfixed=on_unfixed)
             continue
         # 2. on the FIXED code: which cases of the class the fix closed, and which it left open
         (Path(fixed) / rel).write_text(content)
@@ -172,6 +174,8 @@ def write_guard(state: dict, profile, fixed: Path, unfixed: Path, judge: str, ca
         (Path(fixed) / rel).unlink()  # kept in the run folder, not in the fix (see the module note)
         on_fixed = judged(focus, out_f)
         tries.append({"n": n, "result": "caught the bug on the unfixed code"})
+        events.log("guard_try", key=f"try#{n}", n=n, result="accepted", on_unfixed=on_unfixed,
+                   on_fixed={k: len(v) for k, v in on_fixed.items()})
         return {"status": "CATCHES THE BUG", "path": str(Path(keep_dir) / Path(rel).name), "repo_path": rel,
                 "covers": covers, "on_unfixed": on_unfixed,
                 # on the fixed code: passed = closed by this fix; symptom = still open; broken = a bad case, not a claim

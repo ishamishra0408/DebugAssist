@@ -82,8 +82,22 @@ def step(fn):
     metered and logged under this run."""
     @functools.wraps(fn)
     def bound(s: RunState):
+        import time
+        from langgraph.errors import GraphInterrupt
         with events.bind(s["run_id"], fn.__name__):
-            return fn(s)
+            t0 = time.monotonic()
+            try:
+                out = fn(s)
+            except GraphInterrupt:  # the approval pause: time spent waiting for a person is not the step's own
+                events.log("step", seconds=round(time.monotonic() - t0, 2), ended="paused for approval")
+                raise
+            except Exception as ex:
+                events.log("step", seconds=round(time.monotonic() - t0, 2), ended=f"error: {type(ex).__name__}")
+                raise
+            # every second of wall time is attributed to a step (de-advisor review 2026-10-07: model + sandbox time
+            # explained only 58-67% of ⏱; fetch, Laya, copying the checkout and git made up the rest, unlogged)
+            events.log("step", seconds=round(time.monotonic() - t0, 2), ended=(out or {}).get("outcome", {}).get("exit", "ok"))
+            return out
     return bound
 
 
@@ -105,6 +119,7 @@ REPRO_Q = {  # not fine-tuned: answered by general Laya
 
 
 def read_issue(s: RunState):
+    picked_up = now()  # ⏱ starts at pickup, before the fetch and triage (de-advisor review 2026-10-07)
     issue = get_issue(s["issue_url"])
     text = clean(issue["title"], issue["body"])  # the exact input format the triage model was trained on
     t = decide(text, TRIAGE_QUESTIONS, which="triage")
@@ -114,7 +129,7 @@ def read_issue(s: RunState):
               "has_repro_p": g["has_repro"]["noul"], "regression_p": g["regression"]["noul"],
               "needs_person": max(p, 1 - p) < CFG.triage_review_below, "model": "laya-triage (fine-tuned)"}
     prof = profile_for(issue["owner"], issue["repo"])
-    out = {"issue": issue, "triage": triage, "fix_clock": {"started_at": now()}, "spent_usd": 0.0, "turns": {},
+    out = {"issue": issue, "triage": triage, "fix_clock": {"started_at": picked_up}, "spent_usd": 0.0, "turns": {},
            "profile": {"repo": prof.repo, "language": prof.language, "image": prof.image,
                        "recorded_fixtures": prof.recorded_fixtures},
            "log": [f"read_issue: {issue['repo']}#{issue['number']} triaged {triage}"]}
@@ -155,7 +170,7 @@ def _write_and_run_test(s: RunState, rung: ladder.Rung, n: int, history: list, c
 
 def _record_attempt(s: RunState, a: ladder.Attempt) -> ladder.Attempt:
     a.at = now()
-    events.log("attempt", **ladder.as_records([a])[0])  # written the moment it ends: survives a crash mid-step
+    events.log("attempt", key=f"{a.rung}#{a.n}", **ladder.as_records([a])[0])  # written as it ends: survives a crash
     return a
 
 
@@ -376,7 +391,10 @@ def _ensure_vector_index(dims: int, wait_s: int = 90) -> bool:
 def test_past_bugs(s: RunState):
     cond = s["condition"]["text"]
     verify_condition_frozen(LEDGER, s["run_id"], cond, s["guard"]["created_at"])  # guardrail 3
+    import time
+    t0 = time.monotonic()
     vec = embedder().embed_query(cond)  # search uses the condition only, never the guard
+    events.log("embed", key="condition", model=CFG.embed_model, dims=len(vec), ms=round((time.monotonic() - t0) * 1000))
     hits, searched, can_look = [], CONDITIONS.estimated_document_count(), True
     if searched:
         can_look = _ensure_vector_index(len(vec))
@@ -537,9 +555,11 @@ def approval(s: RunState):
     answer = interrupt({"pr_body_path": str(path), "sha256": fingerprint(body),
                         "ask": "Reply 'go' to approve this exact text; anything else rejects it"})
     if str(answer).strip().lower() != "go":
+        events.log("approval", key="approval", status="REJECTED", sha256=fingerprint(body))
         return {"approval": {"status": "REJECTED", "answer": str(answer)}, "outcome": stop("REJECTED", "you said no"),
                 "log": ["approval: REJECTED"]}
     rec = record_approval(LEDGER, s["run_id"], body, approver="isha")  # guardrail 1
+    events.log("approval", key="approval", status="APPROVED", sha256=rec["sha256"])
     return {"pr_body": body, "approval": {"status": "APPROVED", "sha256": rec["sha256"], "at": rec["at"]},
             "log": [f"approval: APPROVED {rec['sha256'][:12]}"]}
 

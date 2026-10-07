@@ -59,7 +59,7 @@ def run_in_sandbox(command: str, workdir: Path, network: bool = False, timeout: 
     finally:
         if ctx:
             meter.settle_seconds(ctx["run_id"], timeout, time.monotonic() - t0)
-    events.log("sandbox", command=command[:300], image=image.split("@")[0], network=network, timeout_s=timeout,
+    events.log("sandbox", key=name, command=command[:300], image=image.split("@")[0], network=network, timeout_s=timeout,
                exit=r.returncode, seconds=round(time.monotonic() - t0, 1), container=name,
                killed=r.returncode == 124)
     return r

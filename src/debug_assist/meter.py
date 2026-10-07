@@ -42,10 +42,13 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def open_run(run_id: str, cap_usd: float, sandbox_cap_s: int) -> dict:
-    """Create the run's meter once. Calling it again (resume) changes nothing: caps are fixed at the first open."""
+def open_run(run_id: str, cap_usd: float, sandbox_cap_s: int, kind: str = "run", parent: str | None = None) -> dict:
+    """Create the run's meter once. Calling it again (resume) changes nothing: caps are fixed at the first open.
+    kind: "run" (a pipeline run, counted in the north stars) or "trial" (a script exercising part of a run, never
+    counted; `parent` names the run it worked on). de-advisor review 2026-10-07: 15 of 21 meters were trials."""
+    assert kind in ("run", "trial"), kind
     _db()["meters"].update_one({"_id": run_id}, {"$setOnInsert": {
-        "cap_micro": micro(cap_usd), "spent_micro": 0, "reserved_micro": 0,
+        "cap_micro": micro(cap_usd), "spent_micro": 0, "reserved_micro": 0, "kind": kind, "parent": parent,
         "sandbox_cap_s": int(sandbox_cap_s), "sandbox_used_s": 0, "sandbox_reserved_s": 0, "opened_at": _now()}},
         upsert=True)
     return snapshot(run_id)

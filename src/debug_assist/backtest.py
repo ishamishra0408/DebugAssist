@@ -20,7 +20,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from . import ladder
+from . import events, ladder
 from .fixer import package_map, run_one
 from .github_read import api
 from .guard import VERBOSE, judged
@@ -171,6 +171,8 @@ def backtest(issue: dict, profile, base: Path, hist: Path, package_dir: str, jud
         res = run_at(hist, rep["sha"], profile, package_dir, files, focus, run_cmd)
         results.append({"commit": rep["sha"][:10], "date": rep["date"], "title": rep["title"],
                         "covers": len(g["members"]), **res})
+        events.log("backtest", key=rep["sha"], commit=rep["sha"][:10], covers=len(g["members"]), state=res["state"],
+                   judge=res.get("judge"), guard=res.get("guard"), judged_by=res.get("judged_by"), why=res.get("why"))
     at_anchor = results[0]
     before = results[1:]
     covered = sum(r["covers"] for r in before)

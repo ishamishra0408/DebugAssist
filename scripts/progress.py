@@ -316,11 +316,13 @@ def page(data, svg_light, svg_dark):
         "Demo": ["Sun: tune the demo to Devansh's room angle", "Run the demo issue 3–5 times for the speed number"],
     }
     nxt = "".join(f"<li>{html.escape(x)}</li>" for x in NEXT.get(stage_now, ["All stages done"]))
-    bh = data.get("byhand")
-    ns = (f"<p class='big'>⏱ {html.escape(bh['validated'])}</p><p class='muted'>Time to validated fix, vercel/ai #21439, "
-          f"<strong>by hand</strong> (1 run; first failing test {html.escape(bh['first_red'])}). The pipeline's own runs and "
-          "🎯 would-have-caught are not measured yet.</p>") if bh else \
-         "<p class='big'>Not measured yet</p><p class='muted'>Starts with the by-hand run of vercel/ai #21439.</p>"
+    bh, t, w = data.get("byhand"), (data.get("northstar") or {}).get("ttvf"), (data.get("northstar") or {}).get("whc")
+    vals = " and ".join(f"{x:.0f} s" for x in (t or {}).get("seconds", []))
+    ns = ((f"<p class='big'>⏱ {html.escape(vals) or 'none yet'}</p><p class='muted'>{t['reached']} of {t['pickups']} pipeline "
+           f"pickups reached a fix confirmed by two tests (vercel/ai #21439; development values). "
+           + (f"By hand: {html.escape(bh['validated'])}, a different stop rule. " if bh else "")
+           + f"</p><p class='muted'>🎯 {html.escape(w['state'])}</p>") if t else
+          "<p class='big'>Not measured yet</p><p class='muted'>No pipeline run has been picked up.</p>")
     badge = {"done": ("ok", "done"), "failing": ("bad", "failing"), "missing": ("bad", "missing")}
     thu = "".join(
         f"<tr><td>{html.escape(r['item'])}</td><td class='n'>"
@@ -423,6 +425,12 @@ def main():
             "spend": spend(), "triage": triage(), "seats": dict(seats), "n_receipts": n, "latest_run": latest_run()}
     data["thursday"] = thursday(data["tests"].pop("each"))
     data["byhand"] = byhand()
+    try:  # computed from the runs themselves (northstar.py), never typed
+        from debug_assist import northstar
+        rows = northstar.runs()
+        data["northstar"] = {"ttvf": northstar.time_to_validated_fix(rows), "whc": northstar.would_have_caught(rows)}
+    except Exception as ex:  # report, never hide
+        data["northstar"] = {"error": str(ex)[:200]}
     data["run_evidence"] = run_evidence(data["latest_run"])
     light = render(d2_source(data["stages"], data["steps"], data["seats"], "light"), 0, "light")
     dark = render(d2_source(data["stages"], data["steps"], data["seats"], "dark"), 200, "dark")

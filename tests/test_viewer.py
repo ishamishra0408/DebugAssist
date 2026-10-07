@@ -7,6 +7,7 @@ def _data(**over):
          "pr_text": "## Fix\n<script>alert(1)</script>", "pr_matches": True, "patch": "--- a/x\n+++ b/x\n-old\n+new",
          "events": [{"at": "2026-10-07T06:20:00+00:00", "step": "reproduce", "kind": "attempt", "rung": "unit", "n": 1, "outcome": "RED"}],
          "meter": {"spent_usd": 0.69, "cap_usd": 2.5, "sandbox_used_s": 49, "sandbox_cap_s": 1800}, "calls": [], "built": "now",
+         "now": "2026-10-07T06:50:00+00:00", "trials": {"ai-1-x-refix": {"n": 3, "kinds": ["fix_attempt"], "last": "x"}},
          "state": {"issue": {"repo": "ai", "number": 1, "title": "<img src=x onerror=alert(1)>"}, "issue_url": "u",
                    "triage": {"x": 1}, "repro": {"status": "REPRODUCED", "rung": "unit", "confirmed": True},
                    "attempts": [{"step": "reproduce", "n": 1, "rung": "unit", "outcome": "RED", "evidence": "AssertionError: x", "test_path": "a/b.test.ts"}],
@@ -38,3 +39,9 @@ def test_steps_read_from_the_state():
                            "log": ["read_issue: x", "reproduce: x", "write_fix: STOPPED FIX NOT VALIDATED"]}, next=[], interrupt={})
     r2 = {r["key"]: r["status"] for r in viewer.step_rows(stopped)}
     assert r2["write_fix"] == "stopped" and r2["why_it_shipped"] == "not reached"
+
+
+def test_freshness_and_trials_are_shown():
+    page = viewer.render(_data())
+    assert "30 min ago" in page and "ai-1-x-refix: 3 events" in page and "never counted in the north stars" in page
+    assert "NOT SCORED" in page
