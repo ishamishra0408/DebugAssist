@@ -161,7 +161,8 @@ def gather(issue: dict, checkout: Path, cause_file: str, fix_patch: str) -> dict
     pkg_dir = path.split("/")[1]
     for i, c in enumerate([origin] + shaping):
         pr = pr_for(owner, repo, c["sha"]) if i < PR_CAP else None
-        entry = {"role": "written" if i == 0 else "changed the line", "commit": c["sha"][:10], "date": c["date"],
+        entry = {"role": "written" if i == 0 else "changed the line", "commit": c["sha"][:10], "sha": c["sha"],
+                 "date": c["date"],
                  "title": c["title"]}
         if pr:
             ev["_names"] |= set(pr.pop("_names"))

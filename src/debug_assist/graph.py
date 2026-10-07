@@ -29,8 +29,8 @@ from langgraph.checkpoint.mongodb import MongoDBSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from . import events, fixer, guard, ladder, story, testwriter
-from .checkout import run_copy
+from . import backtest, events, fixer, guard, ladder, story, testwriter
+from .checkout import base_path, run_copy
 from .config import CFG, REPRO_ATTEMPT_CAP
 from .github_read import get_issue
 from .issue_text import TRIAGE_QUESTIONS, clean
@@ -398,9 +398,33 @@ def test_past_bugs(s: RunState):
         state = "CANDIDATES FOUND (back-test runs Friday)"
     else:
         state = "NO PAST SIBLING FOUND"
-    backtest = {"state": state, "searched_conditions": searched, "candidates": hits[:3],
-                "would_have_caught": None, "false_alarms": None}
-    return {"backtest": backtest, "log": [f"test_past_bugs: {backtest['state']} ({len(hits)} candidates)"]}
+    bt = _backtest_guard(s)
+    result = {"state": state, "searched_conditions": searched, "candidates": hits[:3],
+              "would_have_caught": bt.get("would_have_caught") if bt else None,
+              "false_alarms": bt.get("false_alarms") if bt else None, "detail": bt}
+    fa = (bt or {}).get("false_alarms") or {}
+    if bt and fa:
+        note = (f"; back-test at the anchor: {bt['anchor']['state']}; before it: fired {fa['fired']}, quiet {fa['quiet']}, "
+                f"bug already there {fa['bug_already_there']}, unevaluable {fa['unevaluable']} over "
+                f"{fa['commits_covered']} of {fa['window']} commits")
+    else:
+        note = "; back-test not run: " + ((bt or {}).get("why") or "no guard or no anchor commit")
+    return {"backtest": result, "log": [f"test_past_bugs: {state} ({len(hits)} candidates){note}"]}
+
+
+def _backtest_guard(s: RunState) -> dict | None:
+    """🎯 would-have-caught + false alarms (backtest.py): the guard at the commit that wrote the bug, and before it."""
+    g = s.get("guard") or {}
+    w = ((s.get("second_story") or {}).get("evidence") or {}).get("written") or {}
+    if g.get("status") != "CATCHES THE BUG" or not w.get("sha"):
+        return None
+    prof = PROFILES[s["profile"]["repo"]]
+    judge = s["repro"].get("oracle_test") or s["repro"]["failing_test"]
+    fixed = Path(s["repro"]["checkout"])
+    return backtest.backtest(s["issue"], prof, base_path(prof), run_dir(s) / "history", g["repo_path"].split("/")[1],
+                             judge=(judge, (fixed / judge).read_text()),
+                             guard_file=(g["repo_path"], Path(g["path"]).read_text()), anchor_sha=w["sha"],
+                             focus=s.get("focus") or s["issue"]["title"])
 
 
 # ── Phase 3: Ship it ────────────────────────────────────────────────────────────────────────────
@@ -445,6 +469,21 @@ def fix_lines(cause: dict, fix: dict, patch_path: Path) -> list[str]:
             "<details><summary>Patch</summary>", "", "```diff", patch.rstrip(), "```", "</details>", ""]
 
 
+def backtest_lines(b: dict) -> list[str]:
+    d = (b or {}).get("detail") or {}
+    if not d.get("anchor"):
+        return [f"Past bugs of this kind: {b.get('state')}. Back-test: not run."]
+    fa, a = d["false_alarms"], d["anchor"]
+    caught = {True: "**yes**: the guard fails there", False: "**no**: the guard passes there",
+              None: f"unevaluable ({a.get('why', 'the tests could not run on that code')})"}[d["would_have_caught"]]
+    return [f"Past bugs of this kind: {b.get('state')}.",
+            f"Back-test, would it have caught this bug when it was written (`{a['sha']}`)? {caught}.",
+            f"False alarms on the {fa['window']} commits before it: fired on **{fa['fired']}**; quiet on {fa['quiet']}; "
+            f"the bug was already there on {fa['bug_already_there']} (the guard firing there is correct); "
+            f"unevaluable on {fa['unevaluable']}; not run on {fa['not_run']} "
+            f"({fa['groups_run']} groups run, commits grouped by whether they touched the guard's packages)."]
+
+
 def compose_pr_body(s: RunState) -> str:
     """Deterministic (no timestamps): the approval fingerprint must match on resume."""
     i, g, b = s["issue"], s["guard"], s["backtest"]
@@ -466,7 +505,7 @@ def compose_pr_body(s: RunState) -> str:
            "; ".join(f"`{c}`" for c in g["open_cases"])] if g.get("open_cases") else []),
         *([f"The same code exists in {len(g['siblings'])} other file(s), not changed here: " +
            ", ".join(f"`{x}`" for x in g["siblings"][:10])] if g.get("siblings") else []),
-        f"Would-have-caught: {b['state']}",
+        *backtest_lines(b),
         "",
         "Does this match how it looked when the original change was written? Corrections welcome.",
         "",
