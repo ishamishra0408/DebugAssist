@@ -57,3 +57,11 @@ def test_node_sandbox_sees_no_host_secrets(tmp_path, monkeypatch):
     from debug_assist.sandbox import secrets_visible
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-canary-should-never-leak")
     assert secrets_visible(tmp_path, NODE_IMAGE) == []
+
+
+def test_vercel_sandbox_fails_fast_instead_of_hanging():
+    """pnpm re-installs before a run when node_modules is out of sync; offline that retried for 10+ minutes
+    (caught 2026-10-06). The profile makes it fail at once, by name."""
+    env = profile_for("vercel", "ai").env
+    assert "pnpm_config_verify_deps_before_run=error" in env
+    assert "COREPACK_HOME=/work/" in env  # fresh container per command: caches must live in the mounted checkout

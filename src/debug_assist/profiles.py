@@ -24,7 +24,10 @@ class RepoProfile:
 # vercel/ai, proven 2026-10-06 at e7f55a4 in NODE_IMAGE: install 55 s, build 63 s, then provider-utils 1,064, gateway 645
 # and ai 4,252 tests all pass offline. Everything pnpm needs lives under /work, because each command is a fresh container:
 # corepack's pnpm (COREPACK_HOME), a `pnpm` on PATH (package scripts call it by name), and the package store.
+# pnpm_config_verify_deps_before_run=error: caught 2026-10-06, pnpm re-installs before any `pnpm run` when node_modules is
+# out of sync, and with the network off that retries for 10+ minutes instead of failing. `error` fails at once, by name.
 _PNPM = ("export COREPACK_HOME=/work/.corepack COREPACK_ENABLE_DOWNLOAD_PROMPT=0 CI=1 NO_COLOR=1 PATH=/work/.bin:$PATH"
+         " pnpm_config_verify_deps_before_run=error"
          " && mkdir -p /work/.bin && corepack enable --install-directory /work/.bin pnpm && ")
 
 
