@@ -3,7 +3,10 @@
 # the commit was chained on `pytest | tail`, which reports tail's exit code, not pytest's.
 # Skip once, on purpose only: git commit --no-verify
 echo "pre-commit: running the test suite…"
-if ! uv run pytest -q -p no:cacheprovider > /tmp/debug-assist-precommit.txt 2>&1; then
+# git sets GIT_INDEX_FILE (and friends) for hooks; the tests make throwaway git repos and must not inherit them,
+# or their files land in THIS commit's index (2026-10-07: `git commit -a` failed with "invalid object").
+if ! env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE -u GIT_OBJECT_DIRECTORY -u GIT_PREFIX \
+    uv run pytest -q -p no:cacheprovider > /tmp/debug-assist-precommit.txt 2>&1; then
   tail -15 /tmp/debug-assist-precommit.txt
   echo "pre-commit: REFUSED: tests fail (full output: /tmp/debug-assist-precommit.txt)"
   exit 1
