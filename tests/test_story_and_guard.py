@@ -197,3 +197,7 @@ def test_the_story_starts_from_the_oldest_of_all_lines_the_fix_changed(monkeypat
     fake_github(monkeypatch, versions, {"c2": _pr(14565, "a1"), "c3": _pr(14760, "a2")})
     ev = story.gather({"owner": "o", "repo": "r", "number": 1, "reporter": "r1", "labels": []}, tmp_path, "packages/p/src/x.ts", patch)
     assert ev["written"]["pr"]["number"] == 14565 and "also traced" in " ".join(ev["stops"])
+
+
+def test_case_names_come_back_unescaped():
+    assert guard.cases(" ✓ f.test.ts &gt; d &gt; case 2ms\n") == {"passed": ["f.test.ts > d > case"], "failed": []}

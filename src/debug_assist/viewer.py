@@ -19,6 +19,7 @@ STEPS = [("read_issue", "Read issue", "triage"), ("reproduce", "Reproduce", "rep
          ("lasting_guard", "Lasting guard", "guard"), ("test_past_bugs", "Past bugs", "backtest"),
          ("approval", "Your approval", "approval"), ("open_pr", "Open PR", "published")]
 e = lambda x: html.escape(str(x if x is not None else ""))
+GOOD_EXITS = {"READY FOR YOU TO PUBLISH"}  # a finished run, not a failure: shown green
 
 
 def gather(run_id: str) -> dict:
@@ -91,7 +92,8 @@ def render(d: dict) -> str:
     issue = s.get("issue") or {}
     outcome = s.get("outcome") or {}
     live = bool(d["next"]) and not d["interrupt"] and not outcome
-    status = (f"STOPPED · {outcome.get('exit')}" if outcome else "Waiting for your approval" if d["interrupt"]
+    good = outcome.get("exit") in GOOD_EXITS
+    status = (outcome.get("exit") if good else f"STOPPED · {outcome.get('exit')}" if outcome else "Waiting for your approval" if d["interrupt"]
               else "Running" if live else "Finished")
     clock = s.get("fix_clock") or {}
     judges = clock.get("judges")
@@ -195,10 +197,10 @@ button {{ font:inherit; font-size:13px; padding:5px 12px; border:1px solid var(-
 </style></head><body><main>
 <header>
   <h1>{e(issue.get('repo', ''))}#{e(issue.get('number', ''))}: {e(issue.get('title', ''))}</h1>
-  <p class="sub"><span class="badge {'stopped' if outcome else 'running' if live else ''}">{e(status)}</span>
+  <p class="sub"><span class="badge {'running' if (live or good) else 'stopped' if outcome else ''}">{e(status)}</span>
    · run <code>{e(d['run_id'])}</code> · {e(model)} · <a href="{e(s.get('issue_url', ''))}">issue</a> · built {e(d['built'])}{' · refreshing' if live else ''}</p>
   {f'<p class="sub"><b>Focus:</b> {e((s.get("focus") or "")[:400])}</p>' if s.get('focus') else ''}
-  {f'<p class="warnbox">{e(outcome.get("why"))}</p>' if outcome else ''}
+  {f'<p class="{"note" if good else "warnbox"}">{e(outcome.get("why"))}</p>' if outcome else ''}
 </header>
 <section class="strip">
   <div class="stat"><b>{e(clock_txt)}</b><span>⏱ time to validated fix · {e(clock_sub)}</span></div>

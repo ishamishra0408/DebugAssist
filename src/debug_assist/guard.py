@@ -14,6 +14,7 @@ whose correct fix still left two neighbouring triggers (an error mid-stream, the
 The guard file is kept in the run folder, not left in the fix: a test that fails on purpose doesn't belong in a PR's
 green suite until the open cases are fixed.
 """
+import html
 import re
 import subprocess
 from pathlib import Path
@@ -117,7 +118,7 @@ def _first_error(block: str) -> str:
 
 def cases(output: str) -> dict:
     """Per-case results from vitest's default reporter: {"passed": [...], "failed": [...]}."""
-    clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    clean = html.unescape(re.sub(r"\x1b\[[0-9;]*m", "", output))  # vitest's verbose reporter prints &gt; for '>'
     passed = re.findall(r"^\s*✓\s+(.+?)(?:\s+\d+ms)?$", clean, re.M)
     failed = re.findall(r"^\s*[×✗]\s+(.+?)(?:\s+\d+ms)?$", clean, re.M)
     return {"passed": passed, "failed": failed}
