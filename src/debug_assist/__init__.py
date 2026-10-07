@@ -18,6 +18,7 @@
 --no-view   run/resume: don't start the localhost viewer or open the run's page
 """
 import json
+import re
 import sys
 from contextlib import ExitStack
 from datetime import datetime
@@ -159,7 +160,9 @@ def main() -> None:
     app = build()
     if cmd == "run":
         _, repo, number = parse_issue_url(arg)
-        run_id = f"{repo}-{number}-{datetime.now():%Y%m%d-%H%M%S}"
+        run_id = opts.get("run-id") or f"{repo}-{number}-{datetime.now():%Y%m%d-%H%M%S}"  # the home page names its runs
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", run_id) or app.get_state({"configurable": {"thread_id": run_id}}).values:
+            sys.exit(f"run id {run_id!r} is not usable (bad characters, or a run with that id exists)")
     else:
         run_id = arg
     cfg = {"configurable": {"thread_id": run_id}}

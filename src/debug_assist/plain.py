@@ -1,0 +1,100 @@
+"""Every word the operator reads on DebugAssistAgent's pages, in plain English, in one place.
+
+Rule (Isha, 2026-10-07): no fluff, no jargon. Say what happened and what to do. Engineer detail lives in the
+"Details for engineers" section of the run page, never in these words.
+"""
+
+NAME = "DebugAssistAgent"
+
+# The 9 steps: (graph node, what the operator sees, what the step gives back)
+STEPS = [("read_issue", "Read the issue", "is it a real bug?"),
+         ("reproduce", "Show the bug", "a test that fails"),
+         ("find_cause", "Find the cause", "file and lines"),
+         ("write_fix", "Fix it", "fix that passes 2 tests"),
+         ("why_it_shipped", "Why it slipped", "short report"),
+         ("lasting_guard", "Guard similar bugs", "a new check"),
+         ("test_past_bugs", "Check old code", "older versions tested"),
+         ("approval", "Your OK", "you approve"),
+         ("open_pr", "PR ready", "PR text saved")]
+LABEL = {k: label for k, label, _ in STEPS}
+
+# How a run ended, in words an operator can act on
+EXITS = {
+    "READY FOR YOU TO PUBLISH": "Done. The pull request text is ready for you to send.",
+    "NEEDS PERSON": "Stopped. A person needs to read this issue first.",
+    "NOT A DEFECT": "Stopped. This does not look like a bug.",
+    "NEVER REPRODUCED": "Stopped. It could not make the bug happen, so it did not try to fix it.",
+    "CAUSE NOT FOUND": "Stopped. It could not find the code that causes the bug.",
+    "FIX NOT VALIDATED": "Stopped. None of its fixes passed the tests.",
+    "TEST FLAWED": "Stopped. The test that shows the bug turned out to be wrong.",
+    "STORY NOT WRITTEN": "Stopped. It could not explain why the bug slipped through.",
+    "GUARD NOT WRITTEN": "Stopped. It could not write a check for similar bugs.",
+    "REJECTED": "Stopped. You said no to the pull request.",
+}
+
+TEST_KIND = {"unit": "quick test", "integration": "recorded-stream test", "end_to_end": "full test"}
+TRY_RESULT = {"RED": "bug shown", "GREEN": "bug not shown", "ERROR": "test broke for another reason"}
+OLD_CODE = {"CAUGHT": "check caught the bug", "MISSED": "check missed the bug", "FALSE ALARM": "false alarm",
+            "QUIET": "no bug, no alarm", "UNEVALUABLE": "could not be tested"}
+
+
+def exit_text(exit_name: str | None) -> str:
+    return EXITS.get(exit_name or "", f"Stopped ({str(exit_name or 'unknown reason').lower()}).")
+
+
+def happened(x: dict) -> str | None:
+    """One thing that happened, in plain words, or None for events the operator doesn't need one by one."""
+    k = x.get("kind")
+    if k == "attempt":
+        return f"Try {x.get('n')} ({TEST_KIND.get(x.get('rung'), x.get('rung'))}): {TRY_RESULT.get(x.get('outcome'), x.get('outcome'))}"
+    if k == "fix_attempt":
+        return f"Fix try {x.get('n')}: {'passed all tests' if x.get('ok') else 'did not pass'}"
+    if k == "holdout":
+        return "Second test: passes on the fix" if x.get("on_fixed") == "GREEN" else "Second test: fails on the fix"
+    if k == "guard_try":
+        return f"Check try {x.get('n')}: {'kept' if x.get('result') == 'accepted' else 'needs another try'}"
+    if k == "backtest":
+        return f"Old version {str(x.get('commit', ''))[:7]}: {OLD_CODE.get(x.get('state'), str(x.get('state')).lower())}"
+    if k == "embed":
+        return "Saved, so similar bugs can be found later"
+    if k == "approval":
+        return "You approved" if x.get("status") == "APPROVED" else "You said no"
+    if k == "laya":
+        ans = x.get("answers") or {}
+        if "is_defect" in ans:
+            return "Triage: looks like a real bug" if ans["is_defect"].get("choice") in ("yes", True) else "Triage: may not be a bug"
+        return "Triage done"
+    return None
+
+
+def activity(x: dict) -> str:
+    """One line of the activity list."""
+    k = x.get("kind")
+    if k == "model_call":
+        model = str(x.get("model", "")).split("/")[-1]
+        cost = x.get("cost_usd", x.get("charged_usd")) or 0
+        return f"Asked the AI ({model}), ${cost:.4f}" + ("" if x.get("ok", True) else ", it failed")
+    if k == "sandbox":
+        cmd, ok = str(x.get("command", "")), x.get("exit") == 0
+        what = "Built the code" if " build" in cmd else "Installed packages" if " install" in cmd else "Ran tests"
+        if what == "Ran tests":
+            return f"Ran tests: {'all passed' if ok else 'some failed'} ({x.get('seconds')} s)"
+        return f"{what}: {'done' if ok else 'failed'} ({x.get('seconds')} s)"
+    if k == "step":
+        ended = x.get("ended", "ok")
+        tail = "" if ended == "ok" else " (waiting for you)" if ended == "paused for approval" else f" ({exit_text(ended)})"
+        return f"Step finished in {x.get('seconds'):.0f} s{tail}" if isinstance(x.get("seconds"), (int, float)) else "Step finished"
+    return happened(x) or k or "activity"
+
+
+def counts(evs: list[dict]) -> str:
+    calls = sum(x.get("kind") == "model_call" for x in evs)
+    runs = sum(x.get("kind") == "sandbox" for x in evs)
+    parts = [f"{calls} AI call{'s' * (calls != 1)}"] * bool(calls) + [f"{runs} test run{'s' * (runs != 1)}"] * bool(runs)
+    return " · ".join(parts)
+
+
+def duration(secs: float | None) -> str:
+    if secs is None or secs < 0:
+        return ""
+    return f"{secs:.0f} s" if secs < 90 else f"{secs / 60:.0f} min" if secs < 5400 else f"{secs / 3600:.1f} h"
