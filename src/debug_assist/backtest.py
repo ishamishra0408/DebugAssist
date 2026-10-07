@@ -84,9 +84,19 @@ def prepare_history(base: Path, hist: Path, repo_slug: str, anchor_sha: str, dep
         for d in (".pnpm-store", ".corepack"):  # reuse the base's downloads (APFS copy-on-write)
             if (base / d).exists() and not (hist / d).exists():
                 subprocess.run(["cp", "-cR", str(base / d), str(hist / d)], check=True, timeout=900)
+    (hist / ".da-logs").mkdir(exist_ok=True)  # live run 2026-10-07: without it every redirect failed as "install failed"
     r = _git(hist, "fetch", "-q", f"--depth={depth}", "origin", anchor_sha, timeout=1200)
     if r.returncode != 0:
         raise RuntimeError(f"could not fetch history: {r.stderr[-400:]}")
+
+
+def _tail(log: Path) -> str:
+    """The last meaningful line of a log, so an UNEVALUABLE commit says why."""
+    if not log.exists():
+        return "(no log written)"
+    lines = [l.strip() for l in log.read_text(errors="ignore").splitlines() if l.strip()]
+    errs = [l for l in lines if "ERR" in l or "rror" in l]
+    return ((errs or lines or ["(empty log)"])[-1])[:220]
 
 
 def run_at(hist: Path, sha: str, profile, package_dir: str, files: dict, focus: str, run_cmd) -> dict:
@@ -102,12 +112,13 @@ def run_at(hist: Path, sha: str, profile, package_dir: str, files: dict, focus: 
         inst = run_cmd(profile.env + f"pnpm install --frozen-lockfile --store-dir /work/.pnpm-store --filter '{name}...'"
                        " > /work/.da-logs/bt-install.txt 2>&1", hist, network=True, timeout=900, image=profile.image)
         if inst.returncode != 0:
-            return {"state": "UNEVALUABLE", "why": "install failed at this commit"}
+            return {"state": "UNEVALUABLE", "why": "install failed at this commit: " + _tail(hist / ".da-logs/bt-install.txt")}
         if profile.build_cmd:
             b = run_cmd(profile.env + f"pnpm --filter '{name}^...' build > /work/.da-logs/bt-build.txt 2>&1", hist,
                         network=False, timeout=900, image=profile.image)
             if b.returncode != 0:
-                return {"state": "UNEVALUABLE", "why": "the guard package's dependencies did not build at this commit"}
+                return {"state": "UNEVALUABLE", "why": "the guard package's dependencies did not build at this commit: "
+                        + _tail(hist / ".da-logs/bt-build.txt")}
         out = {}
         for role, (rel, content) in files.items():
             (hist / rel).write_text(content)
