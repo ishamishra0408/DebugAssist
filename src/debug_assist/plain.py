@@ -7,15 +7,15 @@ Rule (Isha, 2026-10-07): no fluff, no jargon. Say what happened and what to do. 
 NAME = "DebugAssistAgent"
 
 # The 9 steps: (graph node, what the operator sees, what the step gives back)
-STEPS = [("read_issue", "Read the issue", "is it a real bug?"),
-         ("reproduce", "Show the bug", "a test that fails"),
-         ("find_cause", "Find the cause", "file and lines"),
-         ("write_fix", "Fix it", "fix that passes 2 tests"),
-         ("why_it_shipped", "Why it slipped", "short report"),
-         ("lasting_guard", "Guard similar bugs", "a new check"),
-         ("test_past_bugs", "Check old code", "older versions tested"),
-         ("approval", "Your OK", "you approve"),
-         ("open_pr", "PR ready", "PR text saved")]
+STEPS = [("read_issue", "Read the issue", "Decides whether it is a real bug"),
+         ("reproduce", "Show the bug", "Writes a test that fails because of the bug"),
+         ("find_cause", "Find the cause", "Finds the file and lines that cause it"),
+         ("write_fix", "Fix it", "Writes a fix that passes 2 separate tests"),
+         ("why_it_shipped", "Why it slipped", "Explains how the bug got past review"),
+         ("lasting_guard", "Guard similar bugs", "Writes a check for bugs like this one"),
+         ("test_past_bugs", "Check old code", "Runs that check on older versions"),
+         ("approval", "Your OK", "Waits for you to approve"),
+         ("open_pr", "PR ready", "Saves the pull request text for you")]
 LABEL = {k: label for k, label, _ in STEPS}
 
 # How a run ended, in words an operator can act on
@@ -98,3 +98,35 @@ def duration(secs: float | None) -> str:
     if secs is None or secs < 0:
         return ""
     return f"{secs:.0f} s" if secs < 90 else f"{secs / 60:.0f} min" if secs < 5400 else f"{secs / 3600:.1f} h"
+
+
+def result(key: str, s: dict) -> str | None:
+    """What a finished step found, in one plain sentence, from the run's saved state. None when there is nothing to say."""
+    from pathlib import Path
+    if key == "read_issue" and isinstance((s.get("triage") or {}).get("is_defect_p"), (int, float)):
+        p = s["triage"]["is_defect_p"]
+        return f"Looks like a real bug ({p:.0%} sure)" if p >= .5 else f"May not be a bug (only {p:.0%} sure it is)"
+    if key == "reproduce" and (r := s.get("repro") or {}).get("status") == "REPRODUCED":
+        return (f"Bug shown on try {r.get('attempts_used') or 1}"
+                + (", then confirmed on a recorded stream" if r.get("confirmed") else ""))
+    if key == "find_cause" and (c := s.get("cause") or {}).get("file"):
+        a, b = (c.get("lines") or [None, None])[:2]
+        return f"In {Path(c['file']).name}" + (f", lines {a}–{b}" if a else "")
+    if key == "write_fix" and (f := s.get("fix") or {}).get("status"):
+        j = (s.get("fix_clock") or {}).get("judges")
+        return ("Fix passes both tests" if f["status"] == "VALIDATED" and j == 2 else
+                "Fix passes only 1 of 2 tests" if f["status"] == "VALIDATED" else "No fix passed the tests")
+    if key == "why_it_shipped" and (s.get("second_story") or {}).get("text"):
+        return "Report written"
+    if key == "lasting_guard" and (g := s.get("guard") or {}).get("on_fixed") is not None:
+        of = g["on_fixed"]
+        n = sum(len(of.get(k, [])) for k in ("passed", "failed", "broken"))
+        sib = len(g.get("siblings") or [])
+        return f"New check with {n} cases" + (f"; the same code is in {sib} other files" if sib else "")
+    if key == "test_past_bugs" and (b := (s.get("backtest") or {}).get("detail") or {}).get("false_alarms"):
+        return f"Tested {b['false_alarms'].get('commits_covered', b['false_alarms'].get('window', '?'))} older versions"
+    if key == "approval" and (a := s.get("approval") or {}).get("status"):
+        return "You approved" if a["status"] == "APPROVED" else "You said no"
+    if key == "open_pr" and s.get("published"):
+        return "Pull request text saved. Nothing posted."
+    return None

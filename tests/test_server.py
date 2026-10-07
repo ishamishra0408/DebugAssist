@@ -37,7 +37,7 @@ def test_the_viewer_listens_on_localhost_only_and_only_reads(live):
     assert live.server_address[0] == "127.0.0.1"
     assert _get(live, "/health") == (200, "debug-assist viewer")
     code, page = _get(live, "/run/ai-1-x")
-    assert code == 200 and 'data-k="node-0"' in page and "fetch(u" in page and 'http-equiv="refresh"' not in page
+    assert code == 200 and 'data-k="step-0"' in page and "fetch(u" in page and 'http-equiv="refresh"' not in page
     assert "method:" not in page and "<form" not in page  # the page only GETs its own address
     for method in ("PUT", "DELETE"):
         assert _get(live, "/run/ai-1-x", method)[0] == 501

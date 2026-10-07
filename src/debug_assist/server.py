@@ -36,6 +36,7 @@ HEALTH = b"debug-assist viewer"
 TOKEN = secrets.token_urlsafe(24)  # new every time the server starts; only this server's pages carry it
 TOKEN_HEADER = "X-DebugAssistAgent-Token"
 _plans: dict = {}
+STATIC_FILES = {"app.css": "text/css; charset=utf-8", "topo.js": "text/javascript; charset=utf-8"}
 
 
 def url(run_id: str | None = None, port: int = PORT) -> str:
@@ -151,7 +152,12 @@ def _result(snap, v: dict) -> str:
     return f"Interrupted at: {step}" if age > viewer.QUIET_S else f"Working: {step}"
 
 
+STATE_ICON = {"Done": "done", "Waiting": "waiting", "Working": "running", "Interrupted": "waiting",
+              "Stopped": "stopped", "Could not start": "stopped"}
+
+
 def home_page() -> str:
+    from . import icons
     e = viewer.e
     rows = []
     for rid in _runs():
@@ -159,66 +165,84 @@ def home_page() -> str:
         if got is None:
             continue
         m = re.search(r"-(\d{8})-(\d{6})$", rid)
-        when = datetime.strptime("".join(m.groups()), "%Y%m%d%H%M%S").strftime("%d %b %H:%M") if m else ""
+        when = datetime.strptime("".join(m.groups()), "%Y%m%d%H%M%S").strftime("%d %b, %H:%M") if m else ""
         issue, result = got
-        rows.append(f'<tr><td>{e(when)}</td><td>{e(issue or re.sub(r"-[0-9]{8}-[0-9]{6}$", "", rid))}</td><td>{e(result)}</td>'
-                    f'<td><a href="/run/{e(rid)}">Open</a> · <a href="/replay/{e(rid)}">Replay</a></td></tr>')
+        st = next((v for k, v in STATE_ICON.items() if result.startswith(k)), "pending")
+        ic = icons.STATE[st]() if st in icons.STATE else icons.mark(18)
+        rows.append(f'<li><a class="row {st}" href="/run/{e(rid)}"><span class="ic">{ic}</span><span class="t">'
+                    f'<b>{e(issue or re.sub(r"-[0-9]{8}-[0-9]{6}$", "", rid))}</b><span>{e(result)}</span></span>'
+                    f'<span class="tr">{e(when)}{icons.chevron()}</span></a></li>')
         if len(rows) == 25:
             break
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{plain.NAME}</title>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<style>{viewer._CSS}
-.form {{ background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:16px; display:grid; gap:14px }}
-.form label.q {{ font-weight:600 }} .row {{ display:flex; gap:8px; flex-wrap:wrap }}
-.row input {{ flex:1 1 320px; min-width:0; font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg) }}
-.choice {{ display:flex; gap:8px; align-items:flex-start; padding:6px 0 }} .choice small {{ display:block; color:var(--muted) }}
-button.go {{ font-size:15px; padding:8px 16px; background:var(--accent); color:#fff; border-color:var(--accent) }}
-button:disabled {{ opacity:.5; cursor:default }} .err {{ color:var(--bad) }} #issue {{ display:none }}
-</style></head><body><main>
-<nav class="top"><b>{plain.NAME}</b></nav>
-<section class="form" aria-label="Start a run">
-  <h2>Start a run</h2>
-  <div><label class="q" for="link">1. Paste the GitHub issue link</label>
-    <div class="row"><input id="link" type="url" placeholder="https://github.com/owner/repo/issues/123" autocomplete="off">
-    <button type="button" id="check">Check</button></div>
-    <p class="err" id="err" role="alert"></p></div>
-  <div id="issue">
-    <p><b id="ititle"></b><br><span class="note" id="imeta"></span></p>
-    <p class="q"><b>2. Which problem should it fix?</b></p><div id="sections"></div>
-    <p class="q"><b>3. Which AI?</b></p>
-    <label class="choice"><input type="radio" name="ai" value="standard" checked><span>Standard<small>A few cents a run. Weaker: it often cannot fix the bug.</small></span></label>
-    <label class="choice"><input type="radio" name="ai" value="opus"><span>Claude Opus<small>About $0.70 a run. Stronger.</small></span></label>
-    <p><button type="button" class="go" id="start">Start the run</button></p>
-    <p class="note">It never posts anything to GitHub. When it finishes, you approve the result yourself, in your terminal.</p>
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>{plain.NAME}</title><meta name="color-scheme" content="dark light">
+<link rel="stylesheet" href="/static/app.css">
+</head><body>
+<canvas id="topo" aria-hidden="true"></canvas><div class="ambient s-idle" aria-hidden="true"></div>
+<div class="scrim top" aria-hidden="true"></div>
+<nav class="toolbar" aria-label="{plain.NAME}">
+  <div class="tgroup glass"><a class="brand" href="/">{icons.mark()}<span>{plain.NAME}</span></a></div>
+  <div class="tgroup glass"><a class="tbtn" href="#runs" aria-label="Runs">{icons.list_(16)}<span class="lbl">Runs</span></a></div>
+</nav>
+<main>
+<header class="hero">
+  <h1>Start a run</h1>
+  <p class="lede">Paste a GitHub issue. It shows the bug, fixes it, and waits for your OK. It never posts anything to GitHub.</p>
+</header>
+<section class="group" aria-labelledby="h-issue">
+  <h2 id="h-issue">GitHub issue</h2>
+  <div class="sect">
+    <div class="field"><input id="link" type="url" inputmode="url" placeholder="https://github.com/owner/repo/issues/123" autocomplete="off" aria-label="GitHub issue link">
+      <button type="button" class="btn glass" id="check">Check</button></div>
+    <div class="issue-card" id="card" hidden><b id="ititle"></b><span id="imeta"></span></div>
   </div>
+  <p class="err" id="err" role="alert"></p>
 </section>
-<section><h2>Runs</h2><div class="scroll"><table><tr><th>Started</th><th>Issue</th><th>Result</th><th></th></tr>{''.join(rows) or '<tr><td colspan="4">No runs yet</td></tr>'}</table></div></section>
+<div id="more" hidden>
+  <section class="group" aria-labelledby="h-sec"><h2 id="h-sec">Which problem should it fix?</h2>
+    <div class="sect" id="sections" role="radiogroup" aria-labelledby="h-sec"></div></section>
+  <section class="group" aria-labelledby="h-ai" style="margin-top:28px"><h2 id="h-ai">Which AI?</h2>
+    <div class="seg glass" role="radiogroup" aria-labelledby="h-ai">
+      <label><input type="radio" name="ai" value="standard" checked>Standard<small>A few cents</small></label>
+      <label><input type="radio" name="ai" value="opus">Claude Opus<small>About $0.70</small></label>
+    </div>
+    <p class="foot" id="aifoot">Cheaper. It often cannot fix the bug.</p></section>
+  <div class="start" style="margin-top:22px"><button type="button" class="btn glass prominent" id="start">{icons.play(16)}<span>Start the run</span></button></div>
+</div>
+<section class="group" id="runs" aria-labelledby="h-runs"><h2 id="h-runs">Runs</h2>
+  <div class="sect"><ul class="rows">{''.join(rows) or '<li class="row pending"><span class="ic"></span><span class="t"><span>No runs yet</span></span></li>'}</ul></div></section>
 </main>
+<script src="/static/topo.js" defer></script>
 <script>
 const TOKEN = {json.dumps(TOKEN)}, H = {{ "{TOKEN_HEADER}": TOKEN }};
 const $ = id => document.getElementById(id);
 const fail = msg => {{ $("err").textContent = msg; }};
+const FOOT = {{ standard: "Cheaper. It often cannot fix the bug.", opus: "Stronger. About $0.70 a run, taken from your AI budget." }};
+document.querySelectorAll('input[name="ai"]').forEach(r => r.addEventListener("change", () => {{ $("aifoot").textContent = FOOT[r.value]; }}));
+$("link").addEventListener("keydown", ev => {{ if (ev.key === "Enter") $("check").click(); }});
 $("check").onclick = async () => {{
-  fail(""); $("issue").style.display = "none"; $("check").disabled = true;
+  fail(""); $("more").hidden = true; $("card").hidden = true; $("check").disabled = true;
   try {{
     const r = await fetch("/api/issue?url=" + encodeURIComponent($("link").value.trim()), {{ headers: H }});
     const j = await r.json();
     if (!r.ok) return fail(j.error || "Something went wrong.");
     $("ititle").textContent = j.title;
-    $("imeta").textContent = `Issue #${{j.number}} in ${{j.owner}}/${{j.repo}} · ${{j.state === "open" ? "open" : "closed"}}`;
+    $("imeta").textContent = `${{j.owner}}/${{j.repo}} · Issue #${{j.number}} · ${{j.state === "open" ? "Open" : "Closed"}}`;
+    $("card").hidden = false;
     const box = $("sections"); box.textContent = "";
     const add = (value, title, small, checked) => {{
       const l = document.createElement("label"); l.className = "choice";
       const i = document.createElement("input"); i.type = "radio"; i.name = "sec"; i.value = value; i.checked = checked;
-      const s = document.createElement("span"); s.textContent = title;
-      if (small) {{ const m = document.createElement("small"); m.textContent = small; s.appendChild(m); }}
-      l.append(i, s); box.appendChild(l);
+      const t = document.createElement("span"); t.className = "t";
+      const b = document.createElement("b"); b.textContent = title; t.appendChild(b);
+      if (small) {{ const m = document.createElement("span"); m.textContent = small; t.appendChild(m); }}
+      const tick = document.createElement("span"); tick.className = "tick"; tick.innerHTML = {json.dumps(icons.check())};
+      l.append(i, t, tick); box.appendChild(l);
     }};
-    add("", "The problem in the issue title", j.title, true);
-    j.sections.forEach(x => add(x.heading, `The section "${{x.heading}}"`, x.preview + (x.preview.length >= 180 ? "…" : ""), false));
-    $("issue").style.display = "block";
-  }} catch (ex) {{ fail("Could not reach DebugAssistAgent. Is it still running?"); }}
+    add("", "The problem in the title", j.title, true);
+    j.sections.forEach(x => add(x.heading, x.heading, x.preview, false));
+    $("more").hidden = false;
+  }} catch (ex) {{ fail("Could not reach {plain.NAME}. Is it still running?"); }}
   finally {{ $("check").disabled = false; }}
 }};
 $("start").onclick = async () => {{
@@ -230,7 +254,7 @@ $("start").onclick = async () => {{
     const j = await r.json();
     if (!r.ok) {{ $("start").disabled = false; return fail(j.error || "Something went wrong."); }}
     location.href = j.page;
-  }} catch (ex) {{ $("start").disabled = false; fail("Could not reach DebugAssistAgent. Is it still running?"); }}
+  }} catch (ex) {{ $("start").disabled = false; fail("Could not reach {plain.NAME}. Is it still running?"); }}
 }};
 </script></body></html>"""
 
@@ -274,6 +298,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, home_page())
             if parts == ["health"]:
                 return self._send(200, HEALTH.decode(), "text/plain")
+            if len(parts) == 2 and parts[0] == "static" and parts[1] in STATIC_FILES:
+                return self._send(200, (viewer.STATIC / parts[1]).read_text(), STATIC_FILES[parts[1]])
             if parts == ["api", "issue"]:
                 if not self._token_ok():
                     return self._json(403, {"error": "This page is out of date. Reload it."})

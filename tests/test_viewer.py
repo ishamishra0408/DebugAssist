@@ -44,24 +44,35 @@ def test_steps_read_from_the_state():
 
 def test_freshness_and_trials_are_shown():
     page = viewer.render(_data())
-    assert "30 min ago" in page and "ai-1-x-refix: 3 events" in page and "never counted in the north stars" in page
+    assert 'data-since="2026-10-07T06:20:00+00:00" data-suffix=" ago"' in page  # the browser counts "N min ago"
+    assert "ai-1-x-refix: 3 events" in page and "never counted in the north stars" in page
     assert "NOT SCORED" in page
 
 
-def test_the_pipeline_card_marks_the_step_we_are_on_in_plain_words():
+def test_the_page_marks_the_step_we_are_on_in_plain_words():
     st = {**_data()["state"], "triage": {"x": 1}, "cause": {"file": "f"}}
     live = viewer.render(_data(state=st, interrupt={}, next=["write_fix"], since="2026-10-07T06:49:28+00:00"), mode="live")
-    assert 'class="pl live"' in live and "Step 4 of 9: Fix it · 32 s" in live and "Working on step 4 of 9: Fix it" in live
-    assert live.count('class="node running"') == 1 and 'class="edge flow"' in live and 'class="dots"' in live
-    assert "DebugAssistAgent" in live and "Nothing. Watch the steps." in live
+    assert 'class="status s-live"' in live and "Working on step 4 of 9: Fix it" in live
+    assert 'data-since="2026-10-07T06:49:28+00:00"' in live          # the running step's clock, counted by the browser
+    assert live.count('class="node running"') == 1 and live.count('class="row running"') == 1 and 'class="i spin"' in live
+    assert "DebugAssistAgent" in live and "Nothing to do right now" in live
     paused = viewer.render(_data(), mode="live")
-    assert 'class="pl waiting"' in paused and "Waiting for your OK" in paused and 'class="node waiting"' in paused
+    assert 'class="status s-waiting"' in paused and "Waiting for your OK" in paused and 'class="node waiting"' in paused
     assert "uv run debug-assist approve ai-1-x" in paused and "uv run debug-assist reject ai-1-x" in paused
-    assert 'class="edge flow"' not in paused  # nothing is moving while it waits for you
+    assert "Approve in your terminal" in paused and "Nothing is posted to GitHub." in paused
     stopped = viewer.render(_data(state={**st, "outcome": {"exit": "FIX NOT VALIDATED", "why": "w"},
                                          "log": ["write_fix: STOPPED FIX NOT VALIDATED"]}, next=[], interrupt={}), mode="live")
-    assert 'class="pl stopped"' in stopped and "Stopped at step 4 of 9: Fix it" in stopped
-    assert "None of its fixes passed the tests." in stopped and "There is nothing to approve." in stopped
+    assert 'class="status s-stopped"' in stopped and "Stopped at step 4 of 9: Fix it" in stopped
+    assert "None of its fixes passed the tests." in stopped and 'class="node stopped"' in stopped
+
+
+def test_glass_is_kept_to_controls_and_navigation():
+    """HIG: Liquid Glass is the layer for controls and navigation; content sits on solid surfaces (no glass on glass)."""
+    page = viewer.render(_data(), mode="live")
+    glassy = re.findall(r'<(\w+)[^>]*class="([^"]*\bglass\b[^"]*)"', page)
+    assert glassy and all(tag in ("div", "aside", "button", "a") for tag, _ in glassy)
+    assert all(any(k in c for k in ("tgroup", "dock", "btn", "seg")) for _, c in glassy)
+    assert 'class="sect' in page and "glass" not in re.search(r'class="sect[^"]*"', page).group(0)
 
 
 def test_no_jargon_reaches_the_operator_outside_the_engineer_details():
@@ -87,26 +98,27 @@ def test_inside_the_step_shows_what_has_happened_not_a_guess():
 
 def test_served_pages_update_in_place_and_files_stay_static():
     served = viewer.render(_data(interrupt={}, next=["write_fix"]), mode="live")
-    assert 'http-equiv="refresh"' not in served and "fetch(u" in served and 'data-k="now"' in served
+    assert 'http-equiv="refresh"' not in served and "fetch(u" in served and 'data-k="hero"' in served
     assert 'data-final="0"' in served
     still = viewer.render(_data(interrupt={}, next=["write_fix"]))
     assert "fetch(" not in still and 'http-equiv="refresh"' in still
     rp = viewer.render(_data(replay=True), mode="replay", replay={"speed": 8, "elapsed": 3, "length": 40, "final": False})
-    assert "Replay of a past run" in rp and "3 of 40 s" in rp and "This is a recording of a past run." in rp
+    assert "Replay of a past run" in rp and "3 of 40 s" in rp and "Nothing is running." in rp
 
 
 def test_a_run_that_has_not_started_yet_renders_as_getting_ready():
     page = viewer.render(_data(state={}, next=[], interrupt={}, events=[], pr_text="", patch=""), mode="live")
-    assert "Getting ready" in page and "Nothing has happened yet" in page and 'data-final="0"' in page
+    assert "Getting ready" in page and "Nothing yet" in page and 'data-final="0"' in page
     failed = viewer.render(_data(state={}, next=[], interrupt={}, events=[], pr_text="", patch="",
                                  console="PREFLIGHT FAIL   Docker          daemon not running\n"), mode="live")
-    assert "Could not start" in failed and "Docker          daemon not running" in failed and 'data-final="1"' in failed
+    assert "Could not start" in failed and "What needs fixing" in failed and "Docker          daemon not running" in failed
+    assert 'data-final="1"' in failed
 
 
 def test_a_stopped_run_says_no_fix_and_small_spend_shows():
     st = {**_data()["state"], "fix_clock": {"started_at": "x"}, "outcome": {"exit": "NEVER REPRODUCED", "why": "w"}}
     page = viewer.render(_data(state=st, next=[], interrupt={}, meter={"spent_usd": 0.00431, "cap_usd": 0.5}), mode="live")
-    assert ">no fix<" in page and "$0.0043 of $0.50 limit" in page
+    assert "<b>No fix</b>" in page and "<b>$0.0043</b><small>Limit $0.50</small>" in page
     assert "It could not make the bug happen, so it did not try to fix it." in page
 
 
