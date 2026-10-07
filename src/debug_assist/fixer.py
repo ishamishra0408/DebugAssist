@@ -433,7 +433,8 @@ def holdout(state: dict, profile, fixed: Path, base_copy: Path, ctx, judges: lis
             a = attempt_fn(state, ladder.RUNGS[0], i, covered + tried, ctx, base_copy, profile, drafts=drafts,
                            step="holdout", label="holdout")
         except (TurnCapExceeded, BudgetExceeded) as e:
-            return {"status": "INCONCLUSIVE", "test": None, "evidence": f"stopped by a cap: {e}"}
+            return {"status": "INCONCLUSIVE", "test": None, "evidence": f"stopped by a cap: {e}; tried: " +
+                    ("; ".join(f"{t.outcome}: {t.evidence[:160]}" for t in tried) or "nothing")}
         tried.append(a)
         if a.outcome != ladder.RED:
             continue  # it didn't reproduce on the unfixed code: no judge yet
