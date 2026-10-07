@@ -309,8 +309,8 @@ def page(data, svg_light, svg_dark):
     NEXT = {
         "Teardown": ["Finish the Uber teardown and pass its gate"],
         "Design": ["Harness-design review of the agent surface", "Design gate ruling"],
-        "Build-eval": ["Rule the 4 open items from the by-hand run (ladder confirm, publish form, length gap, counter)",
-                       "Turn the by-hand steps into code: the test writer for rungs 1–2, then the fix and story steps",
+        "Build-eval": ["Turn the by-hand steps into code: the test writer for rungs 1–2, then the fix and story steps",
+                       "Sat: ask metric-design for the 🎯 counter's instrument (ruled 2026-10-07)",
                        "Sat: turn the by-hand steps into code; build-eval gate (qe-ic-advisor)",
                        "Ask Devansh: Sunday reader + weak seats (sent; awaiting reply)"],
         "Demo": ["Sun: tune the demo to Devansh's room angle", "Run the demo issue 3–5 times for the speed number"],
