@@ -137,3 +137,17 @@ def test_a_method_definition_is_found(repo):
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
     assert "compat/src/model.ts (definition of doStream at line 2" in fixer.find_definition(repo, "doStream", prefer="packages/compat")
     assert "definition of Model at line 1" in fixer.find_definition(repo, "Model")  # \\s never matched in git grep
+
+
+def test_a_search_off_only_in_indentation_still_applies_once_and_is_reindented(repo):
+    (repo / "packages/utils/src/tracker.ts").write_text("class T {\n  flush() {\n    emit(call);\n  }\n}\n")
+    changed = apply_edits(repo, [Edit("packages/utils/src/tracker.ts", "flush() {\n  emit(call);\n}",
+                                      "flush(done = true) {\n  if (done) emit(call);\n}")])
+    assert changed and (repo / "packages/utils/src/tracker.ts").read_text() == \
+        "class T {\n  flush(done = true) {\n    if (done) emit(call);\n  }\n}\n"
+
+
+def test_an_indent_blind_match_in_two_places_is_still_refused(repo):
+    (repo / "packages/utils/src/tracker.ts").write_text("a() {\n  emit(call);\n}\nb() {\n    emit(call);\n}\n")
+    with pytest.raises(FixRefused, match="exactly one"):
+        apply_edits(repo, [Edit("packages/utils/src/tracker.ts", "        emit(call);", "x();")])  # 0 exact, 2 loose

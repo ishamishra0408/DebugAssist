@@ -193,12 +193,47 @@ def apply_edits(checkout: Path, edits: list[Edit]) -> list[str]:
             raise FixRefused(f"no such file: {e.path}")
         text = staged.get(e.path, f.read_text())
         count = text.count(e.search)
-        if count != 1:
+        if count == 1:
+            staged[e.path] = text.replace(e.search, e.replace, 1)
+            continue
+        loose = _replace_ignoring_indent(text, e.search, e.replace) if count == 0 else None
+        if loose is None:
             raise FixRefused(f"SEARCH matches {count} places in {e.path}; it must match exactly one")
-        staged[e.path] = text.replace(e.search, e.replace, 1)
+        staged[e.path] = loose
     for path, text in staged.items():
         (checkout / path).write_text(text)
     return sorted(staged)
+
+
+def _replace_ignoring_indent(text: str, search: str, replace: str) -> str | None:
+    """Dev-model run 2026-10-07: every SEARCH line existed in the file, only its indentation differed, so all 3
+    attempts were refused. Match line by line ignoring leading/trailing whitespace; accept ONLY a single match, and
+    shift the replacement by the indentation difference of the first line. None if 0 or 2+ places match."""
+    want = [l.strip() for l in search.splitlines()]
+    while want and not want[0]:
+        want.pop(0)
+    while want and not want[-1]:
+        want.pop()
+    if not want:
+        return None
+    lines = text.splitlines(keepends=True)
+    hits = [i for i in range(len(lines) - len(want) + 1)
+            if [l.strip() for l in lines[i:i + len(want)]] == want]
+    if len(hits) != 1:
+        return None
+    i = hits[0]
+    have_ws = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
+    first = next(l for l in search.splitlines() if l.strip())
+    gave_ws = first[:len(first) - len(first.lstrip())]
+    out = []
+    for l in replace.splitlines():
+        if not l.strip():
+            out.append("\n")
+        elif l.startswith(gave_ws):
+            out.append(have_ws + l[len(gave_ws):] + "\n")
+        else:
+            out.append(have_ws + l.lstrip() + "\n")
+    return "".join(lines[:i] + out + lines[i + len(want):])
 
 
 def revert(checkout: Path, paths: list[str]) -> None:
