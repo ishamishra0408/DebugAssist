@@ -1,0 +1,11 @@
+#!/bin/sh
+# Refuse a commit while any test fails. Added 2026-10-07 after commit 69d1384 went in with a failing test:
+# the commit was chained on `pytest | tail`, which reports tail's exit code, not pytest's.
+# Skip once, on purpose only: git commit --no-verify
+echo "pre-commit: running the test suite…"
+if ! uv run pytest -q -p no:cacheprovider > /tmp/debug-assist-precommit.txt 2>&1; then
+  tail -15 /tmp/debug-assist-precommit.txt
+  echo "pre-commit: REFUSED: tests fail (full output: /tmp/debug-assist-precommit.txt)"
+  exit 1
+fi
+tail -1 /tmp/debug-assist-precommit.txt
