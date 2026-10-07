@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "run-viewer",
+      "runtimeExecutable": "/Users/ishamishra/.local/bin/uv",
+      "runtimeArgs": ["run", "debug-assist", "serve", "--port=8777"],
+      "port": 8777
+    }
+  ]
+}

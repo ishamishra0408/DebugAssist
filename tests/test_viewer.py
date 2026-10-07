@@ -58,3 +58,28 @@ def test_the_pipeline_card_marks_the_step_we_are_on():
     stopped = viewer.render(_data(state={**st, "outcome": {"exit": "FIX NOT VALIDATED", "why": "w"},
                                          "log": ["write_fix: STOPPED FIX NOT VALIDATED"]}, next=[], interrupt={}))
     assert 'class="pl stopped"' in stopped and "step 4 of 9 · Write fix" in stopped and 'class="node stopped"' in stopped
+
+
+def test_inside_the_step_shows_what_has_happened_not_a_guess():
+    evs = [{"step": "write_fix", "kind": "model_call"}, {"step": "write_fix", "kind": "sandbox"},
+           {"step": "write_fix", "kind": "fix_attempt", "n": 1, "ok": False},
+           {"step": "write_fix", "kind": "fix_attempt", "n": 2, "ok": True},
+           {"step": "write_fix", "kind": "holdout", "on_fixed": "GREEN"}, {"step": "reproduce", "kind": "sandbox"}]
+    chips, counts = viewer.inside("write_fix", evs)
+    assert chips == ["fix #1 ✗ not validated", "fix #2 ✓ validated", "second test: GREEN on the fix"]
+    assert counts == ["1 model call", "1 sandbox run"]
+
+
+def test_served_pages_update_in_place_and_files_stay_static():
+    served = viewer.render(_data(interrupt={}, next=["write_fix"]), mode="live")
+    assert 'http-equiv="refresh"' not in served and "fetch(u" in served and 'data-k="now"' in served
+    assert 'data-final="0"' in served
+    still = viewer.render(_data(interrupt={}, next=["write_fix"]))
+    assert "fetch(" not in still and 'http-equiv="refresh"' in still
+    rp = viewer.render(_data(replay=True), mode="replay", replay={"speed": 8, "elapsed": 3, "length": 40, "final": False})
+    assert "REPLAY of a recorded run" in rp and "3 of 40 s" in rp
+
+
+def test_a_run_that_has_not_started_yet_renders_as_starting():
+    page = viewer.render(_data(state={}, next=[], interrupt={}, events=[], pr_text="", patch=""), mode="live")
+    assert "Starting" in page and "waiting for the first step" in page and 'data-final="0"' in page

@@ -9,18 +9,20 @@
   uv run debug-assist events <run-id>                               every model call, sandbox command and decision
   uv run debug-assist cleanup [--yes]                               delete finished runs' code copies (dry run without --yes)
   uv run debug-assist view <run-id> [--watch]                       the run viewer: runs/<run-id>/view.html (read-only)
+  uv run debug-assist serve [--port=8777]                           the run viewer on localhost, live (run/resume open it)
 
 --focus=TEXT            the one problem in the issue to reproduce (default: the issue's title)
 --focus-heading=HEADING the same, taken from the issue's section under that markdown heading
 --demo      use the demo model (Claude Opus) under the demo cap ($2.50) instead of Qwen3-Coder-Next ($0.50 cap)
 --no-trace  allowed only on purpose: the run proceeds without Phoenix and records trace OFF
+--no-view   run/resume: don't start the localhost viewer or open the run's page
 """
 import json
 import sys
 from contextlib import ExitStack
 from datetime import datetime
 
-COMMANDS = {"preflight", "run", "resume", "approve", "reject", "status", "events", "cleanup", "view"}
+COMMANDS = {"preflight", "run", "resume", "approve", "reject", "status", "events", "cleanup", "view", "serve"}
 
 
 def _tracing():
@@ -104,10 +106,23 @@ def _cleanup(yes: bool) -> None:
           "the real space freed is less than the apparent size." + ("" if yes else " Add --yes to delete."))
 
 
+def _open_viewer(run_id: str, port: int) -> None:
+    """The run's live page on localhost, opened before the first step so every step shows up as it happens."""
+    import webbrowser
+    from . import server
+    from .config import CFG
+    (CFG.runs_dir / run_id).mkdir(parents=True, exist_ok=True)  # the page answers before the first step makes it
+    if server.ensure(port):
+        webbrowser.open(server.url(run_id, port))
+        print(f"run viewer: {server.url(run_id, port)}")
+    else:
+        print("run viewer: could not start (see runs/.viewer.log); the run goes on without it")
+
+
 def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     flags = {a for a in sys.argv[1:] if a.startswith("--")}
-    if not args or args[0] not in COMMANDS or (len(args) < 2 and args[0] != "cleanup"):
+    if not args or args[0] not in COMMANDS or (len(args) < 2 and args[0] not in ("cleanup", "serve")):
         print(__doc__)
         sys.exit(2)
     cmd, arg = args[0], (args[1] if len(args) > 1 else "")
@@ -119,6 +134,10 @@ def main() -> None:
         return
     if cmd == "cleanup":
         _cleanup(yes="--yes" in flags)
+        return
+    if cmd == "serve":
+        from .server import PORT, serve
+        serve(int(opts.get("port", PORT)))
         return
     if cmd == "view":
         from .config import CFG
@@ -177,6 +196,8 @@ def main() -> None:
                      "Approval binds to the text you were shown. Restore it, or reject and re-run.")
         print(f"Approving sha256 {intr['sha256'][:12]}: the exact text in {intr['pr_body_path']}")
 
+    if cmd in {"run", "resume"} and "--no-view" not in flags:
+        _open_viewer(run_id, int(opts.get("port", 8777)))
     if trace and cmd in {"run", "resume", "approve", "reject"}:
         _tracing()
     with _tagged(run_id, trace):
