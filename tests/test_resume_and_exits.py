@@ -48,7 +48,8 @@ def _repro_state(tmp_path, monkeypatch):
     monkeypatch.setattr(graph, "secrets_visible", lambda work, image: [])
     monkeypatch.setattr(graph, "CFG", dataclasses.replace(graph.CFG, runs_dir=tmp_path))
     monkeypatch.setattr(graph, "TEST_WRITER_READY", True)
-    return {"run_id": "r1", "profile": {"image": "img", "language": "typescript"}, "triage": {"has_repro_p": 0.9}}
+    return {"run_id": "r1", "profile": {"image": "img", "language": "typescript", "recorded_fixtures": True},
+            "triage": {"has_repro_p": 0.9}}
 
 
 def test_reproduce_stops_never_reproduced_and_records_every_attempt(scratch_db, tmp_path, monkeypatch):
@@ -72,7 +73,7 @@ def test_reproduce_after_a_crash_does_not_repeat_attempts(scratch_db, tmp_path, 
                         lambda s, rung, n, h: made.append((rung.name, n)) or ladder.Attempt(rung.name, n, ladder.RED, "AssertionError"))
     with events.bind("r1", "reproduce"):
         out = graph.reproduce(s)
-    assert made == [("end_to_end", 3)]  # integration has no recorded fake server yet, so it is skipped
+    assert made == [("integration", 3)]  # unit already went GREEN; the recorded-stream rung is next
     assert out["repro"]["status"] == "REPRODUCED" and out["repro"]["attempts_used"] == 3 and "outcome" not in out
 
 
