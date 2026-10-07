@@ -481,7 +481,7 @@ def fix_lines(cause: dict, fix: dict, patch_path: Path) -> list[str]:
             "<details><summary>Patch</summary>", "", "```diff", patch.rstrip(), "```", "</details>", ""]
 
 
-def backtest_lines(b: dict) -> list[str]:
+def backtest_lines(b: dict, g: dict | None = None) -> list[str]:
     d = (b or {}).get("detail") or {}
     if not d.get("anchor"):
         return [f"Past bugs of this kind: {b.get('state')}. Back-test: not run."]
@@ -493,7 +493,12 @@ def backtest_lines(b: dict) -> list[str]:
             f"False alarms on the {fa['window']} commits before it: fired on **{fa['fired']}**; quiet on {fa['quiet']}; "
             f"the bug was already there on {fa['bug_already_there']} (the guard firing there is correct); "
             f"unevaluable on {fa['unevaluable']}; not run on {fa['not_run']} "
-            f"({fa['groups_run']} groups run, commits grouped by whether they touched the guard's packages)."]
+            f"({fa['groups_run']} groups run, commits grouped by whether they touched the guard's packages).",
+            *([f"Where the bug is absent (this code with the fix), the guard fails on "
+               f"{len((g or {}).get('open_cases', []))} of {sum(len(v) for v in ((g or {}).get('on_fixed') or {}).values())} cases."]
+              if (g or {}).get("on_fixed") else []),
+            *(["No commit in that window was free of the bug, so false alarms there cannot be counted; the fixed code "
+               "is the only bug-free reference."] if fa["bug_already_there"] and not fa["quiet"] and not fa["fired"] else [])]
 
 
 def compose_pr_body(s: RunState) -> str:
@@ -517,7 +522,7 @@ def compose_pr_body(s: RunState) -> str:
            "; ".join(f"`{c}`" for c in g["open_cases"])] if g.get("open_cases") else []),
         *([f"The same code exists in {len(g['siblings'])} other file(s), not changed here: " +
            ", ".join(f"`{x}`" for x in g["siblings"][:10])] if g.get("siblings") else []),
-        *backtest_lines(b),
+        *backtest_lines(b, g),
         "",
         "Does this match how it looked when the original change was written? Corrections welcome.",
         "",
