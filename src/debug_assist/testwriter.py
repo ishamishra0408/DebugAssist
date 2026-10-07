@@ -263,17 +263,20 @@ def right_reason(focus: str, output: str) -> bool | None:
 
 
 def assertion_text(output: str) -> list[str]:
-    """Only what the failed assertions SAY: the message and its expected/received diff, never the source lines the
-    runner prints around them. Trial 2026-10-07: "tool-call" in a code comment beside the assertion made a wrong-reason
-    failure look right."""
+    """Only what the failed assertions SAY about what was RECEIVED: the message line plus the "+" (received) side of
+    its diff, never the expected side and never the source lines the runner prints around them.
+    Trial 2026-10-07 (1): "tool-call" in a code comment beside the assertion made a wrong-reason failure look right.
+    Trial 2026-10-07 (2): vitest abbreviates the message (`{ toolCallParts: [ { …(4) } ] }`) and the evidence sits in
+    the diff after a blank line; stopping at the blank line called a correct guard broken."""
     clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
     found = []
     for m in re.finditer(r"^.*AssertionError.*$", clean, re.M):
         block = [m.group(0)]
-        for line in clean[m.end() + 1:].splitlines()[:30]:
-            if re.match(r"\s*(❯|\d+\||at |>\s|\S+\.(ts|js|py):\d+)", line) or not line.strip():
-                break  # vitest's source pointer / numbered source lines / a stack frame / pytest's source marker
-            block.append(line)
+        for line in clean[m.end() + 1:].splitlines()[:60]:
+            if re.match(r"\s*(❯|\d+\||at |>\s|\S+\.(ts|js|py):\d+|⎯|FAIL\b)", line):
+                break  # vitest's source pointer / numbered source / stack frame / separator / next failure
+            if line.startswith("+") and not line.startswith("+ Received"):
+                block.append(line)
         found.append("\n".join(block))
     found += [l for l in clean.splitlines() if l.startswith("E   ")]  # pytest's assertion explanation lines
     return found

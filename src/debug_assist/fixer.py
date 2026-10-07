@@ -334,9 +334,10 @@ def validate(checkout: Path, profile, judges: list[str], built: set, changed_fil
     return out
 
 
-def run_one(checkout: Path, profile, test_path: str, run_cmd):
+def run_one(checkout: Path, profile, test_path: str, run_cmd, extra: str = ""):
     pkg = test_path.split("/")[1]
-    return run_cmd(profile.env + profile.test_cmd.format(package=pkg, test_path=str(Path(test_path).relative_to(f"packages/{pkg}"))),
+    rel = str(Path(test_path).relative_to(f"packages/{pkg}")) + (f" {extra}" if extra else "")
+    return run_cmd(profile.env + profile.test_cmd.format(package=pkg, test_path=rel),
                    checkout, network=False, timeout=300, image=profile.image)
 
 

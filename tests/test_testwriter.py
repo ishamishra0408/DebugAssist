@@ -155,3 +155,14 @@ def test_the_word_error_in_assertion_error_proves_nothing():
     wrong = "AssertionError: expected AI_JSONParseError: JSON parsing failed to be an instance of X\n"
     count = "AssertionError: expected 1 to be +0 // Object.is equality\n- Expected\n+ Received\n\n- 0\n+ 1\n"
     assert testwriter.right_reason(focus, wrong) is False and testwriter.right_reason(focus, count) is False
+
+
+def test_the_symptom_can_sit_in_the_received_side_of_the_diff():
+    """Trial 2026-10-07: vitest abbreviated the message; 'tool-call' was only in the '+' diff lines."""
+    out = ("AssertionError: expected { toolCallParts: [ { …(4) } ], …(2) } to strictly equal { …(3) }\n\n"
+           "- Expected\n+ Received\n\n  {\n-   \"toolCallParts\": [],\n+   \"toolCallParts\": [\n+     {\n"
+           "+       \"type\": \"tool-call\",\n ❯ src/x.test.ts:9:3\n")
+    assert testwriter.right_reason(FOCUS, out) is True
+    expected_only = ("AssertionError: expected { a: 1 } to strictly equal { b: 2 }\n\n- Expected\n+ Received\n\n"
+                     "-   \"type\": \"tool-call\",\n+   \"other\": 1,\n")
+    assert testwriter.right_reason(FOCUS, expected_only) is False  # the symptom must be in what was RECEIVED

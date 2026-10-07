@@ -25,15 +25,22 @@ from .models import write
 from .testwriter import WriterRefused, parse, right_reason, validate
 
 GUARD_TRIES = 2
+# every case listed, passing ones too: vitest folds an all-green file into one line (Opus run 2026-10-07)
+VERBOSE = {"typescript": "--reporter=verbose"}
 
 
-def sibling_sites(checkout: Path, line: str, fixed_file: str) -> list[str]:
-    """Other source lines identical to the one the fix changed: the same bug, waiting elsewhere."""
-    if not line:
-        return []
-    out = subprocess.run(["git", "-C", str(checkout), "grep", "-n", "-F", "-e", line, "--", "packages/*/src/**",
-                          ":!*.test.ts", ":!*.test.tsx"], capture_output=True, text=True, timeout=60).stdout
-    return [l.split(":", 2)[0] + ":" + l.split(":", 2)[1] for l in out.splitlines() if not l.startswith(fixed_file + ":")]
+def sibling_sites(checkout: Path, lines, fixed_file: str) -> list[str]:
+    """Other source lines identical to ANY line the fix changed: the same bug, waiting elsewhere. (Opus run 2026-10-07:
+    the first changed line was specific to the fixed file; the second, `toolCallTracker.flush();`, is in 6 others.)"""
+    out = []
+    for line in ([lines] if isinstance(lines, str) else list(lines)):
+        if not line:
+            continue
+        got = subprocess.run(["git", "-C", str(checkout), "grep", "-n", "-F", "-e", line, "--", "packages/*/src/**",
+                              ":!*.test.ts", ":!*.test.tsx"], capture_output=True, text=True, timeout=60).stdout
+        out += [l.split(":", 2)[0] + ":" + l.split(":", 2)[1] for l in got.splitlines()
+                if not l.startswith(fixed_file + ":")]
+    return sorted(set(out))
 
 
 SYSTEM = """You write a LASTING GUARD: ONE vitest test file that fails whenever this CLASS of bug exists, not only the
@@ -136,7 +143,7 @@ def write_guard(state: dict, profile, fixed: Path, unfixed: Path, judge: str, ca
             continue
         # 1. on the UNFIXED code: it must catch this bug, for the focus's reason
         (Path(unfixed) / rel).write_text(content)
-        r = run_one(Path(unfixed), profile, rel, run_cmd)
+        r = run_one(Path(unfixed), profile, rel, run_cmd, extra=VERBOSE.get(profile.language, ""))
         out_u = (r.stdout or "") + (r.stderr or "")
         outcome, line = ladder.classify(profile.language, r.returncode, out_u)
         (Path(unfixed) / rel).unlink()
@@ -150,7 +157,7 @@ def write_guard(state: dict, profile, fixed: Path, unfixed: Path, judge: str, ca
             continue
         # 2. on the FIXED code: which cases of the class the fix closed, and which it left open
         (Path(fixed) / rel).write_text(content)
-        r = run_one(Path(fixed), profile, rel, run_cmd)
+        r = run_one(Path(fixed), profile, rel, run_cmd, extra=VERBOSE.get(profile.language, ""))
         out_f = (r.stdout or "") + (r.stderr or "")
         (Path(keep_dir) / Path(rel).name).write_text(content)
         (Path(fixed) / rel).unlink()  # kept in the run folder, not in the fix (see the module note)

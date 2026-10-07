@@ -173,7 +173,7 @@ def test_a_recently_reworded_line_is_traced_back_through_the_call_itself(monkeyp
     issue = {"owner": "o", "repo": "r", "number": 21439, "reporter": "r1", "labels": []}
     ev = story.gather(issue, tmp_path, "packages/p/src/x.ts", PATCH)
     assert ev["written"]["pr"]["number"] == 14565 and ev["line"] == "toolCallTracker.flush("
-    assert any("is older" in s for s in ev["stops"])
+    assert any("oldest origin" in s for s in ev["stops"])
 
 
 def test_cases_that_share_one_error_block_are_judged_by_it():
@@ -182,3 +182,12 @@ def test_cases_that_share_one_error_block_are_judged_by_it():
            "AssertionError: expected [ { type: 'tool-call' } ] to strictly equal []\n")
     j = guard.judged("emits a `tool-call` part", out)
     assert j["symptom"] == ["a", "b"] and j["broken"] == []
+
+
+def test_the_story_starts_from_the_oldest_of_all_lines_the_fix_changed(monkeypatch, tmp_path):
+    """Opus run 2026-10-07: the fix changed two lines; tracing only the first missed the older origin."""
+    patch = "-  for (const p of pending) {\n-  toolCallTracker.flush();\n+  if (done) {\n"
+    versions = [("c3", "for (const p of pending) {\ntoolCallTracker.flush();"), ("c2", "toolCallTracker.flush();"), ("c1", "old")]
+    fake_github(monkeypatch, versions, {"c2": _pr(14565, "a1"), "c3": _pr(14760, "a2")})
+    ev = story.gather({"owner": "o", "repo": "r", "number": 1, "reporter": "r1", "labels": []}, tmp_path, "packages/p/src/x.ts", patch)
+    assert ev["written"]["pr"]["number"] == 14565 and "also traced" in " ".join(ev["stops"])

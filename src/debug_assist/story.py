@@ -121,9 +121,7 @@ def gather(issue: dict, checkout: Path, cause_file: str, fix_patch: str) -> dict
     owner, repo, path = issue["owner"], issue["repo"], cause_file
     sig = signature_lines(fix_patch)
     needle = sig[0] if sig else ""
-    # the exact line may have been reworded recently (trial 2026-10-07: it found the PR that renamed the call, not the
-    # one that introduced the behaviour); the call itself, up to its "(", finds the older origin
-    loose = needle.split("(")[0] + "(" if "(" in needle and len(needle.split("(")[0]) >= 12 else ""
+
     ev = {"line": needle, "file": path, "issue": {"number": issue["number"], "opened": (issue.get("created_at") or "")[:10],
                                                   "labels": issue.get("labels", []), "comments": issue.get("comments", 0)},
           "written": None, "shaped": [], "stops": [], "_names": {issue.get("reporter", "")}}
@@ -131,14 +129,23 @@ def gather(issue: dict, checkout: Path, cause_file: str, fix_patch: str) -> dict
         ev["stops"].append("the fix removed no line, so there is no line whose history to trace")
         return ev
     history = file_history(owner, repo, path)
-    origin = introduced(owner, repo, path, history, needle)
-    if origin and loose and loose != needle:
-        older = introduced(owner, repo, path, history, loose)
-        if older and [h["sha"] for h in history].index(older["sha"]) > [h["sha"] for h in history].index(origin["sha"]):
-            ev["stops"].append(f"the exact line `{needle}` dates from {origin['date']}; the call `{loose}` is older, "
-                               f"so the story starts there")
-            origin, needle = older, loose
-            ev["line"] = loose
+    order = [h["sha"] for h in history]
+    # every line the fix changed, and the call behind each: the story starts from the OLDEST origin (Opus run
+    # 2026-10-07 traced only the first changed line and started at #14760, missing the older #14565)
+    found = []
+    for line in sig[:3]:
+        for cand in dict.fromkeys([line, line.split("(")[0] + "(" if "(" in line and len(line.split("(")[0]) >= 12 else line]):
+            o = introduced(owner, repo, path, history, cand)
+            if o:
+                found.append((order.index(o["sha"]), cand, o))
+    origin = None
+    if found:
+        _, needle, origin = max(found, key=lambda f: f[0])
+        ev["line"] = needle
+        others = sorted({f"`{c}` since {o['date']}" for _, c, o in found if c != needle})
+        if others:
+            ev["stops"].append(f"the story starts at the oldest origin, `{needle}` ({origin['date']}); also traced: "
+                               + "; ".join(others))
     if not origin:
         ev["stops"].append(f"`{needle}` is not in the newest version of {path} on GitHub")
         return ev

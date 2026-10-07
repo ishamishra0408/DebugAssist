@@ -332,7 +332,7 @@ def lasting_guard(s: RunState):
     ctx = testwriter.locate(unfixed, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"])
     patch = _fix_patch(s)
     sig = story.signature_lines(patch)
-    siblings = guard.sibling_sites(fixed, sig[0] if sig else "", s["cause"]["file"])
+    siblings = guard.sibling_sites(fixed, sig, s["cause"]["file"])
     g = guard.write_guard(s, prof, fixed, unfixed, judge, s["cause"], patch, s["condition"]["text"],
                           (s.get("second_story") or {}).get("text", ""), ctx.example_header, run_dir(s) / "guard",
                           fixtures=ctx.fixtures)
