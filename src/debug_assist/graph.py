@@ -412,6 +412,20 @@ def test_past_bugs(s: RunState):
     return {"backtest": result, "log": [f"test_past_bugs: {state} ({len(hits)} candidates){note}"]}
 
 
+def incident_tests(s: RunState) -> list[tuple[str, str]]:
+    """Every test that reproduced THIS bug, judge first: the recorded-stream judge, the holdout written without seeing
+    the fix, the first RED (shelved in attempt-tests/ when it wasn't the judge)."""
+    r, fixed, out = s["repro"], Path(s["repro"]["checkout"]), []
+    for rel in [r.get("oracle_test"), ((s.get("fix") or {}).get("holdout") or {}).get("test"), r.get("failing_test")]:
+        if not rel or rel in [o[0] for o in out]:
+            continue
+        for src in (fixed / rel, run_dir(s) / "attempt-tests" / Path(rel).name):
+            if src.exists():
+                out.append((rel, src.read_text()))
+                break
+    return out
+
+
 def _backtest_guard(s: RunState) -> dict | None:
     """🎯 would-have-caught + false alarms (backtest.py): the guard at the commit that wrote the bug, and before it."""
     g = s.get("guard") or {}
@@ -419,10 +433,8 @@ def _backtest_guard(s: RunState) -> dict | None:
     if g.get("status") != "CATCHES THE BUG" or not w.get("sha"):
         return None
     prof = PROFILES[s["profile"]["repo"]]
-    judge = s["repro"].get("oracle_test") or s["repro"]["failing_test"]
-    fixed = Path(s["repro"]["checkout"])
     return backtest.backtest(s["issue"], prof, base_path(prof), run_dir(s) / "history", g["repo_path"].split("/")[1],
-                             judge=(judge, (fixed / judge).read_text()),
+                             judges=incident_tests(s),
                              guard_file=(g["repo_path"], Path(g["path"]).read_text()), anchor_sha=w["sha"],
                              focus=s.get("focus") or s["issue"]["title"])
 

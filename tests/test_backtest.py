@@ -41,7 +41,7 @@ FOCUS = "flush emits a complete-looking `tool-call` part"
 
 def test_reading_judge_and_guard_together(tmp_path, monkeypatch):
     hist = _hist(tmp_path)
-    files = {"judge": ("packages/p/src/judge.test.ts", "x"), "guard": ("packages/p/src/guard.test.ts", "y")}
+    files = {"judges": [("packages/p/src/judge.test.ts", "x")], "guard": ("packages/p/src/guard.test.ts", "y")}
     for jr, gr, want in [(True, True, "CAUGHT"), (True, False, "MISSED"), (False, True, "FALSE ALARM"), (False, False, "QUIET")]:
         res = backtest.run_at(hist, "c1", _profile(), "p", files, FOCUS, _run(jr, gr, monkeypatch))
         assert res["state"] == want, (jr, gr, res)
@@ -53,6 +53,21 @@ def test_a_commit_the_tests_cannot_run_on_is_unevaluable(tmp_path, monkeypatch):
     monkeypatch.setattr(backtest, "_git", lambda *a, **k: SimpleNamespace(returncode=0, stderr=""))
     broken = lambda cmd, *a, **k: SimpleNamespace(returncode=1, stdout=" FAIL  f > j\nError: Cannot find module 'x'", stderr="") \
         if "test:node" in cmd else SimpleNamespace(returncode=0, stdout="", stderr="")
-    files = {"judge": ("packages/p/src/judge.test.ts", "x"), "guard": ("packages/p/src/guard.test.ts", "y")}
+    files = {"judges": [("packages/p/src/judge.test.ts", "x")], "guard": ("packages/p/src/guard.test.ts", "y")}
     assert backtest.run_at(hist, "c1", _profile(), "p", files, FOCUS, broken)["state"] == "UNEVALUABLE"
     assert backtest.run_at(hist, "c1", _profile(), "missing", files, FOCUS, broken)["state"] == "UNEVALUABLE"
+
+
+def test_the_next_incident_test_speaks_when_the_first_cannot(tmp_path, monkeypatch):
+    """Live run 2026-10-07: the recorded-stream judge read a fixture that did not exist at the old commit."""
+    hist = _hist(tmp_path)
+    monkeypatch.setattr(backtest, "_git", lambda *a, **k: SimpleNamespace(returncode=0, stderr=""))
+    red = " × x\n FAIL  f > x\nAssertionError: expected [ { type: 'tool-call' } ] to strictly equal []\n 1 failed"
+    def run(cmd, *a, **k):
+        if "recorded" in cmd:
+            return SimpleNamespace(returncode=1, stdout=" FAIL  f > r\nError: ENOENT: no such file", stderr="")
+        return SimpleNamespace(returncode=1 if "test:node" in cmd else 0, stdout=red if "test:node" in cmd else "", stderr="")
+    files = {"judges": [("packages/p/src/recorded.test.ts", "x"), ("packages/p/src/holdout.test.ts", "y")],
+             "guard": ("packages/p/src/guard.test.ts", "z")}
+    res = backtest.run_at(hist, "c1", _profile(), "p", files, FOCUS, run)
+    assert res["state"] == "CAUGHT" and res["judged_by"] == "holdout.test.ts"

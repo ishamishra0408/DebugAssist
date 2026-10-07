@@ -99,8 +99,24 @@ def _tail(log: Path) -> str:
     return ((errs or lines or ["(empty log)"])[-1])[:220]
 
 
+def _verdict(hist: Path, profile, rel: str, content: str, focus: str, run_cmd) -> tuple[str, dict]:
+    (hist / rel).parent.mkdir(parents=True, exist_ok=True)
+    (hist / rel).write_text(content)
+    try:
+        t = run_one(hist, profile, rel, run_cmd, extra=VERBOSE.get(profile.language, ""))
+    finally:
+        (hist / rel).unlink()
+    text = (t.stdout or "") + (t.stderr or "")
+    j = judged(focus, text)
+    # failed, but not with the bug's symptom: this test can't speak about this commit
+    return ("GREEN" if t.returncode == 0 else "RED" if j["symptom"] else "UNEVALUABLE"), {k: len(v) for k, v in j.items()}
+
+
 def run_at(hist: Path, sha: str, profile, package_dir: str, files: dict, focus: str, run_cmd) -> dict:
-    """Checkout, install, build deps, run each test in `files` ({role: (repo_path, content)})."""
+    """Checkout, install, build deps, then the guard, and the incident's own tests in turn until one can speak:
+    files = {"guard": (repo_path, content), "judges": [(repo_path, content), ...]} (live run 2026-10-07: the
+    recorded-stream judge read a fixture that did not exist yet, so every commit was unevaluable; the incident's
+    holdout and made-up-input tests could still say whether the bug was there)."""
     r = _git(hist, "checkout", "-q", "-f", sha)
     if r.returncode != 0:
         return {"state": "UNEVALUABLE", "why": f"checkout failed: {r.stderr[-200:]}"}
@@ -120,22 +136,13 @@ def run_at(hist: Path, sha: str, profile, package_dir: str, files: dict, focus: 
                 return {"state": "UNEVALUABLE", "why": "the guard package's dependencies did not build at this commit: "
                         + _tail(hist / ".da-logs/bt-build.txt")}
         out = {}
-        for role, (rel, content) in files.items():
-            (hist / rel).write_text(content)
-            try:
-                t = run_one(hist, profile, rel, run_cmd, extra=VERBOSE.get(profile.language, ""))
-            finally:
-                (hist / rel).unlink()
-            text = (t.stdout or "") + (t.stderr or "")
-            j = judged(focus, text)
-            outcome, _ = ladder.classify(profile.language, t.returncode, text)
-            if t.returncode == 0:
-                out[role] = "GREEN"
-            elif j["symptom"]:
-                out[role] = "RED"
-            else:
-                out[role] = "UNEVALUABLE"  # failed, but not with the bug's symptom: it can't speak about this commit
-            out[role + "_cases"] = {k: len(v) for k, v in j.items()}
+        out["guard"], out["guard_cases"] = _verdict(hist, profile, *files["guard"], focus, run_cmd)
+        out["judge"] = "UNEVALUABLE"
+        for rel, content in files["judges"]:
+            v, _ = _verdict(hist, profile, rel, content, focus, run_cmd)
+            if v != "UNEVALUABLE":
+                out["judge"], out["judged_by"] = v, Path(rel).name
+                break
     except SandboxTimeExceeded as e:
         return {"state": "UNEVALUABLE", "why": f"sandbox time cap: {e}"}
     if "UNEVALUABLE" in (out.get("judge"), out.get("guard")):
@@ -145,7 +152,7 @@ def run_at(hist: Path, sha: str, profile, package_dir: str, files: dict, focus: 
     return {"state": state, **out}
 
 
-def backtest(issue: dict, profile, base: Path, hist: Path, package_dir: str, judge: tuple, guard_file: tuple,
+def backtest(issue: dict, profile, base: Path, hist: Path, package_dir: str, judges: list, guard_file: tuple,
              anchor_sha: str, focus: str, run_cmd=None, n: int = WINDOW, max_groups: int = MAX_GROUPS) -> dict:
     from .sandbox import run_in_sandbox
     run_cmd = run_cmd or run_in_sandbox
@@ -157,7 +164,7 @@ def backtest(issue: dict, profile, base: Path, hist: Path, package_dir: str, jud
     touched = [True] + [touches(owner, repo, c["sha"], dirs) for c in commits[1:]]
     grouped = groups(commits, touched)
     prepare_history(base, hist, f"{owner}/{repo}", anchor_sha, depth=n + 2)
-    files = {"judge": judge, "guard": guard_file}
+    files = {"judges": judges, "guard": guard_file}
     results = []
     for g in grouped[:max_groups]:
         rep = g["rep"]
