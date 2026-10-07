@@ -127,3 +127,22 @@ def test_a_run_that_went_quiet_reads_interrupted_with_the_command_to_continue():
     page = viewer.render(_data(state=st, interrupt={}, next=["write_fix"], since="2026-10-07T05:00:00+00:00",
                                now="2026-10-07T06:50:00+00:00"), mode="live")
     assert "Interrupted during step 5 of 10: Fix it" in page and "uv run debug-assist resume ai-1-x" in page
+
+
+def test_the_state_chart_walks_this_run_and_stops_where_it_stopped():
+    from debug_assist import chart
+    st = {**_data()["state"], "triage": {"is_defect_p": .98}, "context": {"status": "GATHERED", "counts": {
+          "comments": 5, "files": 5, "related": 3, "changes": 11}},
+          "attempts": [{"step": "reproduce", "rung": "unit", "n": 1, "outcome": "ERROR"},
+                       {"step": "reproduce", "rung": "unit", "n": 2, "outcome": "ERROR"}],
+          "repro": {"status": "NEVER REPRODUCED"}, "outcome": {"exit": "NEVER REPRODUCED", "why": "w"}}
+    path = chart.this_run(_data(state=st, interrupt={}, next=[]))
+    assert [p[0] for p in path] == ["ce-issue", "ce-triaged", "ce-try", "ce-try", "ce-stop-context"]
+    assert path[-1][1] == "stop-context" and path[-1][2].startswith("Stopped. It could not make the bug happen")
+    assert path[2][2] == "Try 1 (quick test): test broke for another reason. Trying again."
+    every = chart.every_path()
+    assert every[-1][1] == "ready" and any(p[0] == "ce-round2" for p in every)   # the tour shows each retry once
+    svg = chart.svg()
+    assert all(f'id="cn-{s}"' in svg for s, _ in chart.STATES) and all(f'id="ce-stop-{s}"' in svg for s in chart.STOPS)
+    page = viewer.render(_data(state=st, interrupt={}, next=[]), mode="live")
+    assert "How this run moved" in page and 'data-k="chart"' in page

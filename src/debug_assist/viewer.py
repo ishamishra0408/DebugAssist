@@ -18,7 +18,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from . import icons, plain
+from . import chart, icons, plain
 
 _FIELD = {"read_issue": "triage", "gather_context": "context", "reproduce": "repro", "find_cause": "cause", "write_fix": "fix",
           "why_it_shipped": "second_story", "lasting_guard": "guard", "test_past_bugs": "backtest",
@@ -451,8 +451,9 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
     eng = _engineer_details(d, s, rows, live)
     md = json.dumps({"story": story, "pr": d["pr_text"]}).replace("</", "<\\/")
     css = f'<link rel="stylesheet" href="/static/app.css">' if served else f"<style>{(STATIC / 'app.css').read_text()}</style>"
-    topo = ('<script src="/static/topo.js" defer></script><script src="/static/glass.js" defer></script>' if served else
-            f"<script>{(STATIC / 'topo.js').read_text()}</script><script>{(STATIC / 'glass.js').read_text()}</script>")
+    topo = ('<script src="/static/topo.js" defer></script><script src="/static/glass.js" defer></script>'
+            '<script src="/static/chart.js"></script>' if served else
+            "".join(f"<script>{(STATIC / f).read_text()}</script>" for f in ("topo.js", "glass.js", "chart.js")))
     nav = (f'<nav class="toolbar" aria-label="DebugAssistAgent">'
            f'<div class="tgroup glass"><a class="brand" href="{"/" if served else "#"}">{icons.mark()}<span>{plain.NAME}</span></a></div>'
            + (f'<div class="tgroup glass"><a class="tbtn" href="/#runs" aria-label="Runs">{icons.list_(16)}<span class="lbl">Runs</span></a>'
@@ -477,6 +478,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
 {_k("dock", dock)}
 {_k("notice", notice)}
 <section class="group"><h2>Steps</h2><div class="sect"><ul class="rows">{"".join(step_rows_html)}</ul></div></section>
+{_k("chart", f'<section class="group"><h2>How this run moved</h2>{chart.section(d)}</section>')}
 {_k("read", read)}
 {_k("results", results)}
 <section class="group"><h2>Latest activity</h2><div class="sect">{_k("log", f'<ul class="rows acts-list">{acts or "<li class=row><span></span><span class=t><span>Nothing yet</span></span></li>"}</ul>')}</div></section>
@@ -632,7 +634,7 @@ async function poll() {
     const r = await fetch(u, { cache: "no-store" });
     if (!r.ok) throw new Error(String(r.status));
     const doc = new DOMParser().parseFromString(await r.text(), "text/html");
-    let md = false;
+    let md = false, chartChanged = false;
     doc.querySelectorAll("[data-kc]").forEach(n => {
       const o = document.querySelector(`[data-kc="${n.dataset.kc}"]`);
       if (o && o.className !== n.className) o.className = n.className;
@@ -642,9 +644,11 @@ async function poll() {
       if (o && o.dataset.h !== n.dataset.h) {
         o.replaceWith(document.importNode(n, true));
         if (["md", "results"].includes(n.dataset.k)) md = true;
+        if (n.dataset.k === "chart") chartChanged = true;
       }
     });
     if (md) renderMd();
+    if (chartChanged && window.DA_chart) DA_chart();
     tick();
     offline(false);
     if (doc.querySelector('[data-final="1"]')) return;

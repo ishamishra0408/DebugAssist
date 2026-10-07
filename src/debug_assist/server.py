@@ -37,7 +37,7 @@ TOKEN = secrets.token_urlsafe(24)  # new every time the server starts; only this
 TOKEN_HEADER = "X-DebugAssistAgent-Token"
 _plans: dict = {}
 STATIC_FILES = {"app.css": "text/css; charset=utf-8", "topo.js": "text/javascript; charset=utf-8",
-                "glass.js": "text/javascript; charset=utf-8"}
+                "glass.js": "text/javascript; charset=utf-8", "chart.js": "text/javascript; charset=utf-8"}
 
 
 def url(run_id: str | None = None, port: int = PORT) -> str:
@@ -157,6 +157,29 @@ STATE_ICON = {"Done": "done", "Waiting": "waiting", "Working": "running", "Inter
               "Stopped": "stopped", "Could not start": "stopped"}
 
 
+def how_page() -> str:
+    from . import chart, icons
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>How it works · {plain.NAME}</title><meta name="color-scheme" content="dark light">
+<link rel="stylesheet" href="/static/app.css">
+</head><body>
+<canvas id="topo" aria-hidden="true"></canvas><div class="ambient s-idle" aria-hidden="true"></div>
+<div class="scrim top" aria-hidden="true"></div>
+<nav class="toolbar" aria-label="{plain.NAME}">
+  <div class="tgroup glass"><a class="brand" href="/">{icons.mark()}<span>{plain.NAME}</span></a></div>
+  <div class="tgroup glass"><a class="tbtn" href="/#runs" aria-label="Runs">{icons.list_(16)}<span class="lbl">Runs</span></a>
+    <a class="tbtn" href="/" aria-label="New run">{icons.plus(16)}<span class="lbl">New run</span></a></div>
+</nav>
+<main>
+<header class="hero"><h1>How it works</h1>
+  <p class="lede">A run moves through these states, one action at a time. If an action fails, it tries again a fixed number of times, then stops and tells you why.</p></header>
+<p class="legend"><span>Box: where the run is</span><span>Arrow: what it does next</span><span class="a">Amber: it tries again</span><span class="r">Red: it stops, with the reason</span><span class="b">Dot: the run</span></p>
+{chart.section(None)}
+</main>
+<script src="/static/topo.js" defer></script><script src="/static/glass.js" defer></script><script src="/static/chart.js"></script>
+</body></html>"""
+
+
 def home_page() -> str:
     from . import icons
     e = viewer.e
@@ -183,12 +206,13 @@ def home_page() -> str:
 <div class="scrim top" aria-hidden="true"></div>
 <nav class="toolbar" aria-label="{plain.NAME}">
   <div class="tgroup glass"><a class="brand" href="/">{icons.mark()}<span>{plain.NAME}</span></a></div>
-  <div class="tgroup glass"><a class="tbtn" href="#runs" aria-label="Runs">{icons.list_(16)}<span class="lbl">Runs</span></a></div>
+  <div class="tgroup glass"><a class="tbtn" href="#runs" aria-label="Runs">{icons.list_(16)}<span class="lbl">Runs</span></a>
+    <a class="tbtn" href="/how" aria-label="How it works">{icons.play(16)}<span class="lbl">How it works</span></a></div>
 </nav>
 <main>
 <header class="hero">
   <h1>Start a run</h1>
-  <p class="lede">Paste a GitHub issue. It shows the bug, fixes it, and waits for your OK. It never posts anything to GitHub.</p>
+  <p class="lede">Paste a GitHub issue. It collects context on the issue, reproduces the bug and fixes it for you. You review the fix and post it on GitHub.</p>
 </header>
 <section class="group" aria-labelledby="h-issue">
   <h2 id="h-issue">GitHub issue</h2>
@@ -299,6 +323,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, home_page())
             if parts == ["health"]:
                 return self._send(200, HEALTH.decode(), "text/plain")
+            if parts == ["how"]:
+                return self._send(200, how_page())
             if len(parts) == 2 and parts[0] == "static" and parts[1] in STATIC_FILES:
                 return self._send(200, (viewer.STATIC / parts[1]).read_text(), STATIC_FILES[parts[1]])
             if parts == ["api", "issue"]:
