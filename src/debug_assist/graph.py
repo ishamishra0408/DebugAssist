@@ -275,7 +275,15 @@ def write_fix(s: RunState):
                        f"problem ({Path(ho['test']).name}): {ho['evidence'][:600]}\nThat fix was:\n{first['patch'][:1500]}"])
             fix["attempts"] = first["attempts"] + fix["attempts"]
             if fix["status"] == "VALIDATED":
-                ho = {**ho, "status": "PASSED (round 2)"}
+                # Ruled 2026-10-07 (north-star-v1.2): this fix saw the second test fail, so that test no longer judges
+                # it blind. A fresh third test, written without seeing either fix, must also pass for two judges.
+                third_copy = run_copy(prof, run_dir(s) / "holdout3-base")
+                ctx3 = testwriter.locate(third_copy, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"])
+                third = fixer.holdout(s, prof, checkout, third_copy, ctx3, [judge, ho["test"]],
+                                      drafts=run_dir(s) / "holdout3")
+                ho = {**ho, "third": third,
+                      "status": fixer.THIRD_TEST_PASSED if third["status"] == "PASSED"
+                      else f"SEEN (round 2: the fix saw this test; fresh third test {third['status']})"}
     fix["holdout"] = ho
     clock = dict(s["fix_clock"])
     clock["stopped_at"] = now()
@@ -283,17 +291,18 @@ def write_fix(s: RunState):
                               - datetime.fromisoformat(clock["started_at"])).total_seconds(), 1)
     # ⏱ counts only a fix confirmed by TWO independent tests (its judge + a fresh one written without seeing it), with
     # every suite green. Dev run 2026-10-07: a one-judge "validated" fix failed all 3 by-hand reference tests.
-    two_judges = str((ho or {}).get("status", "")).startswith("PASSED")
-    clock["validated"] = fix["status"] == "VALIDATED" and two_judges
-    clock["judges"] = 2 if two_judges else (1 if fix["status"] == "VALIDATED" else 0)
+    clock["judges"] = fixer.judge_count(fix["status"], ho)
+    clock["validated"] = clock["judges"] == 2
     (run_dir(s) / "fix.patch").write_text(fix["patch"])
     out = {"fix": {k: v for k, v in fix.items() if k != "patch"} | {"patch_path": str(run_dir(s) / "fix.patch")},
            "fix_clock": clock,
            "log": [f"write_fix: {fix['status']} after {len(fix['attempts'])} attempt(s); fix clock {clock['seconds']}s"
                    + (f"; suites green: {', '.join(fix['suites'])}" if clock["validated"] else "")
                    + (f"; fresh test: {ho['status']}" if ho else "")]}
-    if fix["status"] == "VALIDATED" and not two_judges and (ho or {}).get("status") != "FIX INCOMPLETE":
-        out["log"].append("write_fix: ONE JUDGE ONLY: the fresh test was inconclusive, so this fix reaches the PR draft "
+    if fix["status"] == "VALIDATED" and clock["judges"] == 1 and (ho or {}).get("status") != "FIX INCOMPLETE":
+        why = ("the fix saw the second test and no fresh third test passed" if (ho or {}).get("third")
+               else "the fresh test was inconclusive")
+        out["log"].append(f"write_fix: ONE JUDGE ONLY: {why}, so this fix reaches the PR draft "
                           "labelled as such and does not count toward ⏱ time to validated fix")
     if fix["status"] == "TEST FLAWED":
         out["outcome"] = stop("TEST FLAWED", f"the fixer says the judging test cannot be passed: {fix['why'][:400]}. "
@@ -493,9 +502,15 @@ def fix_lines(cause: dict, fix: dict, patch_path: Path) -> list[str]:
             "",
             f"Validated before this text was written: the failing test now passes, and these suites stay green: "
             f"{', '.join(fix['suites'])}.",
+            *([f"Not run: {len(fix['not_run'])} package(s) that depend on the changed code are not installed in the "
+               f"sandbox ({', '.join(fix['not_run'][:8])}{', …' if len(fix['not_run']) > 8 else ''})."]
+              if fix.get("not_run") else []),
             *([f"A second test of the same problem, written without seeing this fix, failed on the old code and "
-               f"passes on the new: `{(fix.get('holdout') or {}).get('test')}`."]
-              if str((fix.get("holdout") or {}).get("status", "")).startswith("PASSED") else
+               f"passes on the new: `{(fix.get('holdout') or {}).get('test')}`"
+               + (f"; a fresh third test also passes (the fix had seen the second): "
+                  f"`{((fix.get('holdout') or {}).get('third') or {}).get('test')}`"
+                  if (fix.get("holdout") or {}).get("status") == fixer.THIRD_TEST_PASSED else "") + "."]
+              if fixer.judge_count(fix.get("status", ""), fix.get("holdout")) == 2 else
               [f"**One judge only.** Second-test check: {(fix.get('holdout') or {}).get('status', 'not run')}; no "
                "independent test confirmed this fix, so it may cover only the path its one test exercises."]),
             "",

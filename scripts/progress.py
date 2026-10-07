@@ -314,7 +314,11 @@ def page(data, svg_light, svg_dark):
                        "Ask metric-design for the 🎯 counter's bug-free reference",
                        "Devansh: ds-ic seat or gate signer (due Fri), Sunday non-author reader",
                        "Rebuild the C4 model (Isha runs the build)"],
-        "Demo": ["Sun: tune the demo to Devansh's room angle", "Run the demo issue 3–5 times for the speed number"],
+        "Demo": ["Demo gate (allspaw): state the villain → resolution arc before showing anything",
+                 "Thu 10/08: review Devansh's Advisors MCP server and Visdom pipe before anything connects",
+                 "Run #21439 on Opus 3–5 times for ⏱'s spread (now with the 9 dependent suites)",
+                 "Run other issues so 🎯 has a corpus to search (it holds only #21439)",
+                 "Sun: a non-author reads the second story; tune the demo to Devansh's room angle"],
     }
     nxt = "".join(f"<li>{html.escape(x)}</li>" for x in NEXT.get(stage_now, ["All stages done"]))
     bh, ttvf, w = data.get("byhand"), (data.get("northstar") or {}).get("ttvf"), (data.get("northstar") or {}).get("whc")

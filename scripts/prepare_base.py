@@ -1,9 +1,11 @@
 """Prepare a repo's BASE checkout: the unmodified code every run copies (checkout.py). Run once per pinned commit.
 
-  uv run python scripts/prepare_base.py vercel/ai
+  uv run python scripts/prepare_base.py vercel/ai            # a new base
+  uv run python scripts/prepare_base.py vercel/ai --extend   # install + build what the profile added since
 
 Clones exactly the profile's base_commit (shallow), installs with the network ON, then builds with it OFF, all in
-the repo's sandbox. Refuses to touch an existing base (delete it yourself if you mean to rebuild it).
+the repo's sandbox. Refuses to touch an existing base (delete it yourself if you mean to rebuild it), except
+--extend, which only installs and builds into it and must leave the source unmodified.
 """
 import subprocess
 import sys
@@ -14,17 +16,26 @@ from debug_assist.sandbox import run_in_sandbox
 
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in PROFILES:
+    args = sys.argv[1:]
+    extend = "--extend" in args
+    args = [a for a in args if a != "--extend"]
+    if len(args) != 1 or args[0] not in PROFILES:
         sys.exit(__doc__)
-    prof = PROFILES[sys.argv[1]]
+    prof = PROFILES[args[0]]
     b = base_path(prof)
-    if b.exists():
+    if extend:
+        ok, fact = check_base(prof)
+        if not ok:
+            sys.exit(f"--extend needs a clean, installed base: {fact}")
+    elif b.exists():
         sys.exit(f"{b} already exists: {check_base(prof)[1]}")
-    b.mkdir(parents=True)
-    for cmd in (["git", "init", "-q"], ["git", "remote", "add", "origin", f"https://github.com/{prof.repo}.git"],
-                ["git", "fetch", "-q", "--depth", "1", "origin", prof.base_commit], ["git", "checkout", "-q", "FETCH_HEAD"]):
-        subprocess.run(cmd, cwd=b, check=True)
-    (b / ".git" / "info" / "exclude").write_text(".corepack/\n.pnpm-store/\n.bin/\n.da-logs/\n")
+    else:
+        b.mkdir(parents=True)
+        for cmd in (["git", "init", "-q"], ["git", "remote", "add", "origin", f"https://github.com/{prof.repo}.git"],
+                    ["git", "fetch", "-q", "--depth", "1", "origin", prof.base_commit],
+                    ["git", "checkout", "-q", "FETCH_HEAD"]):
+            subprocess.run(cmd, cwd=b, check=True)
+        (b / ".git" / "info" / "exclude").write_text(".corepack/\n.pnpm-store/\n.bin/\n.da-logs/\n")
     for phase, cmd, net in (("install", prof.install_cmd, True), ("build", prof.build_cmd, False)):
         if not cmd:
             continue

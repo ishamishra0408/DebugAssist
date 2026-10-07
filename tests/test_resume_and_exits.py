@@ -187,3 +187,39 @@ def test_only_a_fix_confirmed_by_two_tests_counts_toward_the_fix_clock(tmp_path,
     assert ("outcome" in out) is stopped
     if judges == 1:
         assert any("ONE JUDGE ONLY" in l for l in out["log"])
+
+
+@pytest.mark.parametrize("third,judges", [({"status": "PASSED", "test": "t3"}, 2),
+                                          ({"status": "INCONCLUSIVE", "test": None, "evidence": ""}, 1),
+                                          ({"status": "FIX INCOMPLETE", "test": "t3", "evidence": "e"}, 1)])
+def test_a_round_two_fix_needs_a_fresh_third_test_for_two_judges(tmp_path, monkeypatch, third, judges):
+    """Ruled 2026-10-07 (north-star-v1.2): the round-2 fixer saw the second test fail, so that test is not blind."""
+    monkeypatch.setattr(graph, "CFG", dataclasses.replace(graph.CFG, runs_dir=tmp_path))
+    monkeypatch.setattr(graph, "run_copy", lambda prof, dest: dest)
+    monkeypatch.setattr(graph.testwriter, "locate", lambda *a: SimpleNamespace(source="packages/p/src/x.ts"))
+    monkeypatch.setattr(graph.fixer, "_git", lambda *a: "")
+    monkeypatch.setattr(graph.fixer, "revert", lambda *a: None)
+    monkeypatch.setattr(graph.fixer, "write_fix", lambda *a, **k: {"status": "VALIDATED", "attempts": [{"evidence": ""}],
+                                                                 "changed": ["packages/p/src/x.ts"], "patch": "diff",
+                                                                 "suites": {"p": "pass"}})
+    calls = []
+
+    def holdout(*a, **k):
+        calls.append(k["drafts"].name)
+        return {"status": "FIX INCOMPLETE", "test": "t2", "evidence": "e"} if len(calls) == 1 else third
+    monkeypatch.setattr(graph.fixer, "holdout", holdout)
+    s = {"run_id": "r", "issue": {"number": 1, "title": "t", "body": "b"}, "focus": "f",
+         "profile": {"repo": "vercel/ai"}, "fix_clock": {"started_at": graph.now()},
+         "repro": {"checkout": str(tmp_path / "co"), "failing_test": "t1", "oracle_test": "t1"},
+         "cause": {"file": "packages/p/src/x.ts", "lines": [1, 2], "why": "w", "looked_up": []}}
+    out = graph.write_fix(s)
+    assert calls == ["holdout", "holdout3"]
+    assert out["fix_clock"]["judges"] == judges and out["fix_clock"]["validated"] is (judges == 2)
+
+
+def test_judge_count_reads_old_round_two_runs_as_one_judge():
+    from debug_assist.fixer import judge_count, THIRD_TEST_PASSED
+    assert judge_count("VALIDATED", {"status": "PASSED"}) == 2
+    assert judge_count("VALIDATED", {"status": THIRD_TEST_PASSED}) == 2
+    assert judge_count("VALIDATED", {"status": "PASSED (round 2)"}) == 1   # before the ruling: the fix saw the test
+    assert judge_count("NOT VALIDATED", {"status": "PASSED"}) == 0

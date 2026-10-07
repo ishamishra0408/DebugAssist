@@ -46,7 +46,13 @@ PROFILES = {
         # ai, gateway and every provider using the streaming tool-call tracker (the #21439 blast radius)
         filters=" ".join(f"--filter '{p}...'" for p in ("ai", "@ai-sdk/gateway", "@ai-sdk/openai-compatible",
                          "@ai-sdk/openai", "@ai-sdk/groq", "@ai-sdk/deepseek", "@ai-sdk/alibaba", "@ai-sdk/mistral",
-                         "@ai-sdk/moonshotai", "@ai-sdk/xai")),  # e.g. packages/openai-compatible/src/chat/__fixtures__/*.chunks.txt (by-hand run, rung 2)
+                         "@ai-sdk/moonshotai", "@ai-sdk/xai",
+                         # Ruled 2026-10-07: install the fixed package's dependents, so "changed packages + installed
+                         # dependents stay green" (north-star-v1.1) runs them. Both Opus fixes changed openai-compatible;
+                         # these 9 depend on it directly. Dependents still not installed are listed on every fix.
+                         "@ai-sdk/baseten", "@ai-sdk/cerebras", "@ai-sdk/deepinfra", "@ai-sdk/fireworks",
+                         "@ai-sdk/gmicloud", "@ai-sdk/google-vertex", "@ai-sdk/huggingface", "@ai-sdk/togetherai",
+                         "@ai-sdk/zai")),  # e.g. packages/openai-compatible/src/chat/__fixtures__/*.chunks.txt (by-hand run, rung 2)
     ),
     "langchain-ai/langchain": RepoProfile(
         "langchain-ai/langchain", "python", PYTHON_IMAGE,

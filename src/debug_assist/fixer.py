@@ -270,6 +270,20 @@ def affected(checkout: Path, changed_files: list[str], suite_names: list[str]) -
     return changed, sorted(pmap[n]["dir"] for n in hit if n in pmap and (n in suite_names or n in changed))
 
 
+def not_run(checkout: Path, changed: list[str], suite_names: list[str]) -> list[str]:
+    """Packages that depend on a changed package, directly or not, whose suites are not installed, so the fix was not
+    run against them (independent grade 2026-10-07: "installed dependents" was silently empty)."""
+    pmap = package_map(checkout)
+    hit, grew = set(changed), True
+    while grew:
+        grew = False
+        for name, v in pmap.items():
+            if name not in hit and v["deps"] & hit:
+                hit.add(name)
+                grew = True
+    return sorted(hit - set(changed) - set(suite_names))
+
+
 def suite_names(profile) -> list[str]:
     return re.findall(r"--filter '([^']+?)\.\.\.'", profile.filters or "")
 
@@ -309,7 +323,8 @@ def validate(checkout: Path, profile, judges: list[str], built: set, changed_fil
     the whole suite of each affected package. Returns {"ok", "red_to_green", "suites", "evidence"}."""
     changed, suites = affected(checkout, changed_files, suite_names(profile))
     built |= set(changed)
-    out = {"ok": False, "red_to_green": False, "suites": {}, "changed_packages": changed, "evidence": ""}
+    out = {"ok": False, "red_to_green": False, "suites": {}, "changed_packages": changed, "evidence": "",
+           "not_run": not_run(checkout, changed, suite_names(profile))}
     if profile.build_cmd and built:
         flt = " ".join(f"--filter '{n}'" for n in sorted(built))
         r = run_cmd(profile.env + f"pnpm {flt} build", checkout, network=False, timeout=900, image=profile.image)
@@ -399,7 +414,7 @@ def write_fix(state: dict, checkout: Path, cause: dict, test_path: str, evidence
         if result["ok"]:
             patch = _git(checkout, "diff", "--", *changed)
             return {"status": "VALIDATED", "attempts": attempts, "changed": changed, "patch": patch,
-                    "red_to_green": True, "suites": result["suites"]}
+                    "red_to_green": True, "suites": result["suites"], "not_run": result.get("not_run", [])}
         revert(checkout, changed)
         history.append(f"attempt {n}: {result['evidence'][:700]}")
     return _not_validated(checkout, profile, built, attempts, run_cmd, "")
@@ -414,6 +429,19 @@ def _not_validated(checkout, profile, built, attempts, run_cmd, why: str) -> dic
 
 
 # ── holdout: a second, independent judge ─────────────────────────────────────────────────────────
+THIRD_TEST_PASSED = "PASSED (round 2, fresh third test)"
+
+
+def judge_count(fix_status: str, holdout_result: dict | None) -> int:
+    """⏱'s judges (north-star-v1.2, ruled 2026-10-07). 2 = the fix's own test + a second test written without seeing
+    it. A round-2 fix was written after the fixer saw the second test fail, so that test is no longer blind: it counts
+    as 1 judge unless a fresh third test, written without seeing either fix, also passes."""
+    if fix_status != "VALIDATED":
+        return 0
+    st = str((holdout_result or {}).get("status", ""))
+    return 2 if st in ("PASSED", THIRD_TEST_PASSED) else 1
+
+
 def holdout(state: dict, profile, fixed: Path, base_copy: Path, ctx, judges: list[str], drafts: Path | None = None,
             tries: int = 2, run_cmd=None, attempt_fn=None) -> dict:
     """Fresh eyes: a NEW test of the focus, written without seeing the fix, must fail on the UNFIXED code for the

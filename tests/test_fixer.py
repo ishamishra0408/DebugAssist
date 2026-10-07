@@ -71,6 +71,13 @@ def test_a_change_to_a_shared_package_runs_every_dependent_suite(repo):
     assert affected(repo, ["packages/compat/src/model.ts"], ["@x/compat", "@x/app"])[1] == ["app", "compat"]
 
 
+def test_dependents_whose_suites_are_not_installed_are_named(repo):
+    """Independent grade 2026-10-07: "installed dependents" was silently empty; now every fix lists what did not run."""
+    from debug_assist.fixer import not_run
+    assert not_run(repo, ["@x/utils"], ["@x/utils", "@x/compat", "@x/app", "@x/other"]) == []
+    assert not_run(repo, ["@x/utils"], ["@x/utils"]) == ["@x/app", "@x/compat"]
+
+
 PROFILE = SimpleNamespace(env="", build_cmd="pnpm {filters} build", image="n", language="typescript",
                           test_cmd="cd packages/{package} && pnpm test:node {test_path}",
                           filters="--filter '@x/utils...' --filter '@x/compat...' --filter '@x/app...'")

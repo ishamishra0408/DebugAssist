@@ -44,7 +44,7 @@ def test_would_have_caught_is_not_scored_without_siblings():
 
 @pytest.mark.skipif(not NORTH_STAR_DOC.exists(), reason="the design folder is not on this machine")
 def test_the_north_star_definition_is_the_sealed_one():
-    """Editing north-star-v1.1 without a new ruling fails here (sealed by Isha 2026-10-07)."""
+    """Editing the sealed north-star file without a new ruling fails here (sealed by Isha 2026-10-07)."""
     assert hashlib.sha256(NORTH_STAR_DOC.read_bytes()).hexdigest() == NORTH_STAR_SEAL
 
 

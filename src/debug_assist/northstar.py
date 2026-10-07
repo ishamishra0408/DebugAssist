@@ -1,7 +1,7 @@
 """The north stars computed from the runs themselves, never typed into a document (de-advisor review 2026-10-07:
 the spec carried ⏱ as n = 1 while the data held two values).
 
-  Definitions: north-star-v1.1, sealed 2026-10-07 (config.NORTH_STAR_SEAL).
+  Definitions: north-star-v1.2, sealed 2026-10-07 (config.NORTH_STAR_SEAL).
   ⏱ time to validated fix   over pipeline RUNS (meters with kind "run"; trials never count): which were picked up,
                              which reached a fix validated by two judges, and the seconds for each
   🎯 would-have-caught       north-star-v1: k of m earlier same-condition bugs. m comes from the condition corpus:
@@ -24,12 +24,13 @@ def runs(db=None) -> list[dict]:
             continue
         clock, fix = s.get("fix_clock") or {}, s.get("fix") or {}
         judges = clock.get("judges")
-        if judges is None and fix.get("status") == "VALIDATED":  # runs from before the judges field
-            judges = 2 if str((fix.get("holdout") or {}).get("status", "")).startswith("PASSED") else 1
+        if judges is None:  # runs from before the judges field: the same rule, read from the stored second test
+            from .fixer import judge_count
+            judges = judge_count(fix.get("status", ""), fix.get("holdout"))
         out.append({"run_id": m["_id"], "model": "opus" if s.get("demo") else "dev",
                     "skeleton": fix.get("status") == "PLACEHOLDER",  # run before the fixer existed: could not reach
                     "picked_up": bool(clock.get("started_at")), "seconds": clock.get("seconds"),
-                    "two_judges": fix.get("status") == "VALIDATED" and judges == 2,
+                    "two_judges": judges == 2,
                     "outcome": (s.get("outcome") or {}).get("exit"),
                     "siblings": len((s.get("backtest") or {}).get("candidates") or [])})
     return out
