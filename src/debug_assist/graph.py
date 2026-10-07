@@ -27,7 +27,7 @@ from langgraph.checkpoint.mongodb import MongoDBSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from . import events, fixer, ladder, testwriter
+from . import events, fixer, guard, ladder, story, testwriter
 from .checkout import run_copy
 from .config import CFG, REPRO_ATTEMPT_CAP
 from .github_read import get_issue
@@ -289,16 +289,29 @@ def write_fix(s: RunState):
 
 
 # ── Phase 2: Learn from it ──────────────────────────────────────────────────────────────────────
+def _fix_patch(s: RunState) -> str:
+    p = Path((s.get("fix") or {}).get("patch_path") or run_dir(s) / "fix.patch")
+    return p.read_text() if p.exists() else ""
+
+
 def why_it_shipped(s: RunState):
-    story = ("PLACEHOLDER second story. Friday: critical junctures (written → reviewed → released → reported), "
-             "what was known at each, two or more conditions that only together let it ship, and where the "
-             "analysis stopped and why.")
-    condition = f"PLACEHOLDER condition for: {s['issue']['title']}"
-    assert_no_names(story, [s["issue"]["reporter"]])  # guardrail 2
-    freeze = freeze_condition(LEDGER, s["run_id"], condition)  # guardrail 3, before any guard exists
-    return {"second_story": {"status": "PLACEHOLDER", "text": story},
-            "condition": {"text": condition, "sha256": freeze["sha256"], "frozen_at": freeze["frozen_at"]},
-            "log": [f"why_it_shipped: PLACEHOLDER; no names; condition frozen {freeze['sha256'][:12]}"]}
+    """story.py: code gathers the evidence read-only, the model tells it, code checks it (no names, 2+ conditions,
+    nothing cited that isn't in the evidence). Then the named condition is frozen BEFORE any guard exists."""
+    try:
+        told = story.tell(s, Path(s["repro"]["checkout"]), s["cause"], _fix_patch(s))
+    except story.StoryRefused as e:
+        return {"second_story": {"status": "NOT WRITTEN", "why": str(e)},
+                "outcome": stop("STORY NOT WRITTEN", f"{e}. A person writes the second story"),
+                "log": [f"why_it_shipped: STOPPED STORY NOT WRITTEN: {e}"]}
+    assert_no_names(told["text"], [s["issue"]["reporter"]])  # guardrail 2, once more at the step boundary
+    freeze = freeze_condition(LEDGER, s["run_id"], told["condition"])  # guardrail 3, before any guard exists
+    ev = told["evidence"]
+    prs = [e["pr"]["number"] for e in [ev.get("written") or {}] + ev["shaped"] if e.get("pr")]
+    return {"second_story": {"status": "WRITTEN", "text": told["text"], "evidence": ev,
+                             "names_checked": told["names_checked"]},
+            "condition": {"text": told["condition"], "sha256": freeze["sha256"], "frozen_at": freeze["frozen_at"]},
+            "log": [f"why_it_shipped: story from {len(prs)} PR(s) ({', '.join('#' + str(n) for n in prs)}); "
+                    f"no names ({told['names_checked']} checked); condition frozen {freeze['sha256'][:12]}"]}
 
 
 A1_Q = {"a1": {"type": "choice",
@@ -308,11 +321,36 @@ A1_Q = {"a1": {"type": "choice",
 
 
 def lasting_guard(s: RunState):
-    text = "PLACEHOLDER guard: a parametrised test in CI that covers the whole class of input, not one case."
-    a = decide(text, A1_Q)["a1"]
-    guard = {"status": "PLACEHOLDER", "text": text, "created_at": now(),
-             "a1_class": a["choice"], "a1_p": a["answer_confidence"]}
-    return {"guard": guard, "log": [f"lasting_guard: PLACEHOLDER; Laya A1 → {a['choice']} p={a['answer_confidence']}"]}
+    """guard.py: one test over the CLASS of triggers; it must fail on the unfixed code, and its cases on the fixed code
+    say which parts of the class this fix closed and which it left open. Plus every other site with the same line."""
+    prof = PROFILES[s["profile"]["repo"]]
+    fixed = Path(s["repro"]["checkout"])
+    unfixed = run_copy(prof, run_dir(s) / "holdout-base")
+    judge = s["repro"].get("oracle_test") or s["repro"]["failing_test"]
+    ctx = testwriter.locate(unfixed, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"])
+    patch = _fix_patch(s)
+    sig = story.signature_lines(patch)
+    siblings = guard.sibling_sites(fixed, sig[0] if sig else "", s["cause"]["file"])
+    g = guard.write_guard(s, prof, fixed, unfixed, judge, s["cause"], patch, s["condition"]["text"],
+                          (s.get("second_story") or {}).get("text", ""), ctx.example_header, run_dir(s) / "guard")
+    created = now()
+    if g["status"] != "CATCHES THE BUG":
+        return {"guard": {"status": g["status"], "why": g.get("why"), "siblings": siblings, "created_at": created,
+                          "text": f"No guard: {g.get('why')}"},
+                "outcome": stop("GUARD NOT WRITTEN", f"{g.get('why')}. A person writes the guard"),
+                "log": [f"lasting_guard: STOPPED GUARD NOT WRITTEN: {g.get('why')}"]}
+    a = decide(f"{g['covers']}. A test file that the package's test suite runs in CI on every change.", A1_Q)["a1"]
+    open_cases = g["on_fixed"]["failed"]
+    text = (f"{g['covers']}. A parametrised test (`{Path(g['repo_path']).name}`) that fails on the old code, so it would "
+            f"have caught this bug. On the fixed code {len(g['on_fixed']['passed'])} of "
+            f"{len(g['on_fixed']['passed']) + len(open_cases)} cases pass.")
+    return {"guard": {"status": g["status"], "text": text, "covers": g["covers"], "path": g["path"],
+                      "repo_path": g["repo_path"], "on_fixed": g["on_fixed"], "open_cases": open_cases,
+                      "siblings": siblings, "created_at": created, "a1_class": a["choice"],
+                      "a1_p": a["answer_confidence"]},
+            "log": [f"lasting_guard: catches the bug on the unfixed code; fixed code passes "
+                    f"{len(g['on_fixed']['passed'])}, still open {len(open_cases)}; {len(siblings)} sibling site(s); "
+                    f"Laya A1 → {a['choice']} p={a['answer_confidence']}"]}
 
 
 def _ensure_vector_index(dims: int, wait_s: int = 90) -> bool:
@@ -420,11 +458,15 @@ def compose_pr_body(s: RunState) -> str:
         "",
         "## Lasting guard",
         g["text"],
+        *([f"Still open after this fix (cases of the class it does not close): " +
+           "; ".join(f"`{c}`" for c in g["open_cases"])] if g.get("open_cases") else []),
+        *([f"The same line exists in {len(g['siblings'])} other place(s), not changed here: " +
+           ", ".join(f"`{x}`" for x in g["siblings"][:10])] if g.get("siblings") else []),
         f"Would-have-caught: {b['state']}",
         "",
         "Does this match how it looked when the original change was written? Corrections welcome.",
         "",
-        "_Draft generated by the Debug Assist walking skeleton; placeholder content._",
+        "_Draft generated by Debug Assist. Every claim above was checked by code before this text was written._",
     ])
 
 
@@ -477,7 +519,7 @@ def build():
     for fn in steps + [open_pr]:
         g.add_node(fn.__name__, step(fn))
     g.add_edge(START, steps[0].__name__)
-    can_stop = {"read_issue", "reproduce", "find_cause", "write_fix"}  # the steps with typed early exits
+    can_stop = {"read_issue", "reproduce", "find_cause", "write_fix", "why_it_shipped", "lasting_guard"}
     for a, b in zip(steps, steps[1:]):
         if a.__name__ in can_stop:
             g.add_conditional_edges(a.__name__, _unless_stopped(b.__name__), [b.__name__, END])
