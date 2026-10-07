@@ -157,6 +157,21 @@ def _record_attempt(s: RunState, a: ladder.Attempt) -> ladder.Attempt:
     return a
 
 
+def shelve_drafts(checkout: Path, rdir: Path, paths: list, keep: str | None) -> list[str]:
+    """Only the judging test stays in the code; every other attempt's test moves to runs/<id>/attempt-tests/. Dev run
+    2026-10-07: a correct fix turned the judge green, but leftover drafts (one crashing in its own setup, one
+    unpassable) sat in the package and failed its suite."""
+    moved = []
+    for p in dict.fromkeys(p for p in paths if p and p != keep):
+        src = Path(checkout) / p
+        if src.exists():
+            dest = Path(rdir) / "attempt-tests" / Path(p).name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            src.replace(dest)
+            moved.append(p)
+    return moved
+
+
 def reproduce(s: RunState):
     work = run_dir(s) / "sandbox"
     work.mkdir(exist_ok=True)
@@ -180,6 +195,7 @@ def reproduce(s: RunState):
     confirming = next((a for a in result.attempts[result.attempts.index(red) + 1:]
                        if a.outcome == ladder.RED and a.rung == result.confirmed_by), None) if red else None
     oracle = confirming if (result.confirmed and confirming) else red
+    shelve_drafts(checkout, run_dir(s), [a.test_path for a in result.attempts], keep=oracle.test_path if oracle else None)
     out = {"repro": {"status": result.status, "rung": result.rung, "ladder_plan": plan,
                      "confirmed": result.confirmed, "confirmed_by": result.confirmed_by,
                      "failing_test": red.test_path if red else None, "evidence": red.evidence if red else None,

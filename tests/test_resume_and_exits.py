@@ -151,3 +151,14 @@ def test_a_confirmation_that_never_gave_a_valid_result_is_said_as_such():
     r = {"status": "REPRODUCED", "rung": "unit", "failing_test": "t", "evidence": "AssertionError: x",
          "confirmed": None, "confirm_tries": 2, "attempts_used": 4}
     assert "tried 2× without a valid result" in "\n".join(graph.reproduction_lines(r))
+
+
+def test_only_the_judging_test_stays_in_the_code(tmp_path):
+    co, rd = tmp_path / "co", tmp_path / "run"
+    for name in ("da-repro-1-unit-1.test.ts", "da-repro-1-unit-2.test.ts", "da-repro-1-integration-3.test.ts"):
+        (co / "packages/p/src").mkdir(parents=True, exist_ok=True)
+        (co / "packages/p/src" / name).write_text("x")
+    paths = [f"packages/p/src/da-repro-1-{n}.test.ts" for n in ("unit-1", "unit-2", "integration-3")] + [""]
+    moved = graph.shelve_drafts(co, rd, paths, keep="packages/p/src/da-repro-1-integration-3.test.ts")
+    assert len(moved) == 2 and (co / "packages/p/src/da-repro-1-integration-3.test.ts").exists()
+    assert sorted(p.name for p in (rd / "attempt-tests").iterdir()) == ["da-repro-1-unit-1.test.ts", "da-repro-1-unit-2.test.ts"]
