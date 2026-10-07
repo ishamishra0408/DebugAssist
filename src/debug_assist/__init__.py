@@ -8,6 +8,7 @@
   uv run debug-assist status <run-id>                               show the run
   uv run debug-assist events <run-id>                               every model call, sandbox command and decision
   uv run debug-assist cleanup [--yes]                               delete finished runs' code copies (dry run without --yes)
+  uv run debug-assist view <run-id> [--watch]                       the run viewer: runs/<run-id>/view.html (read-only)
 
 --focus=TEXT            the one problem in the issue to reproduce (default: the issue's title)
 --focus-heading=HEADING the same, taken from the issue's section under that markdown heading
@@ -19,7 +20,7 @@ import sys
 from contextlib import ExitStack
 from datetime import datetime
 
-COMMANDS = {"preflight", "run", "resume", "approve", "reject", "status", "events", "cleanup"}
+COMMANDS = {"preflight", "run", "resume", "approve", "reject", "status", "events", "cleanup", "view"}
 
 
 def _tracing():
@@ -118,6 +119,13 @@ def main() -> None:
         return
     if cmd == "cleanup":
         _cleanup(yes="--yes" in flags)
+        return
+    if cmd == "view":
+        from .config import CFG
+        from .viewer import write
+        if not (CFG.runs_dir / arg).is_dir():
+            sys.exit(f"no run folder for {arg}")
+        print(f"run viewer: {write(arg, CFG.runs_dir / arg, watch='--watch' in flags)}")
         return
 
     from langgraph.types import Command
