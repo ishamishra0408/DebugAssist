@@ -1,6 +1,7 @@
 """The north stars computed from the runs themselves, never typed into a document (de-advisor review 2026-10-07:
 the spec carried ⏱ as n = 1 while the data held two values).
 
+  Definitions: north-star-v1.1, sealed 2026-10-07 (config.NORTH_STAR_SEAL).
   ⏱ time to validated fix   over pipeline RUNS (meters with kind "run"; trials never count): which were picked up,
                              which reached a fix validated by two judges, and the seconds for each
   🎯 would-have-caught       north-star-v1: k of m earlier same-condition bugs. m comes from the condition corpus:

@@ -1,5 +1,10 @@
 """The measurement layer: one write per thing, runs vs trials, north stars computed from runs."""
+import hashlib
+
+import pytest
+
 from debug_assist import events, meter, northstar
+from debug_assist.config import NORTH_STAR_DOC, NORTH_STAR_SEAL
 
 
 def test_a_keyed_event_is_written_once_even_when_a_step_reruns(scratch_db):
@@ -35,3 +40,9 @@ def test_time_to_validated_fix_counts_only_two_judge_fixes_over_pickups():
 def test_would_have_caught_is_not_scored_without_siblings():
     assert northstar.would_have_caught([{"siblings": 0}, {"siblings": 0}])["state"].startswith("NOT SCORED")
     assert northstar.would_have_caught([{"siblings": 2}])["m"] == 2
+
+
+@pytest.mark.skipif(not NORTH_STAR_DOC.exists(), reason="the design folder is not on this machine")
+def test_the_north_star_definition_is_the_sealed_one():
+    """Editing north-star-v1.1 without a new ruling fails here (sealed by Isha 2026-10-07)."""
+    assert hashlib.sha256(NORTH_STAR_DOC.read_bytes()).hexdigest() == NORTH_STAR_SEAL

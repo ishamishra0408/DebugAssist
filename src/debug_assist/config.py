@@ -38,3 +38,8 @@ TURN_CAPS = {"reproduce": 4, "find_cause": 10, "write_fix": 8, "holdout": 2, "wh
 
 # Reproduction ladder (ruled 2026-10-06): attempts across all rungs before the run stops NEVER REPRODUCED
 REPRO_ATTEMPT_CAP = 4
+
+# What ⏱ and 🎯 mean: north-star-v1.1, sealed by Isha 2026-10-07 (two judges, changed packages + installed dependents
+# stay green; 🎯 is k of m past siblings). A changed definition needs a new ruling and a new hash; a test checks it.
+NORTH_STAR_DOC = Path.home() / "Downloads" / "debug-assist-pipeline" / "design" / "north-star-v1.1.md"
+NORTH_STAR_SEAL = "234c6996971c87b773b56536e3d1aa1ba8ab859ccdfc4b2693875cf9b323c2c4"
