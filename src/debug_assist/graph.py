@@ -29,7 +29,7 @@ from langgraph.checkpoint.mongodb import MongoDBSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from . import backtest, context, events, fixer, guard, ladder, story, testwriter
+from . import advisors, backtest, context, events, fixer, guard, ladder, story, testwriter
 from .checkout import base_path, run_copy
 from .config import CFG, REPRO_ATTEMPT_CAP
 from .github_read import get_issue
@@ -73,6 +73,7 @@ class RunState(TypedDict, total=False):
     focus: str          # the ONE problem in the issue this run reproduces (--focus, or a section via --focus-heading)
     focus_heading: str
     context: dict       # Gather context: where the pack is, its sha256, the counts, and the brief later steps read
+    advisors: Annotated[dict, lambda a, b: {**(a or {}), **(b or {})}]  # per step: what its seat said (advice only)
     attempts: Annotated[list, operator.add]  # append-only: every attempt and how it ended (also in the event log)
     outcome: dict                            # set when the run stops: {"exit": ..., "why": ..., "at": ...}
     log: Annotated[list, operator.add]
@@ -370,6 +371,7 @@ def why_it_shipped(s: RunState):
     prs = [e["pr"]["number"] for e in [ev.get("written") or {}] + ev["shaped"] if e.get("pr")]
     return {"second_story": {"status": "WRITTEN", "text": told["text"], "evidence": ev,
                              "names_checked": told["names_checked"]},
+            "advisors": {"why_it_shipped": advisors.review(s, "why_it_shipped", told["text"])},
             "condition": {"text": told["condition"], "sha256": freeze["sha256"], "frozen_at": freeze["frozen_at"]},
             "log": [f"why_it_shipped: story from {len(prs)} PR(s) ({', '.join('#' + str(n) for n in prs)}); "
                     f"no names ({told['names_checked']} checked); condition frozen {freeze['sha256'][:12]}"]}
@@ -406,7 +408,8 @@ def lasting_guard(s: RunState):
     text = (f"{g['covers'].rstrip('. ')}. A parametrised test (`{Path(g['repo_path']).name}`) that fails on the old code, so it would "
             f"have caught this bug. On the fixed code {len(g['on_fixed']['passed'])} of "
             f"{len(g['on_fixed']['passed']) + len(open_cases)} cases pass.")
-    return {"guard": {"status": g["status"], "text": text, "covers": g["covers"], "path": g["path"],
+    return {"advisors": {"lasting_guard": advisors.review(s, "lasting_guard", f"{text}\n\nCovers: {g['covers']}")},
+            "guard": {"status": g["status"], "text": text, "covers": g["covers"], "path": g["path"],
                       "repo_path": g["repo_path"], "on_fixed": g["on_fixed"], "open_cases": open_cases,
                       "broken_cases": g.get("broken_cases", []) + g["on_fixed"].get("broken", []),
                       "siblings": siblings, "created_at": created, "a1_class": a["choice"],

@@ -27,6 +27,10 @@ class Config:
     demo_budget_usd: float = float(os.getenv("DEMO_BUDGET_USD", "2.50"))   # the Opus demo run (ruled 2026-10-06)
     # Total sandbox wall time per run (install + every test run), reserved before each command (meter.py)
     sandbox_budget_s: int = int(os.getenv("SANDBOX_BUDGET_S", "1800"))
+    # Advisors over MCP (advisors.py): OFF unless both are set; the second only after the server was reviewed
+    advisors_mcp: str = os.getenv("ADVISORS_MCP", "")
+    advisors_reviewed: bool = os.getenv("ADVISORS_REVIEWED", "").strip().lower() == "yes"
+    bundle_dir: Path = Path(os.getenv("ADVISOR_BUNDLE", str(Path.home() / "Downloads" / "isha-advisor-bundle-2026-10-05 2")))
     db_name: str = "debug_assist"
     runs_dir: Path = ROOT / "runs"
 

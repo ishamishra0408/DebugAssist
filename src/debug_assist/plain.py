@@ -59,6 +59,9 @@ def happened(x: dict) -> str | None:
         return f"Old version {str(x.get('commit', ''))[:7]}: {OLD_CODE.get(x.get('state'), str(x.get('state')).lower())}"
     if k == "embed":
         return "Saved, so similar bugs can be found later"
+    if k == "advisor":
+        return f"Advisor {x.get('seat')}: " + {"OFF": "not asked (advisors are off)", "BLOCKED": "not asked (server not reviewed yet)",
+                                               "ANSWERED": "answered", "FAILED": "could not be reached"}.get(x.get("status"), "not asked")
     if k == "context":
         return f"Read {x.get('comments', 0)} comments, {x.get('files', 0)} files, {x.get('changes', 0)} recent changes"
     if k == "approval":

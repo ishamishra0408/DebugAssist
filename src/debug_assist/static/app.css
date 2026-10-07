@@ -302,3 +302,10 @@ details.eng > summary::after { content: "Show"; color: var(--blue); font-weight:
 .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 0 6px; font-size: 14px; color: var(--label-2); }
 .legend span::before { content: ""; display: inline-block; width: 18px; height: 3px; border-radius: 2px; margin-right: 7px; vertical-align: middle; background: var(--label-3); }
 .legend .a::before { background: var(--orange); } .legend .r::before { background: var(--red); } .legend .b::before { background: var(--blue); height: 10px; width: 10px; border-radius: 50%; }
+
+/* advisors on the chart: dotted, beside the step they review; they never change the run */
+.ce.adv-link { stroke: var(--label-3); stroke-dasharray: 2 4; }
+.cadv rect { fill: transparent; stroke: var(--label-3); stroke-dasharray: 4 4; }
+.cadv text { font: 500 12.5px var(--font); fill: var(--label-3); }
+.cadv.answered rect { stroke: var(--blue); stroke-dasharray: none; fill: color-mix(in srgb, var(--blue) 10%, var(--surface-2)); }
+.cadv.answered text { fill: var(--label); } .cadv.blocked rect, .cadv.failed rect { stroke: var(--orange); } .cadv.blocked text { fill: var(--orange); }

@@ -184,6 +184,19 @@ def check_base(profile) -> Check:
                  "" if ok else "uv run python scripts/prepare_base.py " + profile.repo)
 
 
+def check_advisors() -> Check:
+    """Advice is optional, so off passes. An address without the review fails: nothing connects before it."""
+    from .advisors import status
+    st, why = status()
+    if st == "OFF":
+        return Check("Advisors", "PASS", "off: not connected (advice is optional)")
+    if st == "BLOCKED":
+        return Check("Advisors", "FAIL", why,
+                     "review the Advisors MCP server first, then set ADVISORS_REVIEWED=yes in .env (or remove ADVISORS_MCP)")
+    return Check("Advisors", "WARN", "set and reviewed, but the call is not written yet; reviews will be skipped",
+                 "write advisors._call against the server's tool names")
+
+
 def run_preflight(issue_url: str, demo: bool = False, trace: bool = True) -> list[Check]:
     checks = []
     owner, repo, _ = parse_issue_url(issue_url)
@@ -204,6 +217,7 @@ def run_preflight(issue_url: str, demo: bool = False, trace: bool = True) -> lis
     checks.append(check_openrouter(demo))
     checks.append(check_github(owner, repo))
     checks.append(check_phoenix(trace))
+    checks.append(check_advisors())
     return checks
 
 

@@ -448,6 +448,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
     results += "</div>"
 
     read = _what_it_read(d.get("pack") or {}, s.get("context") or {})
+    adv = _advisors(s)
     eng = _engineer_details(d, s, rows, live)
     md = json.dumps({"story": story, "pr": d["pr_text"]}).replace("</", "<\\/")
     css = f'<link rel="stylesheet" href="/static/app.css">' if served else f"<style>{(STATIC / 'app.css').read_text()}</style>"
@@ -480,6 +481,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
 <section class="group"><h2>Steps</h2><div class="sect"><ul class="rows">{"".join(step_rows_html)}</ul></div></section>
 {_k("chart", f'<section class="group"><h2>How this run moved</h2>{chart.section(d)}</section>')}
 {_k("read", read)}
+{_k("advisors", adv)}
 {_k("results", results)}
 <section class="group"><h2>Latest activity</h2><div class="sect">{_k("log", f'<ul class="rows acts-list">{acts or "<li class=row><span></span><span class=t><span>Nothing yet</span></span></li>"}</ul>')}</div></section>
 <section class="group"><h2>Time and money</h2><div class="sect"><div class="tiles">{tiles_html}</div></div></section>
@@ -514,6 +516,25 @@ document.addEventListener("click", ev => {{
 }});
 {_LIVE_JS.replace("__MODE__", mode) if served else ''}
 </script></body></html>"""
+
+
+def _advisors(s: dict) -> str:
+    """Where an advisor seat reviews a step's output, and what happened: plain words, advice only."""
+    from .advisors import REVIEWS, status
+    now, done, rows = status()[0], s.get("advisors") or {}, []
+    said = {"OFF": "Not asked: advisors are off (not connected yet)",
+            "BLOCKED": "Not asked: the advisors' server has not been reviewed yet",
+            "ON": "Will be asked when this step finishes", "FAILED": "Could not be reached; the run went on without it"}
+    for step, r in REVIEWS.items():
+        rec = done.get(step) or {}
+        st = rec.get("status", now)
+        sub = (f"Said: {rec.get('answer', '')[:240]}" if st == "ANSWERED" else said.get(st, "Not asked"))
+        ic = icons.check() if st == "ANSWERED" else icons.pause() if st in ("OFF", "BLOCKED") else icons.cross() if st == "FAILED" else icons.list_(18)
+        rows.append(f'<li class="row {"done" if st == "ANSWERED" else "pending"}"><span class="ic">{ic}</span><span class="t">'
+                    f'<b>{e(r["seat"])} reviews {e(r["what"])}</b><span>{e(sub)}</span></span></li>')
+    return (f'<section class="group"><h2>Advisors</h2><div class="sect"><ul class="rows">{"".join(rows)}</ul></div>'
+            '<p class="foot">Advice only. An advisor never changes the fix, the pull request text or your OK. They are '
+            'switched on after the advisors\' server has been reviewed.</p></section>')
 
 
 def _what_it_read(pack: dict, c: dict) -> str:

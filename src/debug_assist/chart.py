@@ -41,7 +41,21 @@ def _e(t: str) -> str:
     return (t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
-def svg() -> str:
+ADVISED = {"why": "why_it_shipped", "guard": "lasting_guard"}   # chart state → the step whose output a seat reviews
+ADV_WORD = {"OFF": "off", "BLOCKED": "not reviewed yet", "ON": "on", "ANSWERED": "answered", "FAILED": "unreachable"}
+
+
+def advisor_states(d: dict | None) -> dict:
+    """Per reviewed step: what its seat did in this run, or (not reached yet / no run) what the settings say."""
+    from .advisors import status
+    now = status()[0]
+    done = ((d or {}).get("state") or {}).get("advisors") or {}
+    return {step: (done.get(step) or {}).get("status", now) for step in ADVISED.values()}
+
+
+def svg(adv: dict | None = None) -> str:
+    from .advisors import REVIEWS
+    adv = adv or {}
     idx = {s: i for i, (s, _) in enumerate(STATES)}
     cx = X0 + BW / 2
     parts = ['<defs>'
@@ -74,6 +88,13 @@ def svg() -> str:
         parts.append(f'<path class="ce bad" id="ce-stop-{s}" d="M{X0 + BW} {y} L{PX - 4} {y}" marker-end="url(#cR)"/>')
         parts.append(f'<g class="cpill" id="cp-{s}"><rect x="{PX}" y="{y - 17}" width="{PW}" height="34" rx="17"/>'
                      f'<text x="{PX + PW / 2}" y="{y + 4}" text-anchor="middle">{_e(reason)}</text></g>')
+    # advisors: a seat beside the step it reviews (advice only; dotted, because it never changes the run)
+    for s, step in ADVISED.items():
+        y, st = _y(idx[s]) + BH / 2, adv.get(step, "OFF")
+        seat = REVIEWS[step]["seat"]
+        parts.append(f'<path class="ce adv-link" d="M{X0 - 44} {y} L{X0 - 4} {y}"/>')
+        parts.append(f'<g class="cadv {st.lower()}" id="ca-{s}"><rect x="{X0 - 294}" y="{y - 17}" width="250" height="34" rx="17"/>'
+                     f'<text x="{X0 - 169}" y="{y + 4}" text-anchor="middle">Advisor {_e(seat)}: {_e(ADV_WORD.get(st, st.lower()))}</text></g>')
     # states
     for i, (s, label) in enumerate(STATES):
         y = _y(i)
@@ -193,5 +214,5 @@ def section(d: dict | None, mode: str = "run") -> str:
               if d and run_path else "")
     data = json.dumps(paths).replace("</", "<\\/")
     return (f'<div class="chart" data-paths="{_e(data)}" data-start="{start}">{toggle}'
-            f'<div class="sect chart-box">{svg()}</div>'
+            f'<div class="sect chart-box">{svg(advisor_states(d))}</div>'
             f'<p class="chart-cap" aria-live="polite">Starting…</p><p class="foot chart-hint">Click the chart to pause or resume.</p></div>')
