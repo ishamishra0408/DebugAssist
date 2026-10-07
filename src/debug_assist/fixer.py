@@ -34,14 +34,19 @@ def is_test_path(path: str) -> bool:
 
 
 # ── definitions on request ───────────────────────────────────────────────────────────────────────
-def find_definition(checkout: Path, name: str, max_lines: int = 260) -> str:
-    """Where `name` is defined (class / function / const / type), with the code from there on."""
+def find_definition(checkout: Path, name: str, max_lines: int = 260, prefer: str = "") -> str:
+    """Where `name` is defined (class / function / const / type / method), with the code from there on. Definitions
+    under `prefer` (the package being fixed) come first: `doStream` exists in many packages."""
     if not re.fullmatch(r"[A-Za-z_$][\w$]{2,80}", name):
         return f"(not looked up: {name!r} is not an identifier)"
-    hits = _git(checkout, "grep", "-n", "-E", rf"(class|function|const|let|interface|type|enum)\s+{name}\b",
+    hits = _git(checkout, "grep", "-n", "-E", rf"(class|function|const|let|interface|type|enum)[[:space:]]+{name}([^[:alnum:]_$]|$)",
                 "--", "packages/*/src/**", ":!*.test.ts", ":!*.test.tsx").splitlines()
+    # and class methods: `  async doStream(` / `  private finishToolCall(` (Opus asked for doStream)
+    hits += _git(checkout, "grep", "-n", "-E", rf"^[[:space:]]+(public |private |protected |static |async |get )*{name}[[:space:]]*[<(]",
+                 "--", "packages/*/src/**", ":!*.test.ts", ":!*.test.tsx").splitlines()
     if not hits:
         return f"(no definition of {name} found in packages/*/src)"
+    hits.sort(key=lambda h: not (prefer and h.startswith(prefer)))
     path, num, _ = hits[0].split(":", 2)
     lines = (checkout / path).read_text().splitlines()
     start = max(1, int(num) - 3)
@@ -110,7 +115,7 @@ def find_cause(state: dict, checkout: Path, ctx, test_path: str, evidence: str) 
         wanted = [w for w in re.findall(r"NEED_DEFINITION:\s*`?([\w$]+)`?", reply) if w not in asked][:3]
         if wanted and len(asked) < 3 * CAUSE_LOOKUPS and "CAUSE_FILE:" not in reply:
             asked += wanted
-            looked_up += [find_definition(checkout, w) for w in wanted]
+            looked_up += [find_definition(checkout, w, prefer="/".join(ctx.source.split("/")[:2])) for w in wanted]
             continue
         try:
             cause = parse_cause(reply, checkout)
@@ -133,6 +138,8 @@ FILE: <repo-relative path>
 =======
 <the replacement lines>
 >>>>>>> REPLACE
+If, and only if, the failing test itself is wrong (it asserts something no correct fix could satisfy, e.g. its own
+input is malformed), reply with one line  TEST_FLAWED: <exactly what is wrong with it>  and nothing else.
 Rules:
 - Change source files only: never a test file, a fixture, or the failing test. The failing test is the judge.
 - Keep behaviour for every other caller unless the bug itself requires a change (prefer an optional, defaulted
@@ -317,7 +324,17 @@ def write_fix(state: dict, checkout: Path, cause: dict, test_path: str, evidence
             if not wanted or "<<<<<<< SEARCH" in str(msg.content):
                 break
             asked += wanted
-            looked_up += [find_definition(checkout, w) for w in wanted]
+            looked_up += [find_definition(checkout, w, prefer="/".join(cause["file"].split("/")[:2])) for w in wanted]
+        flawed = re.search(r"^\s*TEST_FLAWED:\s*(.+)", str(msg.content), re.M)
+        if flawed and "<<<<<<< SEARCH" not in str(msg.content):
+            # The fixer may challenge the judge, never edit it. Dev run 2026-10-07: a made-up chunk was invalid JSON,
+            # so even the by-hand verified fix failed the test; 3 fix attempts were spent on an unpassable judge.
+            rec = {"n": n, "ok": False, "changed": [], "red_to_green": False, "suites": {},
+                   "evidence": f"TEST FLAWED: {flawed.group(1).strip()[:600]}"}
+            events.log("fix_attempt", **rec)
+            attempts.append(rec)
+            return {"status": "TEST FLAWED", "attempts": attempts, "changed": [], "patch": "", "red_to_green": False,
+                    "suites": {}, "why": flawed.group(1).strip()}
         if drafts:
             Path(drafts).mkdir(parents=True, exist_ok=True)
             (Path(drafts) / f"fix-{n}.md").write_text(str(msg.content))  # every raw reply, for the record

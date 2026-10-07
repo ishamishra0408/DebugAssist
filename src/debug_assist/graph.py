@@ -174,9 +174,17 @@ def reproduce(s: RunState):
                           already=before, skipped=skipped)
     new = [{"step": "reproduce", **a} for a in ladder.as_records(result.attempts[len(before):])]
     red = next((a for a in result.attempts if a.outcome == ladder.RED), None)
+    # The judge for the fix: the recorded-stream test when it confirmed the bug (built from real data), else the first
+    # RED. Dev run 2026-10-07: the made-up-input test was unpassable (its own chunk was invalid JSON); the recorded one
+    # passed with the by-hand verified fix.
+    confirming = next((a for a in result.attempts[result.attempts.index(red) + 1:]
+                       if a.outcome == ladder.RED and a.rung == result.confirmed_by), None) if red else None
+    oracle = confirming if (result.confirmed and confirming) else red
     out = {"repro": {"status": result.status, "rung": result.rung, "ladder_plan": plan,
                      "confirmed": result.confirmed, "confirmed_by": result.confirmed_by,
                      "failing_test": red.test_path if red else None, "evidence": red.evidence if red else None,
+                     "oracle_test": oracle.test_path if oracle else None,
+                     "oracle_evidence": oracle.evidence if oracle else None,
                      "attempts_used": len(result.attempts), "sandbox_secrets_visible": seen,
                      "located": ctx.source, "checkout": str(checkout),
                      "confirm_tries": (len(result.attempts) - result.attempts.index(red) - 1) if red else 0},
@@ -197,7 +205,8 @@ def find_cause(s: RunState):
     checkout = Path(r["checkout"])
     ctx = testwriter.locate(checkout, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"])
     try:
-        cause = fixer.find_cause(s, checkout, ctx, r["failing_test"], r.get("evidence") or "")
+        cause = fixer.find_cause(s, checkout, ctx, r.get("oracle_test") or r["failing_test"],
+                                 r.get("oracle_evidence") or r.get("evidence") or "")
     except fixer.FixRefused as e:
         return {"cause": {"status": "NOT FOUND", "why": str(e)}, "outcome": stop("CAUSE NOT FOUND", str(e)),
                 "log": [f"find_cause: STOPPED CAUSE NOT FOUND: {e}"]}
@@ -214,7 +223,8 @@ def write_fix(s: RunState):
     fixer.revert(checkout, dirty)  # a crash mid-step can leave a half-applied attempt; start from clean source
     prof = PROFILES[s["profile"]["repo"]]
     looked = [fixer.find_definition(checkout, n) for n in c.get("looked_up", [])]
-    fix = fixer.write_fix(s, checkout, c, r["failing_test"], r.get("evidence") or "", prof, looked_up=looked,
+    fix = fixer.write_fix(s, checkout, c, r.get("oracle_test") or r["failing_test"],
+                          r.get("oracle_evidence") or r.get("evidence") or "", prof, looked_up=looked,
                           stale=dirty, drafts=run_dir(s) / "fixer")
     clock = dict(s["fix_clock"])
     clock["stopped_at"] = now()
@@ -226,7 +236,10 @@ def write_fix(s: RunState):
            "fix_clock": clock,
            "log": [f"write_fix: {fix['status']} after {len(fix['attempts'])} attempt(s); fix clock {clock['seconds']}s"
                    + (f"; suites green: {', '.join(fix['suites'])}" if clock["validated"] else "")]}
-    if not clock["validated"]:
+    if fix["status"] == "TEST FLAWED":
+        out["outcome"] = stop("TEST FLAWED", f"the fixer says the judging test cannot be passed: {fix['why'][:400]}. "
+                                             "A person checks the test (the fixer may never edit it)")
+    elif not clock["validated"]:
         last = fix["attempts"][-1]["evidence"][:300] if fix["attempts"] else "no attempt"
         out["outcome"] = stop("FIX NOT VALIDATED", f"{len(fix['attempts'])} attempt(s), none turned the test green with "
                                                    f"every affected suite passing. Last: {last}")
@@ -321,6 +334,8 @@ def reproduction_lines(r: dict) -> list[str]:
     return ["## Reproduction",
             "Reproduced before any fix, in a sandbox with the network off, with staged input; **not observed live**.",
             f"- Failing test (rung `{r.get('rung')}`): `{r.get('failing_test')}`",
+            *([f"- Judge for the fix (the recorded-stream test): `{r.get('oracle_test')}`"]
+              if r.get("oracle_test") and r.get("oracle_test") != r.get("failing_test") else []),
             f"- It shows: `{shown.strip()[:300]}`",
             f"- {confirm}",
             f"- Attempts: {r.get('attempts_used')} of {REPRO_ATTEMPT_CAP}",

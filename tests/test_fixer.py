@@ -43,7 +43,7 @@ def test_find_cause_can_look_up_a_definition_first(repo, monkeypatch):
     seen = []
     monkeypatch.setattr(fixer, "write", lambda state, step, msgs, max_tokens: (
         seen.append(msgs[-1][1]) or SimpleNamespace(content=next(replies)), {}))
-    monkeypatch.setattr(fixer, "find_definition", lambda co, n: f"--- definition of {n}")
+    monkeypatch.setattr(fixer, "find_definition", lambda co, n, **k: f"--- definition of {n}")
     ctx = SimpleNamespace(snippets="1  tracker.flush();", source="packages/compat/src/model.ts")
     cause = fixer.find_cause({"issue": {"title": "t"}, "focus": "f"}, repo, ctx,
                              "packages/compat/src/da-repro-1-unit-1.test.ts", "AssertionError")
@@ -120,3 +120,20 @@ def test_the_file_may_be_named_bare_inside_a_fence_and_reused_for_a_second_block
     assert [e.path for e in edits] == ["packages/utils/src/tracker.ts"] * 2 and edits[1].replace.startswith("flush({")
     with pytest.raises(FixRefused, match="names no file"):
         parse_edits("<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE")
+
+
+def test_the_fixer_may_call_the_test_flawed_but_never_edit_it(repo, monkeypatch):
+    monkeypatch.setattr(fixer, "write", lambda *a, **k: (SimpleNamespace(
+        content="TEST_FLAWED: its second chunk is invalid JSON, so a parse error replaces the expected error"), {}))
+    fix = fixer.write_fix({"issue": {"title": "t"}}, repo, CAUSE, "packages/compat/src/da-repro-1-unit-1.test.ts",
+                          "AssertionError", PROFILE, run_cmd=_runner(repo, []))
+    assert fix["status"] == "TEST FLAWED" and "invalid JSON" in fix["why"] and len(fix["attempts"]) == 1
+    assert subprocess.run(["git", "diff", "--quiet"], cwd=repo).returncode == 0
+
+
+def test_a_method_definition_is_found(repo):
+    (repo / "packages/compat/src/model.ts").write_text("class Model {\n  async doStream(options) {\n    return 1;\n  }\n}\n")
+    (repo / "packages/utils/src/other.ts").write_text("const doStream = 1;\n")  # same name elsewhere
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    assert "compat/src/model.ts (definition of doStream at line 2" in fixer.find_definition(repo, "doStream", prefer="packages/compat")
+    assert "definition of Model at line 1" in fixer.find_definition(repo, "Model")  # \\s never matched in git grep
