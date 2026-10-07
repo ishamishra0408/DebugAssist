@@ -320,7 +320,10 @@ def page(data, svg_light, svg_dark):
     bh, ttvf, w = data.get("byhand"), (data.get("northstar") or {}).get("ttvf"), (data.get("northstar") or {}).get("whc")
     vals = " and ".join(f"{x:.0f} s" for x in (ttvf or {}).get("seconds", []))
     ns = ((f"<p class='big'>⏱ {html.escape(vals) or 'none yet'}</p><p class='muted'>{ttvf['reached']} of {ttvf['pickups']} pipeline "
-           f"pickups reached a fix confirmed by two tests (vercel/ai #21439; development values). "
+           f"pickups reached a fix confirmed by two tests (vercel/ai #21439; development values"
+           + (f"; {ttvf['skeleton']} were skeleton runs from before the fixer existed" if ttvf.get('skeleton') else "")
+           + "".join(f"; {k} {v['reached']} of {v['pickups']}" for k, v in (ttvf.get('by_model') or {}).items())
+           + "). "
            + (f"By hand: {html.escape(bh['validated'])}, a different stop rule. " if bh else "")
            + f"</p><p class='muted'>🎯 {html.escape(w['state'])}</p>") if ttvf else
           "<p class='big'>Not measured yet</p><p class='muted'>No pipeline run has been picked up.</p>")
@@ -429,7 +432,8 @@ def main():
     try:  # computed from the runs themselves (northstar.py), never typed
         from debug_assist import northstar
         rows = northstar.runs()
-        data["northstar"] = {"ttvf": northstar.time_to_validated_fix(rows), "whc": northstar.would_have_caught(rows)}
+        data["northstar"] = {"ttvf": northstar.time_to_validated_fix(rows),
+                             "whc": northstar.would_have_caught(rows, northstar.corpus_issues())}
     except Exception as ex:  # report, never hide
         data["northstar"] = {"error": str(ex)[:200]}
     data["run_evidence"] = run_evidence(data["latest_run"])

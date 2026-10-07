@@ -396,7 +396,8 @@ def test_past_bugs(s: RunState):
     vec = embedder().embed_query(cond)  # search uses the condition only, never the guard
     events.log("embed", key="condition", model=CFG.embed_model, dims=len(vec), ms=round((time.monotonic() - t0) * 1000))
     hits, searched, can_look = [], CONDITIONS.estimated_document_count(), True
-    if searched:
+    others = len([u for u in CONDITIONS.distinct("issue_url") if u != s["issue_url"]])
+    if others:
         can_look = _ensure_vector_index(len(vec))
         if can_look:
             hits = [h for h in CONDITIONS.aggregate([
@@ -410,14 +411,16 @@ def test_past_bugs(s: RunState):
         CONDITIONS.update_one({"run_id": s["run_id"]}, {"$set": {
             "issue_url": s["issue_url"], "text": cond, "embedding": vec, "sha256": s["condition"]["sha256"]}},
             upsert=True)
-    if not can_look:
+    if not others:
+        state = "UNEVALUABLE (the corpus holds no other issue to search; not the same as no siblings)"
+    elif not can_look:
         state = "UNEVALUABLE (search index not ready; not the same as no siblings)"
     elif hits:
         state = "CANDIDATES FOUND (back-test runs Friday)"
     else:
         state = "NO PAST SIBLING FOUND"
     bt = _backtest_guard(s)
-    result = {"state": state, "searched_conditions": searched, "candidates": hits[:3],
+    result = {"state": state, "searched_conditions": searched, "other_issues": others, "candidates": hits[:3],
               "would_have_caught": bt.get("would_have_caught") if bt else None,
               "false_alarms": bt.get("false_alarms") if bt else None, "detail": bt}
     fa = (bt or {}).get("false_alarms") or {}
@@ -506,8 +509,12 @@ def backtest_lines(b: dict, g: dict | None = None) -> list[str]:
     fa, a = d["false_alarms"], d["anchor"]
     caught = {True: "**yes**: the guard fails there", False: "**no**: the guard passes there",
               None: f"unevaluable ({a.get('why', 'the tests could not run on that code')})"}[d["would_have_caught"]]
+    m = len(b.get("candidates") or [])
     return [f"Past bugs of this kind: {b.get('state')}.",
-            f"Back-test, would it have caught this bug when it was written (`{a['sha']}`)? {caught}.",
+            f"🎯 Would-have-caught: " + ("**NOT SCORED** (m = 0: no earlier bug of the same kind to test)." if not m
+                                        else f"**NOT SCORED YET**: {m} candidate(s), unconfirmed."),
+            f"Self-check, not the 🎯 score (the guard was written from this bug): does it fail on the code where the "
+            f"bug was written (`{a['sha']}`)? {caught}.",
             f"False alarms on the {fa['window']} commits before it: fired on **{fa['fired']}**; quiet on {fa['quiet']}; "
             f"the bug was already there on {fa['bug_already_there']} (the guard firing there is correct); "
             f"unevaluable on {fa['unevaluable']}; not run on {fa['not_run']} "

@@ -100,6 +100,15 @@ def freshness(d: dict) -> str:
     return f"{mins} min ago" if mins < 120 else f"{mins // 60} h ago"
 
 
+def _wouldve(b: dict) -> str:
+    """🎯 for one run, from its own back-test state (north-star-v1.1: k of m past siblings)."""
+    m = len(b.get("candidates") or [])
+    if m:
+        return f"🎯 NOT SCORED YET: {m} candidate sibling(s), unconfirmed"
+    others = b.get("other_issues", 0 if b.get("searched_conditions") == 0 else None)
+    return "🎯 NOT SCORED: no past sibling (m = 0)" + (
+        "; the corpus held no other issue to search" if others == 0 else "")
+
 def render(d: dict) -> str:
     s, m = d["state"], d["meter"]
     issue = s.get("issue") or {}
@@ -241,7 +250,7 @@ button {{ font:inherit; font-size:13px; padding:5px 12px; border:1px solid var(-
     <details><summary>Cases on the fixed code</summary><ul class="cases">{cases}</ul></details>
     <p class="note" style="margin-top:10px">Same code in {len(g.get('siblings', []))} other file(s), not fixed here:</p><ul class="cases">{sib}</ul></div>
   <div class="card"><h2>Back-test · 🎯 would have caught</h2>
-    <p><b>🎯 NOT SCORED: no past sibling (m = 0)</b>. Self-check at the anchor <code>{e((det.get('anchor') or {}).get('sha', ''))}</code>: {e(caught)} (in-sample: the guard was written from this bug)</p>
+    <p><b>{e(_wouldve(b))}</b>. Self-check at the anchor <code>{e((det.get('anchor') or {}).get('sha', ''))}</code>: {e(caught)} (in-sample: the guard was written from this bug)</p>
     <p class="note">On the {e(fa.get('window', '?'))} commits before: false alarms {e(fa.get('fired', '?'))} · quiet {e(fa.get('quiet', '?'))} · bug already there {e(fa.get('bug_already_there', '?'))} · unevaluable {e(fa.get('unevaluable', '?'))}</p>
     <div class="scroll"><table><tr><th>commit</th><th>date</th><th>covers</th><th>result</th><th>judge</th><th>guard</th><th>title</th></tr>{groups}</table></div></div>
 </section>

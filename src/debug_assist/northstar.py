@@ -27,6 +27,7 @@ def runs(db=None) -> list[dict]:
         if judges is None and fix.get("status") == "VALIDATED":  # runs from before the judges field
             judges = 2 if str((fix.get("holdout") or {}).get("status", "")).startswith("PASSED") else 1
         out.append({"run_id": m["_id"], "model": "opus" if s.get("demo") else "dev",
+                    "skeleton": fix.get("status") == "PLACEHOLDER",  # run before the fixer existed: could not reach
                     "picked_up": bool(clock.get("started_at")), "seconds": clock.get("seconds"),
                     "two_judges": fix.get("status") == "VALIDATED" and judges == 2,
                     "outcome": (s.get("outcome") or {}).get("exit"),
@@ -38,10 +39,30 @@ def time_to_validated_fix(rows: list[dict]) -> dict:
     picked = [r for r in rows if r["picked_up"]]
     done = [r for r in picked if r["two_judges"] and r["seconds"] is not None]
     secs = sorted(r["seconds"] for r in done)
+    by_model = {k: {"reached": sum(1 for r in done if r.get("model") == k),
+                    "pickups": sum(1 for r in picked if r.get("model") == k and not r.get("skeleton"))}
+                for k in sorted({r.get("model") for r in picked if r.get("model")})}
     return {"pickups": len(picked), "reached": len(done), "seconds": secs,
-            "range": (secs[0], secs[-1]) if secs else None, "runs": [r["run_id"] for r in done]}
+            "range": (secs[0], secs[-1]) if secs else None, "runs": [r["run_id"] for r in done],
+            "skeleton": sum(1 for r in picked if r.get("skeleton")), "by_model": by_model}
 
 
-def would_have_caught(rows: list[dict]) -> dict:
+def corpus_issues(db=None) -> list[str]:
+    """The distinct issues the condition corpus holds: the population any sibling search can draw from."""
+    from .store import db as _db
+    d = db if db is not None else _db()
+    return sorted(d["conditions"].distinct("issue_url"))
+
+
+def would_have_caught(rows: list[dict], corpus: list[str] | None = None) -> dict:
+    """m = candidate siblings found. They are unconfirmed, so k is never computed here: a non-author confirms them
+    first (north-star-v1.1). With m = 0, say whether the search could have found one at all (independent grade
+    2026-10-07: the corpus held only the incident's own issue, so "no past sibling" alone overstated it)."""
     m = sum(r["siblings"] for r in rows)
-    return {"m": m, "state": "NOT SCORED: no past sibling (m = 0)" if m == 0 else f"{m} sibling(s) to score"}
+    if m:
+        return {"m": m, "state": f"NOT SCORED YET: {m} candidate sibling(s), unconfirmed (k needs a non-author's check)"}
+    state = "NOT SCORED: no past sibling (m = 0)"
+    if corpus is not None and len(corpus) <= 1:
+        state += (f"; the condition corpus holds {len(corpus)} issue{'' if len(corpus) == 1 else 's'}"
+                  f"{' (this one)' if len(corpus) == 1 else ''}, so no search could have found a sibling")
+    return {"m": m, "corpus": len(corpus) if corpus is not None else None, "state": state}
