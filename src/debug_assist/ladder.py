@@ -62,12 +62,15 @@ class Climb:
 CONFIRM_ON = {"unit": "integration"}  # a RED on made-up data is confirmed on the recorded-format rung
 
 
-def plan(has_repro_p: float, has_recorded_fixtures: bool) -> tuple[list[Rung], dict]:
-    """Which rungs this issue can use, and why any were left out."""
+def plan(has_repro_p: float, has_recorded_fixtures: bool, live_ok: bool = False) -> tuple[list[Rung], dict]:
+    """Which rungs this issue can use, and why any were left out. end_to_end runs the reporter's repro against live
+    providers, which needs keys and network the sandbox never has (by design), so it is off unless live_ok."""
     rungs, skipped = [], {}
     for r in RUNGS:
         if r.name == "integration" and not has_recorded_fixtures:
             skipped[r.name] = "repo profile has no recorded fake server yet"
+        elif r.name == "end_to_end" and not live_ok:
+            skipped[r.name] = "needs live provider keys and network; the sandbox holds neither, by design"
         elif r.name == "end_to_end" and has_repro_p < 0.5:
             skipped[r.name] = f"the issue has no reporter repro (Laya has_repro p={has_repro_p:.2f})"
         else:

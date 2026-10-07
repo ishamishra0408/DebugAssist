@@ -101,10 +101,15 @@ def test_a_confirmation_decided_before_a_crash_is_not_redone():
 
 
 def test_plan_skips_rungs_the_issue_cannot_use():
-    rungs, skipped = plan(has_repro_p=0.2, has_recorded_fixtures=False)
+    rungs, skipped = plan(has_repro_p=0.2, has_recorded_fixtures=False, live_ok=True)
     assert [r.name for r in rungs] == ["unit"]
     assert set(skipped) == {"integration", "end_to_end"} and "p=0.20" in skipped["end_to_end"]
-    assert [r.name for r in plan(0.9, True)[0]] == ["unit", "integration", "end_to_end"]
+    assert [r.name for r in plan(0.9, True, live_ok=True)[0]] == ["unit", "integration", "end_to_end"]
+
+
+def test_end_to_end_is_off_without_live_access():
+    rungs, skipped = plan(has_repro_p=0.9, has_recorded_fixtures=True)
+    assert [r.name for r in rungs] == ["unit", "integration"] and "by design" in skipped["end_to_end"]
 
 
 @pytest.mark.parametrize("lang,code,out,want", [
