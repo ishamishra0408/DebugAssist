@@ -20,13 +20,14 @@ import functools
 import json
 import operator
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated, TypedDict
 
 from langgraph.checkpoint.mongodb import MongoDBSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from . import events, ladder, testwriter
+from . import events, fixer, ladder, testwriter
 from .checkout import run_copy
 from .config import CFG, REPRO_ATTEMPT_CAP
 from .github_read import get_issue
@@ -192,20 +193,44 @@ def reproduce(s: RunState):
 
 
 def find_cause(s: RunState):
-    msg, upd = write(s, "find_cause", [("system", "Connectivity check. Reply with exactly: OK"), ("user", "ping")],
-                     max_tokens=16)
-    return {"cause": {"status": "PLACEHOLDER", "llm_ping": str(msg.content).strip()[:20], "model": CFG.gen_model_dev},
-            **upd, "log": [f"find_cause: PLACEHOLDER; model ping='{str(msg.content).strip()[:20]}' spent=${upd['spent_usd']:.6f}"]}
+    r = s["repro"]
+    checkout = Path(r["checkout"])
+    ctx = testwriter.locate(checkout, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"])
+    try:
+        cause = fixer.find_cause(s, checkout, ctx, r["failing_test"], r.get("evidence") or "")
+    except fixer.FixRefused as e:
+        return {"cause": {"status": "NOT FOUND", "why": str(e)}, "outcome": stop("CAUSE NOT FOUND", str(e)),
+                "log": [f"find_cause: STOPPED CAUSE NOT FOUND: {e}"]}
+    a, b = cause["lines"]
+    return {"cause": {"status": "FOUND", **cause},
+            "log": [f"find_cause: {cause['file']}:{a}-{b}"
+                    + (f" (looked up {', '.join(cause['looked_up'])})" if cause["looked_up"] else "")]}
 
 
 def write_fix(s: RunState):
+    r, c = s["repro"], s["cause"]
+    checkout = Path(r["checkout"])
+    dirty = [p for p in fixer._git(checkout, "diff", "--name-only").split() if p]
+    fixer.revert(checkout, dirty)  # a crash mid-step can leave a half-applied attempt; start from clean source
+    prof = PROFILES[s["profile"]["repo"]]
+    looked = [fixer.find_definition(checkout, n) for n in c.get("looked_up", [])]
+    fix = fixer.write_fix(s, checkout, c, r["failing_test"], r.get("evidence") or "", prof, looked_up=looked,
+                          stale=dirty)
     clock = dict(s["fix_clock"])
     clock["stopped_at"] = now()
-    t0 = datetime.fromisoformat(clock["started_at"])
-    clock["seconds"] = round((datetime.fromisoformat(clock["stopped_at"]) - t0).total_seconds(), 1)
-    clock["validated"] = False  # placeholder fix: the clock only counts once red → green is real
-    return {"fix": {"status": "PLACEHOLDER", "red_to_green": None, "suite_green": None}, "fix_clock": clock,
-            "log": [f"write_fix: PLACEHOLDER; fix clock {clock['seconds']}s (not validated)"]}
+    clock["seconds"] = round((datetime.fromisoformat(clock["stopped_at"])
+                              - datetime.fromisoformat(clock["started_at"])).total_seconds(), 1)
+    clock["validated"] = fix["status"] == "VALIDATED"  # ⏱ counts only a fix that turned the test green, suites green
+    (run_dir(s) / "fix.patch").write_text(fix["patch"])
+    out = {"fix": {k: v for k, v in fix.items() if k != "patch"} | {"patch_path": str(run_dir(s) / "fix.patch")},
+           "fix_clock": clock,
+           "log": [f"write_fix: {fix['status']} after {len(fix['attempts'])} attempt(s); fix clock {clock['seconds']}s"
+                   + (f"; suites green: {', '.join(fix['suites'])}" if clock["validated"] else "")]}
+    if not clock["validated"]:
+        last = fix["attempts"][-1]["evidence"][:300] if fix["attempts"] else "no attempt"
+        out["outcome"] = stop("FIX NOT VALIDATED", f"{len(fix['attempts'])} attempt(s), none turned the test green with "
+                                                   f"every affected suite passing. Last: {last}")
+    return out
 
 
 # ── Phase 2: Learn from it ──────────────────────────────────────────────────────────────────────
@@ -302,6 +327,20 @@ def reproduction_lines(r: dict) -> list[str]:
             ""]
 
 
+def fix_lines(cause: dict, fix: dict, patch_path: Path) -> list[str]:
+    if fix.get("status") != "VALIDATED":
+        return ["## Fix", "PLACEHOLDER: the patch and the failing test it turns green.", ""]
+    a, b = cause["lines"]
+    patch = patch_path.read_text() if patch_path.exists() else ""
+    return ["## Fix",
+            f"Cause: `{cause['file']}` lines {a}-{b}. {cause['why']}",
+            "",
+            f"Validated before this text was written: the failing test now passes, and these suites stay green: "
+            f"{', '.join(fix['suites'])}.",
+            "",
+            "<details><summary>Patch</summary>", "", "```diff", patch.rstrip(), "```", "</details>", ""]
+
+
 def compose_pr_body(s: RunState) -> str:
     """Deterministic (no timestamps): the approval fingerprint must match on resume."""
     i, g, b = s["issue"], s["guard"], s["backtest"]
@@ -309,9 +348,7 @@ def compose_pr_body(s: RunState) -> str:
         f"Fixes #{i['number']}",
         "",
         *reproduction_lines(s.get("repro") or {}),
-        "## Fix",
-        "PLACEHOLDER: the patch and the failing test it turns green.",
-        "",
+        *fix_lines(s.get("cause") or {}, s.get("fix") or {}, run_dir(s) / "fix.patch"),
         "<details><summary>Why this shipped (conditions, not people)</summary>",
         "",
         s["second_story"]["text"],
@@ -378,7 +415,7 @@ def build():
     for fn in steps + [open_pr]:
         g.add_node(fn.__name__, step(fn))
     g.add_edge(START, steps[0].__name__)
-    can_stop = {"read_issue", "reproduce"}  # the steps with typed early exits
+    can_stop = {"read_issue", "reproduce", "find_cause", "write_fix"}  # the steps with typed early exits
     for a, b in zip(steps, steps[1:]):
         if a.__name__ in can_stop:
             g.add_conditional_edges(a.__name__, _unless_stopped(b.__name__), [b.__name__, END])
