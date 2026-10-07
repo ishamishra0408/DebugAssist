@@ -29,7 +29,7 @@ from langgraph.checkpoint.mongodb import MongoDBSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from . import backtest, events, fixer, guard, ladder, story, testwriter
+from . import backtest, context, events, fixer, guard, ladder, story, testwriter
 from .checkout import base_path, run_copy
 from .config import CFG, REPRO_ATTEMPT_CAP
 from .github_read import get_issue
@@ -72,6 +72,7 @@ class RunState(TypedDict, total=False):
     turns: dict
     focus: str          # the ONE problem in the issue this run reproduces (--focus, or a section via --focus-heading)
     focus_heading: str
+    context: dict       # Gather context: where the pack is, its sha256, the counts, and the brief later steps read
     attempts: Annotated[list, operator.add]  # append-only: every attempt and how it ended (also in the event log)
     outcome: dict                            # set when the run stops: {"exit": ..., "why": ..., "at": ...}
     log: Annotated[list, operator.add]
@@ -148,6 +149,38 @@ def read_issue(s: RunState):
     return out
 
 
+CONTEXT_NOT_FOUND = "CONTEXT NOT FOUND"
+
+
+def gather_context(s: RunState):
+    """One step, no AI: collect what the later steps read (context.py), save it with the run, lock it with a sha256."""
+    prof = PROFILES[s["profile"]["repo"]]
+    checkout = run_copy(prof, run_dir(s) / "checkout")  # this run's own unmodified code (reused as-is on resume)
+    focus = s.get("focus") or s["issue"]["title"]
+    try:
+        pack = context.collect(s["issue"], focus, checkout, prof.base_commit)
+    except testwriter.WriterRefused as e:
+        return {"context": {"status": "NOT FOUND", "checkout": str(checkout), "why": str(e)},
+                "outcome": stop(CONTEXT_NOT_FOUND, f"{e}; there is no code to show the bug in"),
+                "log": [f"gather_context: STOPPED {CONTEXT_NOT_FOUND}: {e}"]}
+    path = run_dir(s) / "context.json"
+    sha = context.save(pack, path)
+    c = pack["counts"]
+    events.log("context", key="pack", sha256=sha[:12], **c, missing=pack["missing"], cut=pack["cut"])
+    return {"context": {"status": "GATHERED", "path": str(path), "sha256": sha, "checkout": str(checkout),
+                        "located": pack["code"]["best"], "counts": c, "brief": pack["brief"],
+                        "missing": pack["missing"], "cut": pack["cut"]},
+            "log": [f"gather_context: {c['comments']} comments, {c['linked']} linked, {c['files']} files "
+                    f"(best {pack['code']['best']}), {c['related']} shared definitions, {c['changes']} recent changes; "
+                    f"brief {c['brief_chars']} chars; sha256 {sha[:12]}"
+                    + (f"; missing: {', '.join(pack['missing'])}" if pack["missing"] else "")]}
+
+
+def _ctx(s: RunState, checkout: Path):
+    """The context every step reads: the saved pack when Gather context ran, else (older runs) a fresh locate."""
+    return context.load_ctx(s) or testwriter.locate(checkout, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"])
+
+
 def focus_of(issue: dict, focus: str | None, heading: str | None) -> str:
     """The problem to reproduce: given outright, or the text under a markdown heading of the issue (e.g. #21439's
     "Secondary observation"). Empty when the heading isn't there."""
@@ -198,8 +231,8 @@ def reproduce(s: RunState):
         raise GuardrailViolation(f"sandbox exposes secrets or failed its probe: {seen}")
     rungs, skipped = ladder.plan(s["triage"]["has_repro_p"], s["profile"].get("recorded_fixtures", False))
     plan = {"rungs": [r.name for r in rungs], "skipped": skipped, "cap": REPRO_ATTEMPT_CAP}
-    checkout = run_copy(PROFILES[s["profile"]["repo"]], run_dir(s) / "checkout")  # this run's own unmodified code
-    ctx = testwriter.locate(checkout, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"])
+    checkout = run_copy(PROFILES[s["profile"]["repo"]], run_dir(s) / "checkout")  # made by Gather context; reused
+    ctx = _ctx(s, checkout)
     before = [{k: v for k, v in e.items() if k in ladder.Attempt.__dataclass_fields__}
               for e in events.for_run(s["run_id"]) if e["kind"] == "attempt" and e["step"] == "reproduce"]
     result = ladder.climb(rungs, lambda r, n, h: _record_attempt(s, _write_and_run_test(s, r, n, h, ctx, checkout)),
@@ -236,7 +269,7 @@ def reproduce(s: RunState):
 def find_cause(s: RunState):
     r = s["repro"]
     checkout = Path(r["checkout"])
-    ctx = testwriter.locate(checkout, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"])
+    ctx = _ctx(s, checkout)
     try:
         cause = fixer.find_cause(s, checkout, ctx, r.get("oracle_test") or r["failing_test"],
                                  r.get("oracle_evidence") or r.get("evidence") or "")
@@ -264,6 +297,7 @@ def write_fix(s: RunState):
     if fix["status"] == "VALIDATED":  # a second, independent judge written without seeing the fix
         base_copy = run_copy(prof, run_dir(s) / "holdout-base")
         ctx = testwriter.locate(base_copy, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"])
+        ctx.extra = (s.get("context") or {}).get("brief", "")  # the second test reads the same gathered context
         ho = fixer.holdout(s, prof, checkout, base_copy, ctx, [judge], drafts=run_dir(s) / "holdout")
         if ho["status"] == "FIX INCOMPLETE":
             first = fix
@@ -279,6 +313,7 @@ def write_fix(s: RunState):
                 # it blind. A fresh third test, written without seeing either fix, must also pass for two judges.
                 third_copy = run_copy(prof, run_dir(s) / "holdout3-base")
                 ctx3 = testwriter.locate(third_copy, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"])
+                ctx3.extra = ctx.extra
                 third = fixer.holdout(s, prof, checkout, third_copy, ctx3, [judge, ho["test"]],
                                       drafts=run_dir(s) / "holdout3")
                 ho = {**ho, "third": third,
@@ -617,11 +652,12 @@ def _unless_stopped(next_step: str):
 
 def build():
     g = StateGraph(RunState)
-    steps = [read_issue, reproduce, find_cause, write_fix, why_it_shipped, lasting_guard, test_past_bugs, approval]
+    steps = [read_issue, gather_context, reproduce, find_cause, write_fix, why_it_shipped, lasting_guard,
+             test_past_bugs, approval]
     for fn in steps + [open_pr]:
         g.add_node(fn.__name__, step(fn))
     g.add_edge(START, steps[0].__name__)
-    can_stop = {"read_issue", "reproduce", "find_cause", "write_fix", "why_it_shipped", "lasting_guard"}
+    can_stop = {"read_issue", "gather_context", "reproduce", "find_cause", "write_fix", "why_it_shipped", "lasting_guard"}
     for a, b in zip(steps, steps[1:]):
         if a.__name__ in can_stop:
             g.add_conditional_edges(a.__name__, _unless_stopped(b.__name__), [b.__name__, END])

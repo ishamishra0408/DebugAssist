@@ -91,8 +91,8 @@ def _fake_steps(monkeypatch, calls, crash_once):
             return {"log": [name], **(update or {})}
         fn.__name__ = name
         return fn
-    for name in ["read_issue", "reproduce", "find_cause", "write_fix", "why_it_shipped", "lasting_guard",
-                 "test_past_bugs", "open_pr"]:
+    for name in ["read_issue", "gather_context", "reproduce", "find_cause", "write_fix", "why_it_shipped",
+                 "lasting_guard", "test_past_bugs", "open_pr"]:
         monkeypatch.setattr(graph, name, make(name))
     monkeypatch.setattr(graph, "approval", make("approval", {"approval": {"status": "PENDING"}}))
     monkeypatch.setattr(graph, "CFG", dataclasses.replace(graph.CFG, db_name=TEST_DB))
@@ -106,7 +106,8 @@ def test_resume_continues_after_the_last_finished_step(scratch_db, monkeypatch):
         app.invoke({"run_id": "resume-test", "issue_url": "u", "log": []}, cfg)
     assert app.get_state(cfg).next == ("find_cause",)
     app.invoke(None, cfg)  # what `debug-assist resume` does
-    assert calls["read_issue"] == 1 and calls["reproduce"] == 1, "finished steps must not re-run"
+    assert calls["read_issue"] == 1 and calls["gather_context"] == 1 and calls["reproduce"] == 1, \
+        "finished steps must not re-run"
     assert calls["find_cause"] == 2 and calls["approval"] == 1
 
 

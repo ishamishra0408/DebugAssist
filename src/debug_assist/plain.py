@@ -6,8 +6,9 @@ Rule (Isha, 2026-10-07): no fluff, no jargon. Say what happened and what to do. 
 
 NAME = "DebugAssistAgent"
 
-# The 9 steps: (graph node, what the operator sees, what the step gives back)
+# The steps: (graph node, what the operator sees, what the step does)
 STEPS = [("read_issue", "Read the issue", "Decides whether it is a real bug"),
+         ("gather_context", "Gather context", "Reads the comments, the code around the problem and its recent changes"),
          ("reproduce", "Show the bug", "Writes a test that fails because of the bug"),
          ("find_cause", "Find the cause", "Finds the file and lines that cause it"),
          ("write_fix", "Fix it", "Writes a fix that passes 2 separate tests"),
@@ -23,6 +24,7 @@ EXITS = {
     "READY FOR YOU TO PUBLISH": "Done. The pull request text is ready for you to send.",
     "NEEDS PERSON": "Stopped. A person needs to read this issue first.",
     "NOT A DEFECT": "Stopped. This does not look like a bug.",
+    "CONTEXT NOT FOUND": "Stopped. It could not find any code that matches the issue.",
     "NEVER REPRODUCED": "Stopped. It could not make the bug happen, so it did not try to fix it.",
     "CAUSE NOT FOUND": "Stopped. It could not find the code that causes the bug.",
     "FIX NOT VALIDATED": "Stopped. None of its fixes passed the tests.",
@@ -57,6 +59,8 @@ def happened(x: dict) -> str | None:
         return f"Old version {str(x.get('commit', ''))[:7]}: {OLD_CODE.get(x.get('state'), str(x.get('state')).lower())}"
     if k == "embed":
         return "Saved, so similar bugs can be found later"
+    if k == "context":
+        return f"Read {x.get('comments', 0)} comments, {x.get('files', 0)} files, {x.get('changes', 0)} recent changes"
     if k == "approval":
         return "You approved" if x.get("status") == "APPROVED" else "You said no"
     if k == "laya":
@@ -106,6 +110,11 @@ def result(key: str, s: dict) -> str | None:
     if key == "read_issue" and isinstance((s.get("triage") or {}).get("is_defect_p"), (int, float)):
         p = s["triage"]["is_defect_p"]
         return f"Looks like a real bug ({p:.0%} sure)" if p >= .5 else f"May not be a bug (only {p:.0%} sure it is)"
+    if key == "gather_context" and (c := (s.get("context") or {}).get("counts")):
+        parts = [f"{c['comments']} comment{'s' * (c['comments'] != 1)}", f"{c['files']} files",
+                 (f"{c['related']} piece{'s' * (c['related'] != 1)} of shared code" if c.get("related") else ""),
+                 f"{c['changes']} recent changes"]
+        return "Read " + ", ".join(p for p in parts if p)
     if key == "reproduce" and (r := s.get("repro") or {}).get("status") == "REPRODUCED":
         return (f"Bug shown on try {r.get('attempts_used') or 1}"
                 + (", then confirmed on a recorded stream" if r.get("confirmed") else ""))

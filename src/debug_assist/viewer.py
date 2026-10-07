@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import icons, plain
 
-_FIELD = {"read_issue": "triage", "reproduce": "repro", "find_cause": "cause", "write_fix": "fix",
+_FIELD = {"read_issue": "triage", "gather_context": "context", "reproduce": "repro", "find_cause": "cause", "write_fix": "fix",
           "why_it_shipped": "second_story", "lasting_guard": "guard", "test_past_bugs": "backtest",
           "approval": "approval", "open_pr": "published"}
 STEPS = [(k, label, _FIELD[k]) for k, label, _ in plain.STEPS]  # (graph node, operator's name, state field)
@@ -77,7 +77,14 @@ def gather(run_id: str, at: datetime | None = None) -> dict:
         calls = [c for c in calls if c.get("at") and _t(c["at"]) <= at]
         mtr = {**mtr, "spent_usd": sum((c.get("actual_micro") or 0) for c in calls) / 1e6,
                "sandbox_used_s": round(sum(x.get("seconds") or 0 for x in evs if x["kind"] == "sandbox"))}
-    return {"run_id": run_id, "state": snap.values or {}, "next": list(snap.next or []), "interrupt": intr,
+    pack = {}
+    cpath = ((snap.values or {}).get("context") or {}).get("path")
+    if cpath and Path(cpath).exists():
+        try:
+            pack = json.loads(Path(cpath).read_text())
+        except ValueError:
+            pack = {}
+    return {"run_id": run_id, "state": snap.values or {}, "next": list(snap.next or []), "interrupt": intr, "pack": pack,
             "pr_text": pr_text, "pr_matches": pr_ok, "patch": patch, "events": evs,
             "trials": events.trials_of(run_id), "meter": mtr, "calls": calls,
             "built": datetime.now().strftime("%H:%M:%S"),
@@ -141,6 +148,12 @@ def step_rows(d: dict) -> list[dict]:
         ev = [x for x in d["events"] if x.get("step") == key]
         span = f"{ev[0]['at'][11:19]}–{ev[-1]['at'][11:19]}" if ev else ""
         out.append({"key": key, "label": label, "status": status, "lines": lines, "span": span, "events": len(ev)})
+    later_done = False
+    for r in reversed(out):  # a step with no output before steps that have output: added after this run
+        if r["status"] == "done":
+            later_done = True
+        elif later_done and r["status"] == "not reached":
+            r["status"] = "skipped"
     if bad and stopped_at is None:
         stopped_at = line_at
     if bad and stopped_at is None:
@@ -194,7 +207,8 @@ def _wouldve(b: dict) -> str:
 
 # What each step is, in the pipeline card: (kind, what runs it). The model is filled in per run.
 STATIC = Path(__file__).parent / "static"
-NODE_STATE = {"done": "done", "next": "running", "waiting for you": "waiting", "stopped": "stopped", "not reached": "pending"}
+NODE_STATE = {"done": "done", "next": "running", "waiting for you": "waiting", "stopped": "stopped", "not reached": "pending",
+              "skipped": "skipped"}
 QUIET_S = 1200  # no new step or event for 20 min while "working": the process is gone (crash, closed terminal)
 PHASE_CLASS = {"working": "s-live", "waiting": "s-waiting", "interrupted": "s-waiting", "done": "s-done",
                "stopped": "s-stopped", "could not start": "s-stopped", "crashed": "s-stopped"}
@@ -238,13 +252,13 @@ def where_now(d: dict, rows: list[dict], live: bool) -> dict:
 
 
 def headline(phase: str, cur: int | None, rows: list[dict]) -> str:
-    step = f"step {cur + 1} of 9: {rows[cur]['label']}" if cur is not None else ""
+    step = f"step {cur + 1} of {len(rows)}: {rows[cur]['label']}" if cur is not None else ""
     return {"starting": "Getting ready",
             "could not start": "Could not start",
             "working": f"Working on {step}" if step else "Working",
             "waiting": "Waiting for your OK",
             "stopped": f"Stopped at {step}" if step else "Stopped",
-            "done": "Done. All 9 steps finished.",
+            "done": f"Done. All {len(rows)} steps finished.",
             "crashed": f"Crashed during {step}" if step else "Crashed",
             "interrupted": f"Interrupted during {step}" if step else "Interrupted",
             "idle": "Not running"}[phase]
@@ -317,7 +331,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
   <p class="eyebrow">{f'{e(who)} · Issue #{e(issue.get("number"))} · {e(model)}' if issue else 'New run'}</p>
   <h1>{e(issue.get('title') or ('Getting ready' if not s else 'Run ' + rid))}</h1>
   <p class="status {cls}" role="status"><span class="dot"></span><span>{e(headline(phase, cur, rows))}</span>{f'<span class="sub">· {_since(d, running_since, is_replay)}</span>' if running_since else ''}</p>
-  <ol class="track" aria-label="The 9 steps">{nodes}</ol>
+  <ol class="track" style="--n:{len(rows)}" aria-label="The {len(rows)} steps">{nodes}</ol>
 </header>"""
 
     # ── the steps, one row each: what it gave, or what is happening in it ──
@@ -334,6 +348,8 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
             sub, trail = "Read the pull request text, then approve or say no in your terminal", ""
         elif st == "stopped":
             sub, trail = plain.exit_text(outcome.get("exit")).removeprefix("Stopped. ") if outcome else "Stopped here", "Stopped"
+        elif st == "skipped":
+            sub, trail = "Not in this run. This step was added after it ran.", ""
         else:
             sub, trail = gives[r["key"]], ""
         ic = icons.STATE[st]() if st in icons.STATE else f'<span class="num">{i + 1}</span>'
@@ -431,6 +447,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
         results += f'<section class="group"><h2>The pull request text</h2><div class="sect"><div class="md" id="pr"></div></div>{lock}</section>'
     results += "</div>"
 
+    read = _what_it_read(d.get("pack") or {}, s.get("context") or {})
     eng = _engineer_details(d, s, rows, live)
     md = json.dumps({"story": story, "pr": d["pr_text"]}).replace("</", "<\\/")
     css = f'<link rel="stylesheet" href="/static/app.css">' if served else f"<style>{(STATIC / 'app.css').read_text()}</style>"
@@ -460,6 +477,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
 {_k("dock", dock)}
 {_k("notice", notice)}
 <section class="group"><h2>Steps</h2><div class="sect"><ul class="rows">{"".join(step_rows_html)}</ul></div></section>
+{_k("read", read)}
 {_k("results", results)}
 <section class="group"><h2>Latest activity</h2><div class="sect">{_k("log", f'<ul class="rows acts-list">{acts or "<li class=row><span></span><span class=t><span>Nothing yet</span></span></li>"}</ul>')}</div></section>
 <section class="group"><h2>Time and money</h2><div class="sect"><div class="tiles">{tiles_html}</div></div></section>
@@ -494,6 +512,39 @@ document.addEventListener("click", ev => {{
 }});
 {_LIVE_JS.replace("__MODE__", mode) if served else ''}
 </script></body></html>"""
+
+
+def _what_it_read(pack: dict, c: dict) -> str:
+    """The gathered context, in plain words: what the later steps were given to read."""
+    if not pack:
+        return '<section hidden></section>'
+    iss, rows = pack.get("issue") or {}, []
+
+    def row(title: str, sub: str) -> str:
+        return f'<li class="row"><span class="ic">{icons.list_(18)}</span><span class="t"><b>{e(title)}</b><span>{e(sub)}</span></span></li>'
+    n = len(iss.get("comments") or [])
+    rows.append(row(f"{n} comment{'s' * (n != 1)} on the issue",
+                    "All of them are saved; the most useful ones go to the AI first" if n else "The issue has no comments"))
+    if iss.get("linked"):
+        rows.append(row(f"{len(iss['linked'])} linked issue{'s' * (len(iss['linked']) != 1)} or pull request{'s' * (len(iss['linked']) != 1)}",
+                        "; ".join(f"#{x['number']} {x['title']}" for x in iss["linked"][:3])))
+    for i, f in enumerate((pack.get("code") or {}).get("ranking") or []):
+        name = Path(f["path"]).name
+        pkg = f["path"].split("/")[1] if f["path"].startswith("packages/") else ""
+        why = ", ".join(f'"{a}"' for a in f.get("matched", [])[:3]) or "words from the problem"
+        rows.append(row(("Best match: " if i == 0 else "") + name, f"{pkg + ' · ' if pkg else ''}contains {why}"))
+    for r in pack.get("related") or []:
+        rows.append(row(f"Shared code: {r['name']}", f"From {r['module']}, called near the problem, used in {r['used_in']} files"))
+    ch = sum(len(h.get("changes") or []) for h in pack.get("history") or [])
+    if ch:
+        last = next((h["changes"][0] for h in pack["history"] if h.get("changes")), {})
+        rows.append(row(f"{ch} recent changes to the best files", f"Latest: {last.get('date', '')} {last.get('title', '')}"))
+    if pack.get("missing"):
+        rows.append(row("Could not read everything", "; ".join(pack["missing"])))
+    foot = (f"Saved with the run and locked (fingerprint {str(c.get('sha256', ''))[:12]}). "
+            "Show the bug, Find the cause and Fix it all read this, and only this." if c.get("sha256") else "")
+    return (f'<section class="group"><h2>What it read</h2><div class="sect"><ul class="rows read-list">{"".join(rows)}</ul></div>'
+            f'{f"<p class=foot>{e(foot)}</p>" if foot else ""}</section>')
 
 
 def _engineer_details(d: dict, s: dict, rows: list[dict], live: bool) -> str:

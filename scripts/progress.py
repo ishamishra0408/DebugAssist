@@ -58,9 +58,9 @@ def receipts():
     return Counter(r["seat"] for r in rows), len(rows)
 
 
-STEPS = ["read_issue", "reproduce", "find_cause", "write_fix", "why_it_shipped", "lasting_guard",
+STEPS = ["read_issue", "gather_context", "reproduce", "find_cause", "write_fix", "why_it_shipped", "lasting_guard",
          "test_past_bugs", "approval", "open_pr"]
-STEP_LABEL = {"read_issue": "Read issue", "reproduce": "Reproduce", "find_cause": "Find cause",
+STEP_LABEL = {"read_issue": "Read issue", "gather_context": "Gather context", "reproduce": "Reproduce", "find_cause": "Find cause",
               "write_fix": "Write fix", "why_it_shipped": "Why it shipped", "lasting_guard": "Lasting guard",
               "test_past_bugs": "Test past bugs", "approval": "Your approval", "open_pr": "Open PR"}
 

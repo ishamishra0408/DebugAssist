@@ -40,6 +40,7 @@ class Context:
     fixture_sample: str = ""          # their first lines
     anchors: list = field(default_factory=list)
     ranking: list = field(default_factory=list)   # (file, score) for the record
+    extra: str = ""                   # the brief from Gather context: discussion, linked items, shared code, history
 
 
 # ── locate: deterministic, $0 ────────────────────────────────────────────────────────────────────
@@ -210,7 +211,7 @@ def messages(issue_title: str, issue_text: str, focus: str, rung: ladder.Rung, h
 BACKGROUND, the whole issue "{issue_title}" (any other problem in it is OUT OF SCOPE):
 {issue_text[:3000]}
 
-MOST RELEVANT SOURCE: {ctx.source} (lines around the issue's exact strings)
+{('CONTEXT GATHERED BEFORE THIS STEP:' + chr(10) + ctx.extra[:12000] + chr(10) + chr(10)) if ctx.extra else ''}MOST RELEVANT SOURCE: {ctx.source} (lines around the issue's exact strings)
 {ctx.snippets}
 
 SETUP OF THE TEST FILE BESIDE IT ({ctx.example_test}):

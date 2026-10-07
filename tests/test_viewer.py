@@ -52,7 +52,7 @@ def test_freshness_and_trials_are_shown():
 def test_the_page_marks_the_step_we_are_on_in_plain_words():
     st = {**_data()["state"], "triage": {"x": 1}, "cause": {"file": "f"}}
     live = viewer.render(_data(state=st, interrupt={}, next=["write_fix"], since="2026-10-07T06:49:28+00:00"), mode="live")
-    assert 'class="status s-live"' in live and "Working on step 4 of 9: Fix it" in live
+    assert 'class="status s-live"' in live and "Working on step 5 of 10: Fix it" in live
     assert 'data-since="2026-10-07T06:49:28+00:00"' in live          # the running step's clock, counted by the browser
     assert live.count('class="node running"') == 1 and live.count('class="row running"') == 1 and 'class="i spin"' in live
     assert "DebugAssistAgent" in live and "Nothing to do right now" in live
@@ -62,7 +62,7 @@ def test_the_page_marks_the_step_we_are_on_in_plain_words():
     assert "Approve in your terminal" in paused and "Nothing is posted to GitHub." in paused
     stopped = viewer.render(_data(state={**st, "outcome": {"exit": "FIX NOT VALIDATED", "why": "w"},
                                          "log": ["write_fix: STOPPED FIX NOT VALIDATED"]}, next=[], interrupt={}), mode="live")
-    assert 'class="status s-stopped"' in stopped and "Stopped at step 4 of 9: Fix it" in stopped
+    assert 'class="status s-stopped"' in stopped and "Stopped at step 5 of 10: Fix it" in stopped
     assert "None of its fixes passed the tests." in stopped and 'class="node stopped"' in stopped
 
 
@@ -126,4 +126,4 @@ def test_a_run_that_went_quiet_reads_interrupted_with_the_command_to_continue():
     st = {**_data()["state"], "triage": {"x": 1}, "cause": {"file": "f"}}
     page = viewer.render(_data(state=st, interrupt={}, next=["write_fix"], since="2026-10-07T05:00:00+00:00",
                                now="2026-10-07T06:50:00+00:00"), mode="live")
-    assert "Interrupted during step 4 of 9: Fix it" in page and "uv run debug-assist resume ai-1-x" in page
+    assert "Interrupted during step 5 of 10: Fix it" in page and "uv run debug-assist resume ai-1-x" in page

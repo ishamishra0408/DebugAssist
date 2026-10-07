@@ -130,8 +130,8 @@ h1 { margin: 0; font-size: clamp(26px, 3.6vw, 34px); line-height: 1.14; font-wei
 .status { display: flex; align-items: center; gap: 10px; margin: 6px 0 0; font-size: 17px; font-weight: 600; }
 .status .sub { color: var(--label-2); font-weight: 400; }
 
-/* the pipeline: all 9 steps at a glance (21st.dev pipeline pattern, our own drawing) */
-.track { list-style: none; margin: 18px 0 0; padding: 0; display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); }
+/* the pipeline: every step at a glance (21st.dev pipeline pattern, our own drawing) */
+.track { list-style: none; margin: 18px 0 0; padding: 0; display: grid; grid-template-columns: repeat(var(--n, 10), minmax(0, 1fr)); }
 .node { position: relative; display: grid; justify-items: center; gap: 8px; text-align: center; min-width: 0; }
 .node::before { content: ""; position: absolute; top: 15px; right: 50%; width: 100%; height: 2px; background: var(--hair); z-index: -1; }
 .node:first-child::before { display: none; }
@@ -257,7 +257,7 @@ details.eng > summary::after { content: "Show"; color: var(--blue); font-weight:
 /* narrow screens */
 @media (max-width: 760px) {
   main { width: 100%; padding: 84px 14px 190px; gap: 24px; }
-  .track { grid-template-columns: repeat(9, minmax(0, 1fr)); } .node .nl { display: none; }
+  .node .nl { display: none; }
   .bead { width: 26px; height: 26px; font-size: 12px; } .node::before { top: 12px; }
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dock { flex-direction: column; align-items: stretch; padding: 12px; gap: 10px; }
@@ -269,3 +269,9 @@ details.eng > summary::after { content: "Show"; color: var(--blue); font-weight:
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* a step this run did not have (added after it ran) */
+.node.skipped .bead { background: transparent; box-shadow: inset 0 0 0 1.5px var(--hair); color: var(--label-3); opacity: .6; }
+.node.skipped::before { background: color-mix(in srgb, var(--green) 30%, transparent); }
+.row.skipped .t b { color: var(--label-3); font-weight: 500; } .row.skipped .t span { color: var(--label-3); }
+.read-list .row { min-height: 52px; } .read-list .t span { font-size: 14px; }

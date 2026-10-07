@@ -68,7 +68,7 @@ FIX_PLAN: <1-3 sentences: the smallest change that makes the test pass without b
 
 
 def cause_messages(focus: str, test_path: str, test_code: str, evidence: str, snippets: str, source: str,
-                   looked_up: list[str]) -> list:
+                   looked_up: list[str], context: str = "") -> list:
     extra = "\n\n".join(looked_up)
     user = f"""FOCUS (the problem reproduced): {focus}
 
@@ -80,6 +80,7 @@ WHAT IT PRINTED ON THE CURRENT CODE:
 
 MOST RELEVANT SOURCE: {source}
 {snippets}
+{('CONTEXT GATHERED BEFORE THIS STEP:' + chr(10) + context[:12000] + chr(10)) if context else ''}
 {('DEFINITIONS YOU ASKED FOR:' + chr(10) + extra) if extra else ''}"""
     return [("system", CAUSE_SYSTEM), ("user", user)]
 
@@ -108,7 +109,8 @@ def find_cause(state: dict, checkout: Path, ctx, test_path: str, evidence: str) 
     focus = state.get("focus") or state["issue"]["title"]
     looked_up, asked, refusal = [], [], ""
     for _ in range(CAUSE_LOOKUPS + 2):
-        msgs = cause_messages(focus, test_path, test_code, evidence, ctx.snippets, ctx.source, looked_up)
+        msgs = cause_messages(focus, test_path, test_code, evidence, ctx.snippets, ctx.source, looked_up,
+                              getattr(ctx, "extra", ""))
         if refusal:
             msgs[-1] = (msgs[-1][0], msgs[-1][1] + f"\n\nYOUR LAST ANSWER WAS REFUSED: {refusal}. Answer again.")
         msg, _ = write(state, "find_cause", msgs, max_tokens=1500)
@@ -289,7 +291,7 @@ def suite_names(profile) -> list[str]:
 
 
 def fix_messages(focus: str, cause: dict, cause_file_text: str, test_path: str, test_code: str, evidence: str,
-                 history: list[str], looked_up: list[str]) -> list:
+                 history: list[str], looked_up: list[str], context: str = "") -> list:
     lines = cause_file_text.splitlines()
     a, b = cause["lines"]
     if len(lines) > 700:
@@ -314,6 +316,7 @@ FAILING TEST ({test_path}), which must pass after your change:
 IT PRINTS NOW:
 {evidence[:1500]}
 {('OTHER CODE (definitions looked up):' + chr(10) + chr(10).join(looked_up)[:14000]) if looked_up else ''}
+{('CONTEXT GATHERED BEFORE THIS STEP:' + chr(10) + context[:12000]) if context else ''}
 EARLIER FIX ATTEMPTS (reverted):{past}"""
     return [("system", FIX_SYSTEM), ("user", user)]
 
@@ -380,7 +383,8 @@ def write_fix(state: dict, checkout: Path, cause: dict, test_path: str, evidence
             try:
                 msg, _ = write(state, "write_fix", fix_messages(focus, cause, (checkout / cause["file"]).read_text(),
                                                                 ", ".join(judges), test_code, evidence, history,
-                                                                looked_up), max_tokens=4000)
+                                                                looked_up, (state.get("context") or {}).get("brief", "")),
+                                    max_tokens=4000)
             except (TurnCapExceeded, BudgetExceeded) as e:  # a cap ends the step as NOT VALIDATED, never a crash
                 return _not_validated(checkout, profile, built, attempts, run_cmd, f"stopped by a cap: {e}")
             wanted = [w for w in re.findall(r"NEED_DEFINITION:\s*`?([\w$]+)`?", str(msg.content)) if w not in asked][:3]
