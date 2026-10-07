@@ -49,7 +49,7 @@ COVERS: <one line: the class of input the cases cover>
 
 
 def messages(focus: str, condition: str, cause: dict, fix_patch: str, judge_code: str, header: str,
-             conditions_text: str, feedback: str) -> list:
+             conditions_text: str, feedback: str, fixtures: list | None = None) -> list:
     user = f"""THE BUG (fixed): {focus}
 THE CONDITION THAT LET THIS CLASS SHIP: {condition}
 {conditions_text[:2500]}
@@ -63,8 +63,34 @@ THE TEST THAT REPRODUCED IT (follow its setup):
 
 SETUP OF THE PACKAGE'S OWN TEST FILE:
 {header[:4000]}
+
+FIXTURE FILES THAT EXIST (use only these, or made-up inline chunks): {', '.join(Path(f).name for f in (fixtures or [])) or 'none'}
 {('YOUR LAST GUARD: ' + feedback) if feedback else ''}"""
     return [("system", SYSTEM), ("user", user)]
+
+
+def failure_blocks(output: str) -> dict:
+    """vitest's ' FAIL  file > describe > case' sections: case header → what it printed."""
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    parts = re.split(r"(?m)^ FAIL  ", clean)[1:]
+    return {p.splitlines()[0]: "\n".join(p.splitlines()[1:25]) for p in parts}
+
+
+def judged(focus: str, output: str) -> dict:
+    """Each case, judged on its OWN failure. Dev trial 2026-10-07: one case failed only because it read a fixture
+    file that doesn't exist, and was nearly reported as a part of the bug class the fix left open."""
+    got, blocks = cases(output), failure_blocks(output)
+    out = {"passed": got["passed"], "symptom": [], "broken": []}
+    for name in got["failed"]:
+        block = next((b for h, b in blocks.items() if name.rstrip("…") in h), "")
+        (out["symptom"] if right_reason(focus, block) else out["broken"]).append(
+            name if right_reason(focus, block) else f"{name}: {(_first_error(block) or 'no assertion shown')[:200]}")
+    return out
+
+
+def _first_error(block: str) -> str:
+    m = re.search(r"^\s*(\w*Error\b.*)$", block, re.M)
+    return m.group(1).strip() if m else ""
 
 
 def cases(output: str) -> dict:
@@ -76,7 +102,8 @@ def cases(output: str) -> dict:
 
 
 def write_guard(state: dict, profile, fixed: Path, unfixed: Path, judge: str, cause: dict, fix_patch: str,
-                condition: str, conditions_text: str, header: str, keep_dir: Path, run_cmd=None) -> dict:
+                condition: str, conditions_text: str, header: str, keep_dir: Path, run_cmd=None,
+                fixtures: list | None = None) -> dict:
     from .sandbox import run_in_sandbox
     run_cmd = run_cmd or run_in_sandbox
     focus = state.get("focus") or state["issue"]["title"]
@@ -86,7 +113,7 @@ def write_guard(state: dict, profile, fixed: Path, unfixed: Path, judge: str, ca
     for n in range(1, GUARD_TRIES + 1):
         try:
             msg, _ = write(state, "lasting_guard", messages(focus, condition, cause, fix_patch, judge_code, header,
-                                                            conditions_text, feedback), max_tokens=4000)
+                                                            conditions_text, feedback, fixtures), max_tokens=4000)
         except (TurnCapExceeded, BudgetExceeded) as e:
             return {"status": "NOT WRITTEN", "why": f"stopped by a cap: {e}", "tries": tries}
         reply = str(msg.content)
@@ -106,9 +133,12 @@ def write_guard(state: dict, profile, fixed: Path, unfixed: Path, judge: str, ca
         out_u = (r.stdout or "") + (r.stderr or "")
         outcome, line = ladder.classify(profile.language, r.returncode, out_u)
         (Path(unfixed) / rel).unlink()
-        if outcome != ladder.RED or right_reason(focus, out_u) is False:
-            feedback = (f"on the UNFIXED code it was {outcome}" + ("" if outcome != ladder.RED else
-                        " but not with the bug's symptom") + f": {line}. It must fail there, showing the bug.")
+        on_unfixed = judged(focus, out_u)
+        last_try = n == GUARD_TRIES
+        if not on_unfixed["symptom"] or (on_unfixed["broken"] and not last_try):
+            feedback = (f"on the UNFIXED code {len(on_unfixed['symptom'])} case(s) failed with the bug's symptom; "
+                        f"broken cases: {on_unfixed['broken'] or 'none'}; cases that passed (so they do not catch "
+                        f"the bug): {on_unfixed['passed'] or 'none'}. Every case must fail there, showing the bug.")
             tries.append({"n": n, "result": feedback})
             continue
         # 2. on the FIXED code: which cases of the class the fix closed, and which it left open
@@ -117,9 +147,11 @@ def write_guard(state: dict, profile, fixed: Path, unfixed: Path, judge: str, ca
         out_f = (r.stdout or "") + (r.stderr or "")
         (Path(keep_dir) / Path(rel).name).write_text(content)
         (Path(fixed) / rel).unlink()  # kept in the run folder, not in the fix (see the module note)
-        on_fixed = cases(out_f)
+        on_fixed = judged(focus, out_f)
         tries.append({"n": n, "result": "caught the bug on the unfixed code"})
         return {"status": "CATCHES THE BUG", "path": str(Path(keep_dir) / Path(rel).name), "repo_path": rel,
-                "covers": covers, "on_unfixed": cases(out_u), "on_fixed": on_fixed,
-                "fixed_all_green": r.returncode == 0, "tries": tries}
+                "covers": covers, "on_unfixed": on_unfixed,
+                # on the fixed code: passed = closed by this fix; symptom = still open; broken = a bad case, not a claim
+                "on_fixed": {"passed": on_fixed["passed"], "failed": on_fixed["symptom"], "broken": on_fixed["broken"]},
+                "broken_cases": on_unfixed["broken"], "fixed_all_green": r.returncode == 0, "tries": tries}
     return {"status": "NOT WRITTEN", "why": f"no guard caught the bug in {GUARD_TRIES} tries: {feedback}", "tries": tries}

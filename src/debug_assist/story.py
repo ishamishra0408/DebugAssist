@@ -121,6 +121,9 @@ def gather(issue: dict, checkout: Path, cause_file: str, fix_patch: str) -> dict
     owner, repo, path = issue["owner"], issue["repo"], cause_file
     sig = signature_lines(fix_patch)
     needle = sig[0] if sig else ""
+    # the exact line may have been reworded recently (trial 2026-10-07: it found the PR that renamed the call, not the
+    # one that introduced the behaviour); the call itself, up to its "(", finds the older origin
+    loose = needle.split("(")[0] + "(" if "(" in needle and len(needle.split("(")[0]) >= 12 else ""
     ev = {"line": needle, "file": path, "issue": {"number": issue["number"], "opened": (issue.get("created_at") or "")[:10],
                                                   "labels": issue.get("labels", []), "comments": issue.get("comments", 0)},
           "written": None, "shaped": [], "stops": [], "_names": {issue.get("reporter", "")}}
@@ -129,6 +132,13 @@ def gather(issue: dict, checkout: Path, cause_file: str, fix_patch: str) -> dict
         return ev
     history = file_history(owner, repo, path)
     origin = introduced(owner, repo, path, history, needle)
+    if origin and loose and loose != needle:
+        older = introduced(owner, repo, path, history, loose)
+        if older and [h["sha"] for h in history].index(older["sha"]) > [h["sha"] for h in history].index(origin["sha"]):
+            ev["stops"].append(f"the exact line `{needle}` dates from {origin['date']}; the call `{loose}` is older, "
+                               f"so the story starts there")
+            origin, needle = older, loose
+            ev["line"] = loose
     if not origin:
         ev["stops"].append(f"`{needle}` is not in the newest version of {path} on GitHub")
         return ev
@@ -211,7 +221,7 @@ def tell(state: dict, checkout: Path, cause: dict, fix_patch: str) -> dict:
     for _ in range(2):  # the why_it_shipped turn cap is 2
         msg, _ = write(state, "why_it_shipped", messages(state.get("focus") or state["issue"]["title"], cause,
                                                          fix_patch, ev, refusal), max_tokens=3500)
-        story = str(msg.content).strip()
+        story = re.sub(r"^```\w*\s*\n|\n```\s*$", "", str(msg.content).strip())  # a fenced reply is unwrapped
         try:
             condition = check(story, ev, names)
             body = re.sub(r"^\s*CONDITION:.*$", "", story, flags=re.M).strip()

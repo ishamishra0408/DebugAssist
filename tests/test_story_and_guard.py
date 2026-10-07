@@ -135,9 +135,12 @@ def _guard_env(tmp_path, on_unfixed):
     def run(cmd, workdir, network, timeout, image):
         if "unfixed" in str(workdir):
             return SimpleNamespace(returncode=1 if on_unfixed == "RED" else 0, stderr="",
-                                   stdout=" × guard > no finish reason\nAssertionError: expected [ { type: 'tool-call' } ] to strictly equal []\n 1 failed"
+                                   stdout=" × guard > no finish reason\n FAIL  src/g.test.ts > guard > no finish reason\nAssertionError: expected [ { type: 'tool-call' } ] to strictly equal []\n 1 failed"
                                    if on_unfixed == "RED" else " ✓ guard > no finish reason")
-        return SimpleNamespace(returncode=1, stderr="", stdout=" ✓ guard > no finish reason\n × guard > length limit\n 1 failed")
+        return SimpleNamespace(returncode=1, stderr="", stdout=(
+            " ✓ guard > no finish reason\n × guard > length limit\n × guard > closed by server\n"
+            " FAIL  src/g.test.ts > guard > length limit\nAssertionError: expected [ { type: 'tool-call' } ] to strictly equal []\n"
+            " FAIL  src/g.test.ts > guard > closed by server\nError: ENOENT: no such file or directory, open 'x.sse'\n"))
     return fixed, unfixed, keep, profile, run
 
 
@@ -151,6 +154,7 @@ def test_a_guard_must_catch_the_bug_and_reports_what_the_fix_left_open(tmp_path,
     monkeypatch.setattr(guard, "write", lambda *a, **k: (SimpleNamespace(content=REPLY), {}))
     g = guard.write_guard(STATE, profile, fixed, unfixed, "packages/p/src/judge.test.ts", CAUSE, PATCH, "c", "", "", keep, run_cmd=run)
     assert g["status"] == "CATCHES THE BUG" and g["on_fixed"]["failed"] == ["guard > length limit"]
+    assert len(g["on_fixed"]["broken"]) == 1 and "ENOENT" in g["on_fixed"]["broken"][0]  # never reported as "open"
     assert (keep / "da-guard-7.test.ts").exists() and not (fixed / g["repo_path"]).exists()  # kept out of the fix
 
 
@@ -159,3 +163,14 @@ def test_a_guard_that_does_not_fail_on_the_old_code_is_not_a_guard(tmp_path, mon
     monkeypatch.setattr(guard, "write", lambda *a, **k: (SimpleNamespace(content=REPLY), {}))
     g = guard.write_guard(STATE, profile, fixed, unfixed, "packages/p/src/judge.test.ts", CAUSE, PATCH, "c", "", "", keep, run_cmd=run)
     assert g["status"] == "NOT WRITTEN" and "UNFIXED" in g["why"] and len(g["tries"]) == guard.GUARD_TRIES
+
+
+def test_a_recently_reworded_line_is_traced_back_through_the_call_itself(monkeypatch, tmp_path):
+    """Trial 2026-10-07: the exact line was last reworded by a later PR; the behaviour began earlier."""
+    versions = [("c4", "toolCallTracker.flush();"), ("c3", "toolCallTracker.flush();"),
+                ("c2", "toolCallTracker.flush(controller);"), ("c1", "old code")]
+    fake_github(monkeypatch, versions, {"c2": _pr(14565, "a1"), "c3": _pr(14755, "a2")})
+    issue = {"owner": "o", "repo": "r", "number": 21439, "reporter": "r1", "labels": []}
+    ev = story.gather(issue, tmp_path, "packages/p/src/x.ts", PATCH)
+    assert ev["written"]["pr"]["number"] == 14565 and ev["line"] == "toolCallTracker.flush("
+    assert any("is older" in s for s in ev["stops"])

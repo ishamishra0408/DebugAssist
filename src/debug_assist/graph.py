@@ -332,7 +332,8 @@ def lasting_guard(s: RunState):
     sig = story.signature_lines(patch)
     siblings = guard.sibling_sites(fixed, sig[0] if sig else "", s["cause"]["file"])
     g = guard.write_guard(s, prof, fixed, unfixed, judge, s["cause"], patch, s["condition"]["text"],
-                          (s.get("second_story") or {}).get("text", ""), ctx.example_header, run_dir(s) / "guard")
+                          (s.get("second_story") or {}).get("text", ""), ctx.example_header, run_dir(s) / "guard",
+                          fixtures=ctx.fixtures)
     created = now()
     if g["status"] != "CATCHES THE BUG":
         return {"guard": {"status": g["status"], "why": g.get("why"), "siblings": siblings, "created_at": created,
@@ -340,12 +341,13 @@ def lasting_guard(s: RunState):
                 "outcome": stop("GUARD NOT WRITTEN", f"{g.get('why')}. A person writes the guard"),
                 "log": [f"lasting_guard: STOPPED GUARD NOT WRITTEN: {g.get('why')}"]}
     a = decide(f"{g['covers']}. A test file that the package's test suite runs in CI on every change.", A1_Q)["a1"]
-    open_cases = g["on_fixed"]["failed"]
+    open_cases = g["on_fixed"]["failed"]  # failing WITH the bug's symptom: a part of the class still open
     text = (f"{g['covers']}. A parametrised test (`{Path(g['repo_path']).name}`) that fails on the old code, so it would "
             f"have caught this bug. On the fixed code {len(g['on_fixed']['passed'])} of "
             f"{len(g['on_fixed']['passed']) + len(open_cases)} cases pass.")
     return {"guard": {"status": g["status"], "text": text, "covers": g["covers"], "path": g["path"],
                       "repo_path": g["repo_path"], "on_fixed": g["on_fixed"], "open_cases": open_cases,
+                      "broken_cases": g.get("broken_cases", []) + g["on_fixed"].get("broken", []),
                       "siblings": siblings, "created_at": created, "a1_class": a["choice"],
                       "a1_p": a["answer_confidence"]},
             "log": [f"lasting_guard: catches the bug on the unfixed code; fixed code passes "
