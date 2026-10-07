@@ -7,6 +7,7 @@
   uv run debug-assist reject <run-id>                               stop without publishing
   uv run debug-assist status <run-id>                               show the run
   uv run debug-assist events <run-id>                               every model call, sandbox command and decision
+  uv run debug-assist cleanup [--yes]                               delete finished runs' code copies (dry run without --yes)
 
 --focus=TEXT            the one problem in the issue to reproduce (default: the issue's title)
 --focus-heading=HEADING the same, taken from the issue's section under that markdown heading
@@ -18,7 +19,7 @@ import sys
 from contextlib import ExitStack
 from datetime import datetime
 
-COMMANDS = {"preflight", "run", "resume", "approve", "reject", "status", "events"}
+COMMANDS = {"preflight", "run", "resume", "approve", "reject", "status", "events", "cleanup"}
 
 
 def _tracing():
@@ -80,18 +81,43 @@ def _print_events(run_id: str) -> None:
     print(f"\n{len(rows)} events")
 
 
+def _cleanup(yes: bool) -> None:
+    from . import cleanup
+    from .graph import build
+    app = build()
+
+    def is_finished(run_id):
+        snap = app.get_state({"configurable": {"thread_id": run_id}})
+        if not snap.values:
+            return True, "not a pipeline run (a trial)"
+        if snap.next:
+            return False, f"waiting at {snap.next[0]}: resume or approval needs its code"
+        return True, f"finished: {(snap.values.get('outcome') or {}).get('exit', 'done')}"
+    rows = cleanup.run(is_finished, yes=yes)
+    for r in rows:
+        act = "DELETED" if r.get("deleted") else ("would delete" if r["delete"] else "keep")
+        print(f"{act:13s} {r['run']:34s} {r['apparent_mb']:>6} MB apparent · {r['why']}")
+    gone = [r for r in rows if r["delete"]]
+    print(f"\n{len(gone)} of {len(rows)} code copies {'deleted' if yes else 'would be deleted'}; each one's changes "
+          f"{'were' if yes else 'will be'} saved as runs/<id>/checkout.patch. Copies share disk with the base, so "
+          "the real space freed is less than the apparent size." + ("" if yes else " Add --yes to delete."))
+
+
 def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     flags = {a for a in sys.argv[1:] if a.startswith("--")}
-    if len(args) < 2 or args[0] not in COMMANDS:
+    if not args or args[0] not in COMMANDS or (len(args) < 2 and args[0] != "cleanup"):
         print(__doc__)
         sys.exit(2)
-    cmd, arg = args[0], args[1]
+    cmd, arg = args[0], (args[1] if len(args) > 1 else "")
     demo, trace = "--demo" in flags, "--no-trace" not in flags
     opts = dict(f[2:].split("=", 1) for f in flags if "=" in f)
 
     if cmd == "events":
         _print_events(arg)
+        return
+    if cmd == "cleanup":
+        _cleanup(yes="--yes" in flags)
         return
 
     from langgraph.types import Command
