@@ -79,7 +79,8 @@ def test_plan_skips_rungs_the_issue_cannot_use():
     ("typescript", 1, "Error: Cannot find module './missing'", ERROR),
     ("typescript", 1, "segmentation fault", ERROR),  # unexplained failure is never a reproduction
     ("typescript", 124, "TIMEOUT after 600s; container da-1 killed", ERROR),
-])
+], ids=["py-assert", "py-exception", "py-collection", "py-no-tests", "py-pass", "ts-assert", "ts-transform",
+        "ts-missing-module", "ts-unexplained", "ts-timeout"])
 def test_classify(lang, code, out, want):
     assert classify(lang, code, out)[0] == want
 

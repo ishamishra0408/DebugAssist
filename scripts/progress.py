@@ -85,8 +85,9 @@ def pipeline_steps():
 def tests():
     r = sh([str(Path.home() / ".local/bin/uv") if (Path.home() / ".local/bin/uv").exists() else "uv",
             "run", "pytest", "-q", "-rA"], timeout=300)
-    m = re.search(r"(\d+) passed(?:, (\d+) skipped)?", r.stdout)
-    failed = re.search(r"(\d+) failed", r.stdout)
+    last = next((l for l in reversed(r.stdout.splitlines()) if re.search(r" in [\d.]+s", l)), "")  # summary line only
+    m = re.search(r"(\d+) passed(?:, (\d+) skipped)?", last)
+    failed = re.search(r"(\d+) failed", last)
     each = dict((t, st) for st, t in re.findall(r"^(PASSED|FAILED|SKIPPED|ERROR) (\S+)", r.stdout, re.M))
     return {"passed": int(m.group(1)) if m else 0, "skipped": int(m.group(2) or 0) if m else 0,
             "failed": int(failed.group(1)) if failed else 0, "each": each}
