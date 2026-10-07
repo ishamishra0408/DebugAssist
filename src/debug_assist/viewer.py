@@ -317,13 +317,15 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
     judges = clock.get("judges")
     clock_txt = (f"{clock['seconds']:.0f} s" if clock.get("seconds") is not None else "—")
     clock_sub = ("validated · two independent tests" if clock.get("validated") else
-                 "one judge only: does not count" if judges == 1 else "not validated" if clock.get("seconds") else "clock running")
+                 "one judge only: does not count" if judges == 1 else "not validated" if clock.get("seconds") else
+                 "stopped before a fix: not counted" if outcome else "not started" if not clock else "clock running")
     spent, cap = m.get("spent_usd", 0) or 0, m.get("cap_usd", 0) or 0
     pct = min(100, (spent / cap * 100) if cap else 0)
     model = "Claude Opus (demo)" if s.get("demo") else "dev model"
 
     rows = step_rows(d)
-    stats = [("⏱ fix clock", f"{clock_txt} · {clock_sub}"), ("spent", f"${spent:.2f} of ${cap:.2f}"),
+    stats = [("⏱ fix clock", f"{clock_txt} · {clock_sub}"),
+             ("spent", f"${spent:.2f} of ${cap:.2f}" if spent >= 0.1 or not spent else f"${spent:.4f} of ${cap:.2f}"),
              ("sandbox", f"{m.get('sandbox_used_s', 0)} of {m.get('sandbox_cap_s', '?')} s"),
              ("newest event", f"{freshness(d)} · {len(d['events'])} events")]
     timeline = "".join(

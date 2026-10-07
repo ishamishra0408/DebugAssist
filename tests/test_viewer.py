@@ -83,3 +83,9 @@ def test_served_pages_update_in_place_and_files_stay_static():
 def test_a_run_that_has_not_started_yet_renders_as_starting():
     page = viewer.render(_data(state={}, next=[], interrupt={}, events=[], pr_text="", patch=""), mode="live")
     assert "Starting" in page and "waiting for the first step" in page and 'data-final="0"' in page
+
+
+def test_a_stopped_run_says_its_clock_did_not_count_and_small_spend_shows():
+    st = {**_data()["state"], "fix_clock": {"started_at": "x"}, "outcome": {"exit": "NEVER REPRODUCED", "why": "w"}}
+    page = viewer.render(_data(state=st, next=[], interrupt={}, meter={"spent_usd": 0.00431, "cap_usd": 0.5}), mode="live")
+    assert "stopped before a fix: not counted" in page and "$0.0043 of $0.50" in page
