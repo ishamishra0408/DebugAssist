@@ -1,5 +1,7 @@
 /*
- * Background: slow topographic contour lines over a faint grid, drawn with raw WebGL.
+ * Background: slow topographic contour lines over a faint grid, drawn with raw WebGL. The lines behave like water under
+ * the pointer: moving it sends out ripples that spread and fade, hovering swells the lines beneath it like a lens, and
+ * a click sends a stronger ripple. Under Reduce Motion there are no ripples and the drift stops.
  * Ported from ThreeUI's "Topo Field" (https://github.com/MengTo/threeui, src/shaders/neuform-isolated/sources/topo-field.html)
  * and changed for a work screen: dimmer lines and grid, slower drift, light and dark ink, 30 fps, paused when the tab is
  * hidden, one still frame under Reduce Motion, nothing at all if WebGL is missing.
@@ -25,6 +27,8 @@
   const fs = `
     precision highp float;
     uniform vec2 u_res; uniform float u_time; uniform float u_dpr; uniform vec3 u_ink; uniform float u_gridA; uniform float u_lineA;
+    uniform vec4 u_drops[12];   // ripples: x, y (canvas px), start time (s), strength
+    uniform vec3 u_mouse;       // x, y (canvas px), hover strength 0..1
     vec3 permute(vec3 x){ return mod(((x*34.0)+1.0)*x, 289.0); }
     float snoise(vec2 v){
       const vec4 C = vec4(0.211324865405187, 0.366025403784439, -0.577350269189626, 0.024390243902439);
@@ -39,12 +43,24 @@
       return 130.0 * dot(m, g);
     }
     void main(){
-      vec2 st = gl_FragCoord.xy / u_res.xy; st.x *= u_res.x / u_res.y;
-      float gs = 56.0 * u_dpr; vec2 gf = fract(gl_FragCoord.xy / gs); float t = 1.0 / gs;
+      vec2 frag = gl_FragCoord.xy; float crest = 0.0;
+      for (int k = 0; k < 12; k++) {                       // water: rings that travel out from each drop and fade
+        vec4 dr = u_drops[k]; float age = u_time - dr.z;
+        if (dr.w <= 0.0 || age <= 0.0 || age > 3.2) continue;
+        vec2 dv = gl_FragCoord.xy - dr.xy; float d = length(dv) / u_dpr;
+        float ring = d - age * 230.0;
+        float w = sin(ring * 0.075) * exp(-ring * ring / 2600.0) * exp(-age * 1.5) * dr.w;
+        frag += (dv / max(length(dv), 1.0)) * w * 11.0 * u_dpr; crest += abs(w);
+      }
+      vec2 mv = gl_FragCoord.xy - u_mouse.xy; float md = length(mv) / u_dpr;
+      float lens = exp(-md * md / (2.0 * 110.0 * 110.0)) * u_mouse.z;   // a drop of water resting under the pointer
+      frag -= mv * lens * 0.22;
+      vec2 st = frag / u_res.xy; st.x *= u_res.x / u_res.y;
+      float gs = 56.0 * u_dpr; vec2 gf = fract(frag / gs); float t = 1.0 / gs;
       float grid = clamp(step(1.0 - t, gf.x) + step(1.0 - t, gf.y), 0.0, 1.0) * u_gridA;
       float n = snoise(st * 1.25 + vec2(u_time * 0.010, u_time * 0.016)) * 0.5 + 0.5;
       float tri = abs(fract(n * 9.0) - 0.5) * 2.0;
-      float lines = smoothstep(0.03, 0.0, tri) * u_lineA;
+      float lines = smoothstep(0.03, 0.0, tri) * u_lineA * (1.0 + lens * 1.1 + min(crest, 1.0) * 0.9);
       gl_FragColor = vec4(u_ink, clamp(grid + lines, 0.0, 1.0));
     }`;
   const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
@@ -60,6 +76,9 @@
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   const u = n => gl.getUniformLocation(prog, n);
   const uRes = u("u_res"), uTime = u("u_time"), uDpr = u("u_dpr"), uInk = u("u_ink"), uGrid = u("u_gridA"), uLine = u("u_lineA");
+  const uDrops = u("u_drops"), uMouse = u("u_mouse");
+  const drops = new Float32Array(48); let next = 0;        // 12 ripples × (x, y, start, strength)
+  const pointer = { x: -1e4, y: -1e4, hover: 0, want: 0, lastX: -1e4, lastY: -1e4, lastT: 0, busyUntil: 0 };
 
   const dark = matchMedia("(prefers-color-scheme: dark)");
   const still = matchMedia("(prefers-reduced-motion: reduce)");
@@ -73,15 +92,37 @@
     gl.viewport(0, 0, canvas.width, canvas.height); gl.uniform2f(uRes, canvas.width, canvas.height); gl.uniform1f(uDpr, dpr);
   };
   const t0 = performance.now(); let last = 0, raf = 0;
+  const secs = now => (now - t0) / 1000 + 40.0;
   const draw = now => {
+    pointer.hover += (pointer.want - pointer.hover) * 0.12;   // the lens eases in and out
     gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.uniform1f(uTime, (now - t0) / 1000 + 40.0); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.uniform1f(uTime, secs(now)); gl.uniform4fv(uDrops, drops);
+    gl.uniform3f(uMouse, pointer.x, pointer.y, pointer.hover); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   };
   const loop = now => {
     raf = requestAnimationFrame(loop);
-    if (now - last < 33) return;  // about 30 frames a second is plenty for a slow drift
+    const busy = now < pointer.busyUntil || Math.abs(pointer.want - pointer.hover) > 0.01;
+    if (now - last < (busy ? 15 : 33)) return;  // 60 fps while water moves, 30 for the slow drift
     last = now; draw(now);
   };
+  const drop = (cx, cy, strength) => {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2), now = performance.now();
+    drops.set([cx * dpr, (innerHeight - cy) * dpr, secs(now), strength], next * 4); next = (next + 1) % 12;
+    pointer.busyUntil = now + 3300;
+  };
+  addEventListener("pointermove", ev => {
+    if (still.matches) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2), now = performance.now();
+    pointer.x = ev.clientX * dpr; pointer.y = (innerHeight - ev.clientY) * dpr; pointer.want = 1;
+    const dist = Math.hypot(ev.clientX - pointer.lastX, ev.clientY - pointer.lastY);
+    if (dist > 70 || (dist > 12 && now - pointer.lastT > 140)) {
+      drop(ev.clientX, ev.clientY, Math.min(1, 0.35 + dist / 260));
+      pointer.lastX = ev.clientX; pointer.lastY = ev.clientY; pointer.lastT = now;
+    }
+  }, { passive: true });
+  addEventListener("pointerdown", ev => { if (!still.matches) drop(ev.clientX, ev.clientY, 1.4); }, { passive: true });
+  document.documentElement.addEventListener("pointerleave", () => { pointer.want = 0; });
+  addEventListener("blur", () => { pointer.want = 0; });
   const start = () => { cancelAnimationFrame(raf); if (still.matches || document.hidden) draw(performance.now()); else raf = requestAnimationFrame(loop); };
   ink(); size(); start();
   addEventListener("resize", () => { size(); draw(performance.now()); });

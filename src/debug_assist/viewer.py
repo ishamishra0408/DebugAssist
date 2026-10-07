@@ -434,7 +434,8 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
     eng = _engineer_details(d, s, rows, live)
     md = json.dumps({"story": story, "pr": d["pr_text"]}).replace("</", "<\\/")
     css = f'<link rel="stylesheet" href="/static/app.css">' if served else f"<style>{(STATIC / 'app.css').read_text()}</style>"
-    topo = f'<script src="/static/topo.js" defer></script>' if served else f"<script>{(STATIC / 'topo.js').read_text()}</script>"
+    topo = ('<script src="/static/topo.js" defer></script><script src="/static/glass.js" defer></script>' if served else
+            f"<script>{(STATIC / 'topo.js').read_text()}</script><script>{(STATIC / 'glass.js').read_text()}</script>")
     nav = (f'<nav class="toolbar" aria-label="DebugAssistAgent">'
            f'<div class="tgroup glass"><a class="brand" href="{"/" if served else "#"}">{icons.mark()}<span>{plain.NAME}</span></a></div>'
            + (f'<div class="tgroup glass"><a class="tbtn" href="/#runs" aria-label="Runs">{icons.list_(16)}<span class="lbl">Runs</span></a>'

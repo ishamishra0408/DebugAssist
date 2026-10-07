@@ -36,7 +36,8 @@ HEALTH = b"debug-assist viewer"
 TOKEN = secrets.token_urlsafe(24)  # new every time the server starts; only this server's pages carry it
 TOKEN_HEADER = "X-DebugAssistAgent-Token"
 _plans: dict = {}
-STATIC_FILES = {"app.css": "text/css; charset=utf-8", "topo.js": "text/javascript; charset=utf-8"}
+STATIC_FILES = {"app.css": "text/css; charset=utf-8", "topo.js": "text/javascript; charset=utf-8",
+                "glass.js": "text/javascript; charset=utf-8"}
 
 
 def url(run_id: str | None = None, port: int = PORT) -> str:
@@ -212,7 +213,7 @@ def home_page() -> str:
 <section class="group" id="runs" aria-labelledby="h-runs"><h2 id="h-runs">Runs</h2>
   <div class="sect"><ul class="rows">{''.join(rows) or '<li class="row pending"><span class="ic"></span><span class="t"><span>No runs yet</span></span></li>'}</ul></div></section>
 </main>
-<script src="/static/topo.js" defer></script>
+<script src="/static/topo.js" defer></script><script src="/static/glass.js" defer></script>
 <script>
 const TOKEN = {json.dumps(TOKEN)}, H = {{ "{TOKEN_HEADER}": TOKEN }};
 const $ = id => document.getElementById(id);
