@@ -34,7 +34,7 @@ class Config:
 CFG = Config()
 
 # Turn caps per step. Enforced in code (meter.take_turn, counted in MongoDB), not in a prompt.
-TURN_CAPS = {"reproduce": 4, "find_cause": 10, "write_fix": 8, "why_it_shipped": 2, "lasting_guard": 3}
+TURN_CAPS = {"reproduce": 4, "find_cause": 10, "write_fix": 8, "holdout": 2, "why_it_shipped": 2, "lasting_guard": 3}
 
 # Reproduction ladder (ruled 2026-10-06): attempts across all rungs before the run stops NEVER REPRODUCED
 REPRO_ATTEMPT_CAP = 4

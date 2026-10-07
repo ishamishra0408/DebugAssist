@@ -239,24 +239,44 @@ def write_fix(s: RunState):
     fixer.revert(checkout, dirty)  # a crash mid-step can leave a half-applied attempt; start from clean source
     prof = PROFILES[s["profile"]["repo"]]
     looked = [fixer.find_definition(checkout, n) for n in c.get("looked_up", [])]
-    fix = fixer.write_fix(s, checkout, c, r.get("oracle_test") or r["failing_test"],
-                          r.get("oracle_evidence") or r.get("evidence") or "", prof, looked_up=looked,
+    judge = r.get("oracle_test") or r["failing_test"]
+    judge_evidence = r.get("oracle_evidence") or r.get("evidence") or ""
+    fix = fixer.write_fix(s, checkout, c, judge, judge_evidence, prof, looked_up=looked,
                           stale=dirty, drafts=run_dir(s) / "fixer")
+    ho = None
+    if fix["status"] == "VALIDATED":  # a second, independent judge written without seeing the fix
+        base_copy = run_copy(prof, run_dir(s) / "holdout-base")
+        ctx = testwriter.locate(base_copy, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"])
+        ho = fixer.holdout(s, prof, checkout, base_copy, ctx, [judge], drafts=run_dir(s) / "holdout")
+        if ho["status"] == "FIX INCOMPLETE":
+            first = fix
+            fixer.revert(checkout, first["changed"])
+            fix = fixer.write_fix(
+                s, checkout, c, judge, judge_evidence, prof, looked_up=looked, stale=first["changed"],
+                drafts=run_dir(s) / "fixer-round2", judges=[judge, ho["test"]], attempts_max=2,
+                prior=[f"a previous fix passed {Path(judge).name} and every suite, but FAILED a fresh test of the same "
+                       f"problem ({Path(ho['test']).name}): {ho['evidence'][:600]}\nThat fix was:\n{first['patch'][:1500]}"])
+            fix["attempts"] = first["attempts"] + fix["attempts"]
+            if fix["status"] == "VALIDATED":
+                ho = {**ho, "status": "PASSED (round 2)"}
+    fix["holdout"] = ho
     clock = dict(s["fix_clock"])
     clock["stopped_at"] = now()
     clock["seconds"] = round((datetime.fromisoformat(clock["stopped_at"])
                               - datetime.fromisoformat(clock["started_at"])).total_seconds(), 1)
-    clock["validated"] = fix["status"] == "VALIDATED"  # ⏱ counts only a fix that turned the test green, suites green
+    # ⏱ counts only a fix that turned every judge green with the suites green, and that a fresh test did not refute
+    clock["validated"] = fix["status"] == "VALIDATED" and (ho or {}).get("status") != "FIX INCOMPLETE"
     (run_dir(s) / "fix.patch").write_text(fix["patch"])
     out = {"fix": {k: v for k, v in fix.items() if k != "patch"} | {"patch_path": str(run_dir(s) / "fix.patch")},
            "fix_clock": clock,
            "log": [f"write_fix: {fix['status']} after {len(fix['attempts'])} attempt(s); fix clock {clock['seconds']}s"
-                   + (f"; suites green: {', '.join(fix['suites'])}" if clock["validated"] else "")]}
+                   + (f"; suites green: {', '.join(fix['suites'])}" if clock["validated"] else "")
+                   + (f"; fresh test: {ho['status']}" if ho else "")]}
     if fix["status"] == "TEST FLAWED":
         out["outcome"] = stop("TEST FLAWED", f"the fixer says the judging test cannot be passed: {fix['why'][:400]}. "
                                              "A person checks the test (the fixer may never edit it)")
     elif not clock["validated"]:
-        last = fix["attempts"][-1]["evidence"][:300] if fix["attempts"] else "no attempt"
+        last = (fix.get("why") or (fix["attempts"][-1]["evidence"] if fix["attempts"] else "no attempt"))[:300]
         out["outcome"] = stop("FIX NOT VALIDATED", f"{len(fix['attempts'])} attempt(s), none turned the test green with "
                                                    f"every affected suite passing. Last: {last}")
     return out
@@ -368,6 +388,11 @@ def fix_lines(cause: dict, fix: dict, patch_path: Path) -> list[str]:
             "",
             f"Validated before this text was written: the failing test now passes, and these suites stay green: "
             f"{', '.join(fix['suites'])}.",
+            *([f"A second test of the same problem, written without seeing this fix, failed on the old code and "
+               f"passes on the new: `{(fix.get('holdout') or {}).get('test')}`."]
+              if str((fix.get("holdout") or {}).get("status", "")).startswith("PASSED") else
+              [f"Second-test check: {(fix.get('holdout') or {}).get('status', 'not run')} "
+               "(no independent test confirmed this fix)."]),
             "",
             "<details><summary>Patch</summary>", "", "```diff", patch.rstrip(), "```", "</details>", ""]
 

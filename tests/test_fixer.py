@@ -151,3 +151,59 @@ def test_an_indent_blind_match_in_two_places_is_still_refused(repo):
     (repo / "packages/utils/src/tracker.ts").write_text("a() {\n  emit(call);\n}\nb() {\n    emit(call);\n}\n")
     with pytest.raises(FixRefused, match="exactly one"):
         apply_edits(repo, [Edit("packages/utils/src/tracker.ts", "        emit(call);", "x();")])  # 0 exact, 2 loose
+
+
+# ── holdout: the second, independent judge ───────────────────────────────────────────────────────
+def _holdout_env(repo, tmp_path, on_unfixed, on_fixed):
+    base = tmp_path / "holdout-base"
+    (base / "packages/compat/src").mkdir(parents=True)
+    calls = []
+
+    def attempt_fn(state, rung, n, history, ctx, checkout, profile, drafts=None, step="", label=""):
+        calls.append((step, [h.test_path for h in history]))
+        path = f"packages/compat/src/da-repro-1-holdout-{n}.test.ts"
+        (checkout / path).write_text("expect(parts).toStrictEqual([])\n")
+        return fixer.ladder.Attempt(rung="unit", n=n, outcome=on_unfixed, evidence="…", test_path=path)
+
+    def run(cmd, workdir, network, timeout, image):
+        return SimpleNamespace(returncode=0 if on_fixed == "GREEN" else 1,
+                               stdout="" if on_fixed == "GREEN" else "AssertionError: tool-call\n 1 failed", stderr="")
+    return base, attempt_fn, run, calls
+
+
+@pytest.mark.parametrize("on_unfixed,on_fixed,status", [("RED", "GREEN", "PASSED"), ("RED", "RED", "FIX INCOMPLETE"),
+                                                        ("GREEN", "GREEN", "INCONCLUSIVE")])
+def test_holdout_judges_the_fix_with_a_test_written_without_it(repo, tmp_path, on_unfixed, on_fixed, status):
+    base, attempt_fn, run, calls = _holdout_env(repo, tmp_path, on_unfixed, on_fixed)
+    ho = fixer.holdout({"issue": {"title": "t"}}, PROFILE, repo, base, None,
+                       ["packages/compat/src/da-repro-1-unit-1.test.ts"], run_cmd=run, attempt_fn=attempt_fn)
+    assert ho["status"] == status
+    assert calls[0][0] == "holdout" and "da-repro-1-unit-1.test.ts" in calls[0][1][0]  # own turn cap; told what's covered
+    if status != "INCONCLUSIVE":
+        assert (repo / ho["test"]).exists()  # the second judge now sits beside the fix too
+    else:
+        assert len(calls) == 2  # it tried twice for a test that reproduces on the unfixed code
+
+
+def test_every_judge_must_pass(repo, monkeypatch):
+    monkeypatch.setattr(fixer, "write", lambda *a, **k: (SimpleNamespace(content=GOOD), {}))
+    second = "packages/compat/src/da-repro-1-holdout-1.test.ts"
+    (repo / second).write_text("expect(parts).toStrictEqual([])\n")
+
+    def run(cmd, workdir, network, timeout, image):  # the second judge stays red even with the fix
+        red = "holdout" in cmd
+        return SimpleNamespace(returncode=1 if red else 0, stdout="AssertionError: tool-call\n 1 failed" if red else "",
+                               stderr="")
+    fix = fixer.write_fix({"issue": {"title": "t"}}, repo, CAUSE, "packages/compat/src/da-repro-1-unit-1.test.ts", "e",
+                          PROFILE, run_cmd=run, attempts_max=1,
+                          judges=["packages/compat/src/da-repro-1-unit-1.test.ts", second])
+    assert fix["status"] == "NOT VALIDATED" and "holdout-1" in fix["attempts"][0]["evidence"]
+
+
+def test_a_cap_ends_the_fix_step_without_crashing(repo, monkeypatch):
+    def capped(*a, **k):
+        raise fixer.TurnCapExceeded("write_fix: 8 calls already, cap 8")
+    monkeypatch.setattr(fixer, "write", capped)
+    fix = fixer.write_fix({"issue": {"title": "t"}}, repo, CAUSE, "packages/compat/src/da-repro-1-unit-1.test.ts",
+                          "e", PROFILE, run_cmd=_runner(repo, []))
+    assert fix["status"] == "NOT VALIDATED" and "cap" in fix["why"]

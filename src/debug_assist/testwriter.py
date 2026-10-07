@@ -296,18 +296,18 @@ def validate(content: str, rung: ladder.Rung) -> None:
 
 # ── one attempt ──────────────────────────────────────────────────────────────────────────────────
 def attempt(state: dict, rung: ladder.Rung, n: int, history: list, ctx: Context, checkout: Path, profile,
-            run_cmd=None, drafts: Path | None = None) -> ladder.Attempt:
+            run_cmd=None, drafts: Path | None = None, step: str = "reproduce", label: str = "") -> ladder.Attempt:
     """Draft (one model call, metered), validate, write beside the example test, run network-off, classify."""
     from .sandbox import run_in_sandbox
     issue = state["issue"]
-    name = f"da-repro-{issue['number']}-{rung.name}-{n}.test.ts"
+    name = f"da-repro-{issue['number']}-{label or rung.name}-{n}.test.ts"
     rel = str(Path(ctx.example_test).with_name(name))
     try:
         focus = state.get("focus") or issue["title"]
-        msg, _ = write(state, "reproduce", messages(issue["title"], state.get("issue_text") or issue.get("body", ""),
+        msg, _ = write(state, step, messages(issue["title"], state.get("issue_text") or issue.get("body", ""),
                                                     focus, rung, history, ctx), max_tokens=4000)
         if drafts:
-            (Path(drafts) / f"{n}-{rung.name}.md").write_text(str(msg.content))  # every raw reply, for the record
+            (Path(drafts) / f"{n}-{label or rung.name}.md").write_text(str(msg.content))  # every raw reply, for the record
         content, symptom = parse(str(msg.content))
         validate(content, rung)
     except WriterRefused as e:

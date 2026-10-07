@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import events, ladder
+from .budget import BudgetExceeded, TurnCapExceeded
 from .models import write
 
 FIX_ATTEMPTS = 3
@@ -303,9 +304,9 @@ EARLIER FIX ATTEMPTS (reverted):{past}"""
     return [("system", FIX_SYSTEM), ("user", user)]
 
 
-def validate(checkout: Path, profile, test_path: str, built: set, changed_files: list[str], run_cmd) -> dict:
-    """Rebuild every package ever changed (so a reverted attempt leaves no stale build), run the failing test, then the
-    whole suite of each affected package. Returns {"ok", "red_to_green", "suites", "evidence"}."""
+def validate(checkout: Path, profile, judges: list[str], built: set, changed_files: list[str], run_cmd) -> dict:
+    """Rebuild every package ever changed (so a reverted attempt leaves no stale build), run every judging test, then
+    the whole suite of each affected package. Returns {"ok", "red_to_green", "suites", "evidence"}."""
     changed, suites = affected(checkout, changed_files, suite_names(profile))
     built |= set(changed)
     out = {"ok": False, "red_to_green": False, "suites": {}, "changed_packages": changed, "evidence": ""}
@@ -315,13 +316,12 @@ def validate(checkout: Path, profile, test_path: str, built: set, changed_files:
         if r.returncode != 0:
             out["evidence"] = "build failed: " + (r.stdout + r.stderr)[-1500:]
             return out
-    pkg = test_path.split("/")[1]
-    r = run_cmd(profile.env + profile.test_cmd.format(package=pkg, test_path=str(Path(test_path).relative_to(f"packages/{pkg}"))),
-                checkout, network=False, timeout=300, image=profile.image)
-    outcome, line = ladder.classify(profile.language, r.returncode, (r.stdout or "") + (r.stderr or ""))
-    if outcome != ladder.GREEN:
-        out["evidence"] = f"the failing test is still {outcome}: {line}\n" + _assertion(r)
-        return out
+    for test_path in judges:
+        r = run_one(checkout, profile, test_path, run_cmd)
+        outcome, line = ladder.classify(profile.language, r.returncode, (r.stdout or "") + (r.stderr or ""))
+        if outcome != ladder.GREEN:
+            out["evidence"] = f"the failing test {Path(test_path).name} is still {outcome}: {line}\n" + _assertion(r)
+            return out
     out["red_to_green"] = True
     for d in suites:
         r = run_cmd(profile.env + profile.test_cmd.format(package=d, test_path=""), checkout, network=False,
@@ -334,6 +334,12 @@ def validate(checkout: Path, profile, test_path: str, built: set, changed_files:
     return out
 
 
+def run_one(checkout: Path, profile, test_path: str, run_cmd):
+    pkg = test_path.split("/")[1]
+    return run_cmd(profile.env + profile.test_cmd.format(package=pkg, test_path=str(Path(test_path).relative_to(f"packages/{pkg}"))),
+                   checkout, network=False, timeout=300, image=profile.image)
+
+
 def _assertion(r) -> str:
     text = re.sub(r"\x1b\[[0-9;]*m", "", (r.stdout or "") + (r.stderr or ""))
     m = re.search(r"(FAIL .*\n(?:.*\n){0,3})?(AssertionError|Error|TypeError)[^\n]*\n(?:.*\n){0,10}", text)
@@ -341,20 +347,26 @@ def _assertion(r) -> str:
 
 
 def write_fix(state: dict, checkout: Path, cause: dict, test_path: str, evidence: str, profile, run_cmd=None,
-              looked_up: list[str] | None = None, stale: list[str] | None = None, drafts: Path | None = None) -> dict:
-    """stale: files a crashed attempt had changed (now reverted); their packages are rebuilt before validating."""
+              looked_up: list[str] | None = None, stale: list[str] | None = None, drafts: Path | None = None,
+              judges: list[str] | None = None, prior: list[str] | None = None, attempts_max: int = FIX_ATTEMPTS) -> dict:
+    """stale: files an earlier attempt had changed (now reverted); their packages are rebuilt before validating.
+    judges: every test the fix must turn green (default: test_path). prior: what earlier rounds learned."""
     from .sandbox import run_in_sandbox
     run_cmd = run_cmd or run_in_sandbox
     focus = state.get("focus") or state["issue"]["title"]
-    test_code = (checkout / test_path).read_text()
-    history, attempts, asked = [], [], []
+    judges = judges or [test_path]
+    test_code = "\n\n".join(f"// ===== {j}\n" + (checkout / j).read_text() for j in judges)
+    history, attempts, asked = list(prior or []), [], []
     looked_up = list(looked_up or [])
     built = set(affected(checkout, stale, suite_names(profile))[0]) if stale else set()
-    for n in range(1, FIX_ATTEMPTS + 1):
+    for n in range(1, attempts_max + 1):
         for _ in range(2):  # up to 2 lookup rounds per attempt (each one model call, under the write_fix turn cap)
-            msg, _ = write(state, "write_fix", fix_messages(focus, cause, (checkout / cause["file"]).read_text(),
-                                                            test_path, test_code, evidence, history, looked_up),
-                           max_tokens=4000)
+            try:
+                msg, _ = write(state, "write_fix", fix_messages(focus, cause, (checkout / cause["file"]).read_text(),
+                                                                ", ".join(judges), test_code, evidence, history,
+                                                                looked_up), max_tokens=4000)
+            except (TurnCapExceeded, BudgetExceeded) as e:  # a cap ends the step as NOT VALIDATED, never a crash
+                return _not_validated(checkout, profile, built, attempts, run_cmd, f"stopped by a cap: {e}")
             wanted = [w for w in re.findall(r"NEED_DEFINITION:\s*`?([\w$]+)`?", str(msg.content)) if w not in asked][:3]
             if not wanted or "<<<<<<< SEARCH" in str(msg.content):
                 break
@@ -376,7 +388,7 @@ def write_fix(state: dict, checkout: Path, cause: dict, test_path: str, evidence
         changed: list[str] = []
         try:
             changed = apply_edits(checkout, parse_edits(str(msg.content)))
-            result = validate(checkout, profile, test_path, built, changed, run_cmd)
+            result = validate(checkout, profile, judges, built, changed, run_cmd)
         except FixRefused as e:
             result = {"ok": False, "red_to_green": False, "suites": {}, "evidence": f"edit refused: {e}"}
         rec = {"n": n, "ok": result["ok"], "changed": changed, "red_to_green": result["red_to_green"],
@@ -389,8 +401,50 @@ def write_fix(state: dict, checkout: Path, cause: dict, test_path: str, evidence
                     "red_to_green": True, "suites": result["suites"]}
         revert(checkout, changed)
         history.append(f"attempt {n}: {result['evidence'][:700]}")
-    if built:  # leave the copy's builds matching its (reverted) source
+    return _not_validated(checkout, profile, built, attempts, run_cmd, "")
+
+
+def _not_validated(checkout, profile, built, attempts, run_cmd, why: str) -> dict:
+    if built and profile.build_cmd:  # leave the copy's builds matching its (reverted) source
         flt = " ".join(f"--filter '{n}'" for n in sorted(built))
         run_cmd(profile.env + f"pnpm {flt} build", checkout, network=False, timeout=900, image=profile.image)
     return {"status": "NOT VALIDATED", "attempts": attempts, "changed": [], "patch": "", "red_to_green": False,
-            "suites": {}}
+            "suites": {}, "why": why}
+
+
+# ── holdout: a second, independent judge ─────────────────────────────────────────────────────────
+def holdout(state: dict, profile, fixed: Path, base_copy: Path, ctx, judges: list[str], drafts: Path | None = None,
+            tries: int = 2, run_cmd=None, attempt_fn=None) -> dict:
+    """Fresh eyes: a NEW test of the focus, written without seeing the fix, must fail on the UNFIXED code for the
+    right reason and pass on the fixed code. Dev run 2026-10-07: a fix passed its one judge (an injected error chunk)
+    and every suite, yet failed all 3 by-hand reference tests (a stream with no finish reason at all).
+    → {"status": PASSED | FIX INCOMPLETE | INCONCLUSIVE, "test", "evidence"}"""
+    from . import testwriter
+    from .sandbox import run_in_sandbox
+    run_cmd = run_cmd or run_in_sandbox
+    attempt_fn = attempt_fn or testwriter.attempt
+    covered = [ladder.Attempt(rung="unit", n=0, outcome=ladder.RED, test_path=j,
+                              evidence=f"ALREADY COVERED by {Path(j).name}. Write a DIFFERENT test of the FOCUS: "
+                                       "trigger it the way the issue itself describes, not the way that test did.")
+               for j in judges]
+    tried = []
+    for i in range(1, tries + 1):
+        try:
+            a = attempt_fn(state, ladder.RUNGS[0], i, covered + tried, ctx, base_copy, profile, drafts=drafts,
+                           step="holdout", label="holdout")
+        except (TurnCapExceeded, BudgetExceeded) as e:
+            return {"status": "INCONCLUSIVE", "test": None, "evidence": f"stopped by a cap: {e}"}
+        tried.append(a)
+        if a.outcome != ladder.RED:
+            continue  # it didn't reproduce on the unfixed code: no judge yet
+        dest = fixed / a.test_path
+        dest.write_text((base_copy / a.test_path).read_text())
+        r = run_one(fixed, profile, a.test_path, run_cmd)
+        outcome, line = ladder.classify(profile.language, r.returncode, (r.stdout or "") + (r.stderr or ""))
+        events.log("holdout", test=a.test_path, on_unfixed="RED", on_fixed=outcome)
+        if outcome == ladder.GREEN:
+            return {"status": "PASSED", "test": a.test_path, "evidence": a.evidence[:800]}
+        return {"status": "FIX INCOMPLETE", "test": a.test_path,
+                "evidence": f"a fresh test of the focus fails on the fixed code: {line}\n{_assertion(r)}"}
+    return {"status": "INCONCLUSIVE", "test": None,
+            "evidence": "; ".join(f"{t.outcome}: {t.evidence[:160]}" for t in tried)}
