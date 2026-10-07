@@ -1,6 +1,6 @@
 """One profile per repo: which sandbox image, how to install, how to test.
 
-Two phases (ruled 2026-10-06): INSTALL runs with network (package registries), TEST runs with network OFF.
+Two phases (ruled 2026-10-06): INSTALL runs with network (package registries); BUILD and TEST run with network OFF.
 Images are pinned by digest so a new upstream release can't change behaviour mid-week.
 Install/test commands are starting points; Friday's by-hand run refines them per issue.
 """
@@ -17,13 +17,24 @@ class RepoProfile:
     image: str
     install_cmd: str   # phase 1: network ON
     test_cmd: str      # phase 2: network OFF
+    build_cmd: str = ""  # between them, network OFF (monorepos whose tests import sibling packages' builds)
+    env: str = ""        # shell prefix for every command in this repo's sandbox (never host secrets)
+
+
+# vercel/ai, proven 2026-10-06 at e7f55a4 in NODE_IMAGE: install 55 s, build 63 s, then provider-utils 1,064, gateway 645
+# and ai 4,252 tests all pass offline. Everything pnpm needs lives under /work, because each command is a fresh container:
+# corepack's pnpm (COREPACK_HOME), a `pnpm` on PATH (package scripts call it by name), and the package store.
+_PNPM = ("export COREPACK_HOME=/work/.corepack COREPACK_ENABLE_DOWNLOAD_PROMPT=0 CI=1 NO_COLOR=1 PATH=/work/.bin:$PATH"
+         " && mkdir -p /work/.bin && corepack enable --install-directory /work/.bin pnpm && ")
 
 
 PROFILES = {
     "vercel/ai": RepoProfile(
         "vercel/ai", "typescript", NODE_IMAGE,
-        install_cmd="corepack enable && pnpm install --frozen-lockfile",
-        test_cmd="pnpm --filter {package} test",
+        install_cmd="pnpm install --frozen-lockfile --store-dir /work/.pnpm-store {filters}",
+        build_cmd="pnpm {filters} build",
+        test_cmd="cd packages/{package} && pnpm test:node {test_path}",
+        env=_PNPM,
     ),
     "langchain-ai/langchain": RepoProfile(
         "langchain-ai/langchain", "python", PYTHON_IMAGE,

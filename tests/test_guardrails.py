@@ -129,3 +129,12 @@ def test_sandbox_has_no_network(tmp_path):
     r = run_in_sandbox("python -c \"import urllib.request; urllib.request.urlopen('https://pypi.org', timeout=5)\"",
                        tmp_path)
     assert r.returncode != 0, "sandbox reached the internet with network disabled"
+
+
+@pytest.mark.skipif(not docker_up, reason="Docker not running")
+def test_a_pipe_cannot_hide_a_failing_command(tmp_path):
+    """`failing tests | tail` must still fail, or the ladder would read a red test as GREEN."""
+    from debug_assist.profiles import NODE_IMAGE
+    from debug_assist.sandbox import run_in_sandbox
+    assert run_in_sandbox("false | cat", tmp_path).returncode != 0
+    assert run_in_sandbox("false | tail -1", tmp_path, image=NODE_IMAGE).returncode != 0

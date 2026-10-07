@@ -43,7 +43,10 @@ def run_in_sandbox(command: str, workdir: Path, network: bool = False, timeout: 
         "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
         "--tmpfs", "/tmp",
         "-v", f"{Path(workdir).resolve()}:/work", "-w", "/work",
-        image, "sh", "-c", command,
+        # pipefail: `tests | tail` must report the TESTS' exit code, not tail's. Caught 2026-10-06: a vercel/ai run
+        # with 14 failing tests exited 0 through a pipe, which the ladder would have read as GREEN. bash, because the
+        # node image's sh (dash) has no pipefail; an image without bash fails here (closed) rather than hide exit codes.
+        image, "bash", "-o", "pipefail", "-c", command,
     ]
     assert not any(a in ("-e", "--env", "--env-file") for a in args), "sandbox must never receive env vars"
     t0 = time.monotonic()
@@ -73,10 +76,15 @@ def secrets_visible(workdir: Path, image: str) -> list[str]:
 
 
 def install_then_test(profile: RepoProfile, workdir: Path, **fmt) -> dict:
-    """Phase 1 installs with network; phase 2 runs tests with network OFF."""
-    inst = run_in_sandbox(profile.install_cmd.format(**fmt), workdir, network=True, image=profile.image)
+    """Phase 1 installs with network; the build (if the profile has one) and the tests run with network OFF."""
+    inst = run_in_sandbox(profile.env + profile.install_cmd.format(**fmt), workdir, network=True, image=profile.image)
     if inst.returncode != 0:
         return {"phase": "install", "ok": False, "exit": inst.returncode, "stderr": inst.stderr[-2000:]}
-    test = run_in_sandbox(profile.test_cmd.format(**fmt), workdir, network=False, image=profile.image)
+    if profile.build_cmd:
+        b = run_in_sandbox(profile.env + profile.build_cmd.format(**fmt), workdir, network=False, image=profile.image)
+        if b.returncode != 0:
+            return {"phase": "build", "ok": False, "exit": b.returncode, "stdout": b.stdout[-2000:],
+                    "stderr": b.stderr[-2000:]}
+    test = run_in_sandbox(profile.env + profile.test_cmd.format(**fmt), workdir, network=False, image=profile.image)
     return {"phase": "test", "ok": test.returncode == 0, "exit": test.returncode,
             "stdout": test.stdout[-4000:], "stderr": test.stderr[-2000:]}
