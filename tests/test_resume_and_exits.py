@@ -162,3 +162,28 @@ def test_only_the_judging_test_stays_in_the_code(tmp_path):
     moved = graph.shelve_drafts(co, rd, paths, keep="packages/p/src/da-repro-1-integration-3.test.ts")
     assert len(moved) == 2 and (co / "packages/p/src/da-repro-1-integration-3.test.ts").exists()
     assert sorted(p.name for p in (rd / "attempt-tests").iterdir()) == ["da-repro-1-unit-1.test.ts", "da-repro-1-unit-2.test.ts"]
+
+
+@pytest.mark.parametrize("holdout,validated,judges,stopped", [
+    ({"status": "PASSED", "test": "t2"}, True, 2, False),
+    ({"status": "INCONCLUSIVE", "test": None, "evidence": ""}, False, 1, False),  # reaches the PR, labelled one judge
+])
+def test_only_a_fix_confirmed_by_two_tests_counts_toward_the_fix_clock(tmp_path, monkeypatch, holdout, validated,
+                                                                       judges, stopped):
+    monkeypatch.setattr(graph, "CFG", dataclasses.replace(graph.CFG, runs_dir=tmp_path))
+    monkeypatch.setattr(graph, "run_copy", lambda prof, dest: dest)
+    monkeypatch.setattr(graph.testwriter, "locate", lambda *a: SimpleNamespace(source="packages/p/src/x.ts"))
+    monkeypatch.setattr(graph.fixer, "_git", lambda *a: "")
+    monkeypatch.setattr(graph.fixer, "write_fix", lambda *a, **k: {"status": "VALIDATED", "attempts": [{"evidence": ""}],
+                                                                 "changed": ["packages/p/src/x.ts"], "patch": "diff",
+                                                                 "suites": {"p": "pass"}})
+    monkeypatch.setattr(graph.fixer, "holdout", lambda *a, **k: holdout)
+    s = {"run_id": "r", "issue": {"number": 1, "title": "t", "body": "b"}, "focus": "f",
+         "profile": {"repo": "vercel/ai"}, "fix_clock": {"started_at": graph.now()},
+         "repro": {"checkout": str(tmp_path / "co"), "failing_test": "t1", "oracle_test": "t1"},
+         "cause": {"file": "packages/p/src/x.ts", "lines": [1, 2], "why": "w", "looked_up": []}}
+    out = graph.write_fix(s)
+    assert out["fix_clock"]["validated"] is validated and out["fix_clock"]["judges"] == judges
+    assert ("outcome" in out) is stopped
+    if judges == 1:
+        assert any("ONE JUDGE ONLY" in l for l in out["log"])

@@ -264,18 +264,24 @@ def write_fix(s: RunState):
     clock["stopped_at"] = now()
     clock["seconds"] = round((datetime.fromisoformat(clock["stopped_at"])
                               - datetime.fromisoformat(clock["started_at"])).total_seconds(), 1)
-    # ⏱ counts only a fix that turned every judge green with the suites green, and that a fresh test did not refute
-    clock["validated"] = fix["status"] == "VALIDATED" and (ho or {}).get("status") != "FIX INCOMPLETE"
+    # ⏱ counts only a fix confirmed by TWO independent tests (its judge + a fresh one written without seeing it), with
+    # every suite green. Dev run 2026-10-07: a one-judge "validated" fix failed all 3 by-hand reference tests.
+    two_judges = str((ho or {}).get("status", "")).startswith("PASSED")
+    clock["validated"] = fix["status"] == "VALIDATED" and two_judges
+    clock["judges"] = 2 if two_judges else (1 if fix["status"] == "VALIDATED" else 0)
     (run_dir(s) / "fix.patch").write_text(fix["patch"])
     out = {"fix": {k: v for k, v in fix.items() if k != "patch"} | {"patch_path": str(run_dir(s) / "fix.patch")},
            "fix_clock": clock,
            "log": [f"write_fix: {fix['status']} after {len(fix['attempts'])} attempt(s); fix clock {clock['seconds']}s"
                    + (f"; suites green: {', '.join(fix['suites'])}" if clock["validated"] else "")
                    + (f"; fresh test: {ho['status']}" if ho else "")]}
+    if fix["status"] == "VALIDATED" and not two_judges and (ho or {}).get("status") != "FIX INCOMPLETE":
+        out["log"].append("write_fix: ONE JUDGE ONLY: the fresh test was inconclusive, so this fix reaches the PR draft "
+                          "labelled as such and does not count toward ⏱ time to validated fix")
     if fix["status"] == "TEST FLAWED":
         out["outcome"] = stop("TEST FLAWED", f"the fixer says the judging test cannot be passed: {fix['why'][:400]}. "
                                              "A person checks the test (the fixer may never edit it)")
-    elif not clock["validated"]:
+    elif fix["status"] != "VALIDATED" or (ho or {}).get("status") == "FIX INCOMPLETE":
         last = (fix.get("why") or (fix["attempts"][-1]["evidence"] if fix["attempts"] else "no attempt"))[:300]
         out["outcome"] = stop("FIX NOT VALIDATED", f"{len(fix['attempts'])} attempt(s), none turned the test green with "
                                                    f"every affected suite passing. Last: {last}")
@@ -391,8 +397,8 @@ def fix_lines(cause: dict, fix: dict, patch_path: Path) -> list[str]:
             *([f"A second test of the same problem, written without seeing this fix, failed on the old code and "
                f"passes on the new: `{(fix.get('holdout') or {}).get('test')}`."]
               if str((fix.get("holdout") or {}).get("status", "")).startswith("PASSED") else
-              [f"Second-test check: {(fix.get('holdout') or {}).get('status', 'not run')} "
-               "(no independent test confirmed this fix)."]),
+              [f"**One judge only.** Second-test check: {(fix.get('holdout') or {}).get('status', 'not run')}; no "
+               "independent test confirmed this fix, so it may cover only the path its one test exercises."]),
             "",
             "<details><summary>Patch</summary>", "", "```diff", patch.rstrip(), "```", "</details>", ""]
 
