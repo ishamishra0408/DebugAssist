@@ -316,12 +316,12 @@ def page(data, svg_light, svg_dark):
         "Demo": ["Sun: tune the demo to Devansh's room angle", "Run the demo issue 3–5 times for the speed number"],
     }
     nxt = "".join(f"<li>{html.escape(x)}</li>" for x in NEXT.get(stage_now, ["All stages done"]))
-    bh, t, w = data.get("byhand"), (data.get("northstar") or {}).get("ttvf"), (data.get("northstar") or {}).get("whc")
-    vals = " and ".join(f"{x:.0f} s" for x in (t or {}).get("seconds", []))
-    ns = ((f"<p class='big'>⏱ {html.escape(vals) or 'none yet'}</p><p class='muted'>{t['reached']} of {t['pickups']} pipeline "
+    bh, ttvf, w = data.get("byhand"), (data.get("northstar") or {}).get("ttvf"), (data.get("northstar") or {}).get("whc")
+    vals = " and ".join(f"{x:.0f} s" for x in (ttvf or {}).get("seconds", []))
+    ns = ((f"<p class='big'>⏱ {html.escape(vals) or 'none yet'}</p><p class='muted'>{ttvf['reached']} of {ttvf['pickups']} pipeline "
            f"pickups reached a fix confirmed by two tests (vercel/ai #21439; development values). "
            + (f"By hand: {html.escape(bh['validated'])}, a different stop rule. " if bh else "")
-           + f"</p><p class='muted'>🎯 {html.escape(w['state'])}</p>") if t else
+           + f"</p><p class='muted'>🎯 {html.escape(w['state'])}</p>") if ttvf else
           "<p class='big'>Not measured yet</p><p class='muted'>No pipeline run has been picked up.</p>")
     badge = {"done": ("ok", "done"), "failing": ("bad", "failing"), "missing": ("bad", "missing")}
     thu = "".join(
