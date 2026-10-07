@@ -344,7 +344,7 @@ def lasting_guard(s: RunState):
                 "log": [f"lasting_guard: STOPPED GUARD NOT WRITTEN: {g.get('why')}"]}
     a = decide(f"{g['covers']}. A test file that the package's test suite runs in CI on every change.", A1_Q)["a1"]
     open_cases = g["on_fixed"]["failed"]  # failing WITH the bug's symptom: a part of the class still open
-    text = (f"{g['covers']}. A parametrised test (`{Path(g['repo_path']).name}`) that fails on the old code, so it would "
+    text = (f"{g['covers'].rstrip('. ')}. A parametrised test (`{Path(g['repo_path']).name}`) that fails on the old code, so it would "
             f"have caught this bug. On the fixed code {len(g['on_fixed']['passed'])} of "
             f"{len(g['on_fixed']['passed']) + len(open_cases)} cases pass.")
     return {"guard": {"status": g["status"], "text": text, "covers": g["covers"], "path": g["path"],
@@ -464,7 +464,7 @@ def compose_pr_body(s: RunState) -> str:
         g["text"],
         *([f"Still open after this fix (cases of the class it does not close): " +
            "; ".join(f"`{c}`" for c in g["open_cases"])] if g.get("open_cases") else []),
-        *([f"The same line exists in {len(g['siblings'])} other place(s), not changed here: " +
+        *([f"The same code exists in {len(g['siblings'])} other file(s), not changed here: " +
            ", ".join(f"`{x}`" for x in g["siblings"][:10])] if g.get("siblings") else []),
         f"Would-have-caught: {b['state']}",
         "",

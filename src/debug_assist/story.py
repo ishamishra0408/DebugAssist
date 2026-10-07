@@ -178,6 +178,7 @@ def gather(issue: dict, checkout: Path, cause_file: str, fix_patch: str) -> dict
 
 SYSTEM = """You write the SECOND STORY of a bug: how it came to ship, told through conditions, never people.
 Use ONLY the evidence given. Do not invent PRs, dates, versions or reviews. Never name or describe a person.
+Write for a reader who never saw the evidence: do not mention its field names (written, shaped, stops, …).
 Write markdown with exactly these sections:
 ## Critical junctures
 A table: | Stage | When | Change | What was known then | What the tests covered |  (stages: written, changed,
