@@ -19,6 +19,7 @@ class RepoProfile:
     test_cmd: str      # phase 2: network OFF
     build_cmd: str = ""  # between them, network OFF (monorepos whose tests import sibling packages' builds)
     env: str = ""        # shell prefix for every command in this repo's sandbox (never host secrets)
+    recorded_fixtures: bool = False  # the repo ships recorded streams the ladder's integration rung can cut
 
 
 # vercel/ai, proven 2026-10-06 at e7f55a4 in NODE_IMAGE: install 55 s, build 63 s, then provider-utils 1,064, gateway 645
@@ -38,6 +39,7 @@ PROFILES = {
         build_cmd="pnpm {filters} build",
         test_cmd="cd packages/{package} && pnpm test:node {test_path}",
         env=_PNPM,
+        recorded_fixtures=True,  # e.g. packages/openai-compatible/src/chat/__fixtures__/*.chunks.txt (by-hand run, rung 2)
     ),
     "langchain-ai/langchain": RepoProfile(
         "langchain-ai/langchain", "python", PYTHON_IMAGE,

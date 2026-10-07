@@ -16,10 +16,41 @@ def scripted(*outcomes):
     return attempt, asked
 
 
-def test_red_on_the_first_rung_stops_the_climb():
-    fn, asked = scripted(RED)
+def test_red_on_the_first_rung_stops_the_climb_then_confirms_on_a_recorded_stream():
+    fn, asked = scripted(RED, RED)
     r = climb(list(RUNGS), fn)
-    assert (r.status, r.rung, len(asked)) == (REPRODUCED, "unit", 1)
+    assert (r.status, r.rung) == (REPRODUCED, "unit")
+    assert [a[0] for a in asked] == ["unit", "integration"] and (r.confirmed, r.confirmed_by) == (True, "integration")
+
+
+def test_a_red_the_recorded_stream_cannot_repeat_is_reproduced_but_not_confirmed():
+    fn, asked = scripted(RED, GREEN)
+    r = climb(list(RUNGS), fn)
+    assert r.status == REPRODUCED and r.confirmed is False and len(asked) == 2
+
+
+def test_a_broken_confirmation_test_is_retried():
+    fn, asked = scripted(RED, ERROR, RED)
+    r = climb(list(RUNGS), fn)
+    assert [a[0] for a in asked] == ["unit", "integration", "integration"] and r.confirmed is True
+
+
+def test_no_recorded_rung_means_unconfirmed_not_failed():
+    fn, asked = scripted(RED)
+    r = climb([RUNGS[0], RUNGS[2]], fn)  # integration skipped: no recorded fake server
+    assert r.status == REPRODUCED and r.confirmed is None and len(asked) == 1
+
+
+def test_confirmation_respects_the_cap():
+    fn, asked = scripted(ERROR, ERROR, ERROR, RED, RED)
+    r = climb(list(RUNGS), fn)
+    assert len(asked) == 4 and r.status == REPRODUCED and r.confirmed is None
+
+
+def test_a_red_on_a_recorded_stream_needs_no_confirmation():
+    fn, asked = scripted(GREEN, RED)
+    r = climb(list(RUNGS), fn)
+    assert r.rung == "integration" and (r.confirmed, r.confirmed_by) == (True, "integration") and len(asked) == 2
 
 
 def test_green_climbs_to_the_next_rung():
@@ -29,9 +60,9 @@ def test_green_climbs_to_the_next_rung():
 
 
 def test_error_retries_the_same_rung_and_the_writer_sees_the_history():
-    fn, asked = scripted(ERROR, RED)
+    fn, asked = scripted(ERROR, RED, RED)
     r = climb(list(RUNGS), fn)
-    assert asked == [("unit", 1, 0), ("unit", 2, 1)] and r.status == REPRODUCED
+    assert asked[:2] == [("unit", 1, 0), ("unit", 2, 1)] and r.status == REPRODUCED  # then the confirmation
 
 
 def test_four_attempts_without_red_stops_never_reproduced():
@@ -55,10 +86,18 @@ def test_resume_counts_earlier_attempts_and_skips_rungs_already_green():
     assert r.status == NEVER_REPRODUCED and len(r.attempts) == 4
 
 
-def test_a_red_found_before_a_crash_is_not_redone():
-    fn, asked = scripted()
+def test_a_red_found_before_a_crash_is_not_redone_only_its_confirmation_runs():
+    fn, asked = scripted(RED)
     r = climb(list(RUNGS), fn, already=[{"rung": "unit", "n": 1, "outcome": "RED", "evidence": "AssertionError"}])
-    assert r.status == REPRODUCED and asked == []
+    assert r.status == REPRODUCED and asked == [("integration", 2, 1)] and r.confirmed is True
+
+
+def test_a_confirmation_decided_before_a_crash_is_not_redone():
+    fn, asked = scripted()
+    before = [{"rung": "unit", "n": 1, "outcome": "RED", "evidence": "…"},
+              {"rung": "integration", "n": 2, "outcome": "GREEN", "evidence": "…"}]
+    r = climb(list(RUNGS), fn, already=before)
+    assert asked == [] and r.confirmed is False
 
 
 def test_plan_skips_rungs_the_issue_cannot_use():

@@ -109,7 +109,8 @@ def read_issue(s: RunState):
               "needs_person": max(p, 1 - p) < CFG.triage_review_below, "model": "laya-triage (fine-tuned)"}
     prof = profile_for(issue["owner"], issue["repo"])
     out = {"issue": issue, "triage": triage, "fix_clock": {"started_at": now()}, "spent_usd": 0.0, "turns": {},
-           "profile": {"repo": prof.repo, "language": prof.language, "image": prof.image},
+           "profile": {"repo": prof.repo, "language": prof.language, "image": prof.image,
+                       "recorded_fixtures": prof.recorded_fixtures},
            "log": [f"read_issue: {issue['repo']}#{issue['number']} triaged {triage}"]}
     if triage["needs_person"]:
         out["outcome"] = stop(NEEDS_PERSON, f"triage confidence {max(p, 1 - p):.2f} is below the "
@@ -145,7 +146,7 @@ def reproduce(s: RunState):
     seen = secrets_visible(work, image)  # in the repo's own image (node for vercel/ai, python otherwise)
     if seen:
         raise GuardrailViolation(f"sandbox exposes secrets or failed its probe: {seen}")
-    rungs, skipped = ladder.plan(s["triage"]["has_repro_p"], has_recorded_fixtures=False)
+    rungs, skipped = ladder.plan(s["triage"]["has_repro_p"], s["profile"].get("recorded_fixtures", False))
     plan = {"rungs": [r.name for r in rungs], "skipped": skipped, "cap": REPRO_ATTEMPT_CAP}
     if not TEST_WRITER_READY:
         return {"repro": {"status": "PLACEHOLDER", "ladder_plan": plan, "failing_test": None,
@@ -159,11 +160,14 @@ def reproduce(s: RunState):
     new = [{"step": "reproduce", **a} for a in ladder.as_records(result.attempts[len(before):])]
     red = next((a for a in result.attempts if a.outcome == ladder.RED), None)
     out = {"repro": {"status": result.status, "rung": result.rung, "ladder_plan": plan,
+                     "confirmed": result.confirmed, "confirmed_by": result.confirmed_by,
                      "failing_test": red.test_path if red else None, "evidence": red.evidence if red else None,
                      "attempts_used": len(result.attempts), "sandbox_secrets_visible": seen},
            "attempts": new,
            "log": [f"reproduce: {result.status}" + (f" at rung {result.rung}" if result.rung else "") +
-                   f" after {len(result.attempts)} of {REPRO_ATTEMPT_CAP} attempts"]}
+                   f" after {len(result.attempts)} of {REPRO_ATTEMPT_CAP} attempts"
+                   + {True: f"; confirmed on {result.confirmed_by}", False: "; NOT confirmed on a recorded stream",
+                      None: ""}[result.confirmed if result.status == ladder.REPRODUCED else None]]}
     if result.status == ladder.NEVER_REPRODUCED:
         tried = ", ".join(f"{a.rung}:{a.outcome}" for a in result.attempts) or "no rung available"
         out["outcome"] = stop(ladder.NEVER_REPRODUCED, f"nothing went red ({tried}); no fix is written for a bug "

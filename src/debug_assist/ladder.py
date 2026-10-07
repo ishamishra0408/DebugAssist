@@ -9,6 +9,9 @@ Each attempt ends one of three ways:
   RED    the test failed on the unfixed code → reproduced; stop climbing
   GREEN  the test ran and passed → this rung did not reproduce it; climb to the next rung
   ERROR  the test itself didn't run (syntax, import, compile, timeout) → retry the same rung
+Confirmation (ruled 2026-10-07): a RED on rung 1 (made-up data) is re-run on the recorded-format rung when the repo has
+one, because a real stream's format is what makes "simulated broken stream" credible. RED there → confirmed; GREEN →
+reproduced but NOT confirmed (said loudly downstream); ERROR → retry. The confirmation counts toward the cap.
 At most REPRO_ATTEMPT_CAP attempts across all rungs. If nothing goes RED, the run stops NEVER REPRODUCED: no fix is
 written for a bug we could not see (unlike Uber, which pushes a fix after its cap).
 
@@ -52,6 +55,11 @@ class Climb:
     rung: str | None                 # the rung that went RED
     attempts: list = field(default_factory=list)
     skipped: dict = field(default_factory=dict)  # rung → why it was not available
+    confirmed: bool | None = None    # True: a real-format rung went RED too · False: it went GREEN · None: not checked
+    confirmed_by: str | None = None
+
+
+CONFIRM_ON = {"unit": "integration"}  # a RED on made-up data is confirmed on the recorded-format rung
 
 
 def plan(has_repro_p: float, has_recorded_fixtures: bool) -> tuple[list[Rung], dict]:
@@ -104,24 +112,41 @@ def climb(rungs: list[Rung], attempt: Callable[[Rung, int, list], Attempt], alre
     crash (from the run state); they count toward the cap and decide where the climb resumes."""
     history = [a if isinstance(a, Attempt) else Attempt(**a) for a in (already or [])]
     done = Climb(status=NEVER_REPRODUCED, rung=None, attempts=history, skipped=dict(skipped or {}))
-    for a in history:  # a RED before the crash still counts
-        if a.outcome == RED:
-            done.status, done.rung = REPRODUCED, a.rung
+    names = [r.name for r in rungs]
+    red = next((a for a in history if a.outcome == RED), None)  # a RED before the crash still counts
+    if red is None:
+        i = 0
+        for a in history:  # resume where the record left off: past every rung that already went GREEN
+            if a.outcome == GREEN:
+                i = max(i, next((k + 1 for k, r in enumerate(rungs) if r.name == a.rung), i))
+        while i < len(rungs) and len(history) < cap:
+            a = attempt(rungs[i], len(history) + 1, list(history))
+            history.append(a)
+            if a.outcome == RED:
+                red = a
+                break
+            if a.outcome == GREEN:
+                i += 1  # this rung can't see it; climb
+            # ERROR: retry the same rung (the writer gets the error back via history)
+    if red is None:
+        return done
+    done.status, done.rung = REPRODUCED, red.rung
+    target = CONFIRM_ON.get(red.rung)
+    if target is None:  # the RED was already on a real-format rung
+        done.confirmed, done.confirmed_by = True, red.rung
+        return done
+    if target not in names:  # no recorded-format rung for this repo: confirmed stays None
+        return done
+    for a in history[history.index(red) + 1:]:  # a confirmation decided before a crash
+        if a.rung == target and a.outcome in (RED, GREEN):
+            done.confirmed, done.confirmed_by = a.outcome == RED, target
             return done
-    i = 0
-    for a in history:  # resume where the record left off: past every rung that already went GREEN
-        if a.outcome == GREEN:
-            i = max(i, next((k + 1 for k, r in enumerate(rungs) if r.name == a.rung), i))
-    while i < len(rungs) and len(history) < cap:
-        a = attempt(rungs[i], len(history) + 1, list(history))
+    while len(history) < cap:
+        a = attempt(rungs[names.index(target)], len(history) + 1, list(history))
         history.append(a)
-        if a.outcome == RED:
-            done.status, done.rung = REPRODUCED, a.rung
+        if a.outcome in (RED, GREEN):
+            done.confirmed, done.confirmed_by = a.outcome == RED, target
             break
-        if a.outcome == GREEN:
-            i += 1  # this rung can't see it; climb
-        # ERROR: retry the same rung (the writer gets the error back via history)
-    done.attempts = history
     return done
 
 
