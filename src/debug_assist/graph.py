@@ -4,14 +4,16 @@
   Learn        why_it_shipped → lasting_guard → test_past_bugs          (🎯 would-have-caught)
   Ship         approval (pauses for your go-word) → open_pr (dry run: you publish)
 
-WALKING SKELETON (2026-10-06): steps marked PLACEHOLDER return stand-in content. Everything else is real:
-GitHub read, Laya triage, sandbox secret probe, the reproduction ladder's plan, one tiny model call, the spend
-meter, condition freeze, vector search, the approval fingerprint and the read-only publish path.
+STATUS (2026-10-07): every step is real except the back-test half of test_past_bugs (the search is real). Each one
+gathers evidence in code, lets a model write only what code then checks, and stops with a named reason rather than
+pass along anything unproven.
 
-Typed early exits (Thursday): a run can stop on purpose, with a named reason in `outcome`, instead of pushing on:
-  NEEDS PERSON       triage confidence below the review bar (a person reads the issue first)
+Typed early exits: a run can stop on purpose, with a named reason in `outcome`, instead of pushing on:
+  NEEDS PERSON       triage confidence below the review bar, or the --focus-heading section is missing
   NOT A DEFECT       triage is confident it is not a bug
   NEVER REPRODUCED   the ladder used its attempts and nothing went red (no fix for a bug we could not see)
+  CAUSE NOT FOUND / FIX NOT VALIDATED / TEST FLAWED   no proven fix (fixer.py)
+  STORY NOT WRITTEN / GUARD NOT WRITTEN               no checked story or guard (story.py, guard.py)
 Resume (Thursday): `debug-assist resume <run-id>` continues from the last finished step. Every step is safe to re-run:
 the condition freeze and the stored condition are idempotent, spend and turns live in MongoDB (meter.py), and the
 ladder reads the attempts it already made from the event log.

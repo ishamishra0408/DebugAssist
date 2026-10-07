@@ -174,3 +174,11 @@ def test_a_recently_reworded_line_is_traced_back_through_the_call_itself(monkeyp
     ev = story.gather(issue, tmp_path, "packages/p/src/x.ts", PATCH)
     assert ev["written"]["pr"]["number"] == 14565 and ev["line"] == "toolCallTracker.flush("
     assert any("is older" in s for s in ev["stops"])
+
+
+def test_cases_that_share_one_error_block_are_judged_by_it():
+    """vitest prints identical failures as consecutive FAIL headers over one shared error."""
+    out = (" × a 3ms\n × b 2ms\n FAIL  f.test.ts > d > a\n FAIL  f.test.ts > d > b\n"
+           "AssertionError: expected [ { type: 'tool-call' } ] to strictly equal []\n")
+    j = guard.judged("emits a `tool-call` part", out)
+    assert j["symptom"] == ["a", "b"] and j["broken"] == []

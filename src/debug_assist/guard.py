@@ -73,7 +73,14 @@ def failure_blocks(output: str) -> dict:
     """vitest's ' FAIL  file > describe > case' sections: case header → what it printed."""
     clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
     parts = re.split(r"(?m)^ FAIL  ", clean)[1:]
-    return {p.splitlines()[0]: "\n".join(p.splitlines()[1:25]) for p in parts}
+    heads = [p.splitlines()[0] for p in parts]
+    bodies = ["\n".join(p.splitlines()[1:25]) for p in parts]
+    # vitest prints cases that failed with the SAME error as consecutive headers sharing one block (trial 2026-10-07:
+    # the first case of a pair looked like it showed nothing and was called broken)
+    for i in range(len(bodies) - 2, -1, -1):
+        if not bodies[i].strip():
+            bodies[i] = bodies[i + 1]
+    return dict(zip(heads, bodies))
 
 
 def judged(focus: str, output: str) -> dict:

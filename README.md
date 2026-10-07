@@ -53,11 +53,14 @@ A run ends one of these ways (the `outcome` field, printed as `STOPPED: ...`):
 | `NEVER REPRODUCED` | The reproduction ladder used its 4 attempts and nothing went red: no fix for a bug we could not see |
 | `CAUSE NOT FOUND` | The model could not name a real source file and lines for the cause |
 | `FIX NOT VALIDATED` | 3 fix attempts, none turned the failing test green with every affected suite still passing |
+| `TEST FLAWED` | The fixer says the judging test cannot be passed (it may never edit it); a person checks the test |
+| `STORY NOT WRITTEN` / `GUARD NOT WRITTEN` | No second story passed the checks (names, 2+ conditions, nothing invented), or no guard failed on the unfixed code |
 | paused at approval | Waiting for your go-word |
 | `REJECTED` / `READY FOR YOU TO PUBLISH` | After your answer |
 
-Status (2026-10-07): **reproduce is real** (the test writer climbs the ladder on the run's own copy of the code).
-Steps still marked PLACEHOLDER (find the cause, the fix, the second story, the guard) get real logic next. Real today: GitHub read, Laya
+Status (2026-10-07): **8 of 9 steps are real.** Only the back-test half of `test_past_bugs` is still to build (its
+vector search is real). Use `--demo` (Claude Opus) for runs that matter: the dev model's fixes pass one test but miss
+the issue, and only a fix confirmed by two independent tests counts toward ⏱. Real today: GitHub read, Laya
 triage + typed exits, sandbox secret probe, the ladder's plan and climb logic, the spend meter, resume, the event
 log, condition freeze, vector search, approval fingerprint, read-only publish path (`runs/<id>/publish.sh`).
 
