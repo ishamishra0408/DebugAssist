@@ -30,8 +30,8 @@ time it starts; update `LAYA_URL` in Render when it does (or set up a named tunn
 
 ## 4. Render
 New ▸ Blueprint ▸ this repo. Render reads `render.yaml` and asks for each key marked `sync: false`.
-`PUBLIC_HOST` is the address Render gives the service (e.g. `debugassistagent.onrender.com`); set it after the first
-deploy, then redeploy. `APP_PASSWORD` is the sign-in for that address (12+ characters).
+Render tells the app its own address (`RENDER_EXTERNAL_HOSTNAME`), so there is no address to set.
+`APP_PASSWORD` is the sign-in for that address (12+ characters).
 
 ## 5. Check
 Open the address, sign in, then on your Mac: `uv run debug-assist preflight <issue-url>` with the same environment, or

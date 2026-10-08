@@ -26,3 +26,6 @@ runs/
 
 # rebuilt by training/make_colab.py; holds third-party issue text
 training/colab/*.zip
+
+# hosted: the source-only copy of the repo under test (Render)
+.checkouts/

@@ -41,8 +41,8 @@ _failed_logins: dict = {}   # client address → recent failed attempts (a publi
 
 def _public_host() -> str:
     """The hosted address (e.g. debugassist.onrender.com), set where it is deployed. Empty on the Mac."""
-    import os
-    return os.environ.get("PUBLIC_HOST", "").strip().lower()
+    import os  # Render sets RENDER_EXTERNAL_HOSTNAME itself, so a Render deploy needs no PUBLIC_HOST
+    return (os.environ.get("PUBLIC_HOST") or os.environ.get("RENDER_EXTERNAL_HOSTNAME") or "").strip().lower()
 
 
 def _password() -> str:

@@ -7,7 +7,9 @@ services:
     name: debugassistagent
     runtime: python
     plan: free
-    buildCommand: pip install uv && uv sync --frozen --no-dev
+    buildCommand: >-
+      pip install uv && uv sync --frozen --no-dev &&
+      uv run python scripts/prepare_base.py vercel/ai --source-only --if-missing
     startCommand: >-
       uv run python scripts/prepare_base.py vercel/ai --source-only --if-missing &&
       uv run debug-assist serve --host=0.0.0.0 --port=$PORT
@@ -23,10 +25,10 @@ services:
         value: voyage
       - key: VIEWER_IDLE_S          # Render decides when the service sleeps
         value: "0"
+      - key: CHECKOUTS_BASE         # inside the project folder: the part of the disk that survives from build to start
+        value: /opt/render/project/src/.checkouts/base
       - key: E2B_TEMPLATE
         value: debugassist-vercel-ai-e7f55a4
-      - key: PUBLIC_HOST            # e.g. debugassistagent.onrender.com (shown after the first deploy)
-        sync: false
       - key: APP_PASSWORD           # 12+ characters; the sign-in for this public address
         sync: false
       - key: MONGODB_URI            # MongoDB Atlas connection string
