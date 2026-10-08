@@ -705,7 +705,7 @@ def _advisors(s: dict) -> str:
                     f'<b>{e(r["seat"])} reviews {e(r["what"])}</b><span>{e(sub)}</span></span></li>')
     return (f'<section class="group"><h2>Advisors</h2><div class="sect"><ul class="rows">{"".join(rows)}</ul></div>'
             '<p class="foot">Advice only. An advisor never changes the fix, the pull request text or your OK. They are '
-            'switched on after the advisors\' server has been reviewed.</p></section>')
+            'switched on after the advisors\' server has been reviewed: <a href="/connect#advisors">how to connect them</a>.</p></section>')
 
 
 def _what_it_read(pack: dict, c: dict) -> str:

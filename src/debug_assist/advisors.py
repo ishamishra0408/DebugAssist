@@ -31,6 +31,9 @@ REVIEWS = {
 }
 
 
+CALL_WRITTEN = False   # True once _call is written against the reviewed server's tools
+
+
 def status() -> tuple[str, str]:
     """(OFF | BLOCKED | ON, why) from the two settings."""
     if not CFG.advisors_mcp:

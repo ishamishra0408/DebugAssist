@@ -293,3 +293,24 @@ def test_with_the_database_off_pages_answer_at_once_and_say_so(tmp_path, monkeyp
         assert code == 503 and "The database is off" in text
     finally:
         httpd.shutdown()
+
+
+def test_the_connect_page_has_a_card_per_advisor_and_the_steps_to_connect_them(monkeypatch):
+    """Isha 2026-10-08: show the option to connect the advisors. One card per seat, and the steps ticked as far as they
+    have got. The page never switches them on: the server is reviewed first, then two settings are set by hand."""
+    import dataclasses
+    from debug_assist import advisors
+    monkeypatch.setattr("debug_assist.profiles.ready", lambda: [])
+    monkeypatch.setitem(server._connector, "repo", None)
+    page = server.connect_page()
+    cards = page.split('id="advisors"')[1]
+    assert cards.count('class="adv-card"') == len(advisors.REVIEWS) and "allspaw" in cards and "qe-ic-advisor" in cards
+    assert "After step 6, Why it slipped" in cards and "After step 7, Guard similar bugs" in cards
+    assert "Not connected. Waiting for the advisors&#x27; server." in cards and cards.count('class="row done"') == 0
+    assert "ADVISORS_REVIEWED" in cards and "<button" not in cards and "<form" not in cards     # nothing to press here
+    monkeypatch.setattr(advisors, "CFG", dataclasses.replace(advisors.CFG, advisors_mcp="https://advisors.example/mcp", advisors_reviewed=False))
+    cards = server.connect_page().split('id="advisors"')[1]
+    assert "has not been reviewed" in cards and "Waiting for review" in cards and cards.count('class="row done"') == 1
+    monkeypatch.setattr(advisors, "CFG", dataclasses.replace(advisors.CFG, advisors_mcp="https://advisors.example/mcp", advisors_reviewed=True))
+    cards = server.connect_page().split('id="advisors"')[1]
+    assert "the question call is not written yet" in cards and cards.count('class="row done"') == 3   # never claims more

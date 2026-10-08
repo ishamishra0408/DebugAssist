@@ -418,6 +418,42 @@ def _connect_progress(repo: str) -> str:
             + ('<p class="foot"><a href="/">Start a run</a></p>' if st == "connected" else "") + "</section>")
 
 
+def _advisor_cards() -> str:
+    """One card per advisor seat (advisors.REVIEWS): which step it reviews, what it asks, whether it is on; then the
+    steps to connect them, ticked as far as they have got (Isha 2026-10-08). Nothing here switches them on: the
+    server is reviewed first, then the two settings are set where DebugAssistAgent runs."""
+    from . import advisors, icons
+    e = viewer.e
+    st, _ = advisors.status()
+    label = {k: lab for k, lab, _ in plain.STEPS}
+    num = {k: i + 1 for i, (k, _, _) in enumerate(plain.STEPS)}
+    pill = {"OFF": ("Off", "grey"), "BLOCKED": ("Waiting for review", "amber"),
+            "ON": ("On", "green") if advisors.CALL_WRITTEN else ("Set, not asking yet", "amber")}[st]
+    cards = "".join(
+        f'<article class="adv-card"><div class="adv-top"><span class="adv-mark" aria-hidden="true">{e(r["seat"][:2].upper())}</span>'
+        f'<div><b>{e(r["seat"])}</b><span>Reviews {e(r["what"])}</span></div><span class="pill {pill[1]}">{e(pill[0])}</span></div>'
+        f'<dl><dt>When</dt><dd>After step {num[step]}, {e(label[step])}</dd><dt>Asks</dt><dd>{e(r["question"])}</dd></dl></article>'
+        for step, r in advisors.REVIEWS.items())
+    done = {"OFF": 0, "BLOCKED": 1, "ON": 3 if not advisors.CALL_WRITTEN else 4}[st]
+    steps = [("Get the advisors' server address", "From the advisors' team. It has not arrived yet." if done == 0 else "Received."),
+             ("Review the server", "Check which tools it offers and what it can read, before anything connects to it."),
+             ("Switch it on where DebugAssistAgent runs",
+              "Set ADVISORS_MCP to the address and ADVISORS_REVIEWED to yes (on Render: Environment). Never in chat."),
+             ("Write the question call", "Written against the reviewed server's tools; then each answer is saved with the run.")]
+    rows = "".join(
+        f'<li class="row {"done" if i < done else "next" if i == done else "pending"}"><span class="ic">{icons.check() if i < done else f"<span class=num>{i + 1}</span>"}'
+        f'</span><span class="t"><b>{e(t)}</b><span>{e(d)}</span></span></li>' for i, (t, d) in enumerate(steps))
+    state = {"OFF": "Not connected. Waiting for the advisors' server.",
+             "BLOCKED": "An address is set, but the server has not been reviewed, so the advisors stay off.",
+             "ON": "Connected." if advisors.CALL_WRITTEN else "Switched on, but the question call is not written yet, so nobody is asked."}[st]
+    return (f'<section class="group" id="advisors" aria-labelledby="h-adv"><h2 id="h-adv">Advisors</h2>'
+            f'<p class="status {"s-done" if st == "ON" and advisors.CALL_WRITTEN else "s-waiting" if st == "BLOCKED" else "s-idle"}">'
+            f'<span class="dot"></span><span>{e(state)}</span></p>'
+            f'<div class="adv-cards">{cards}</div>'
+            f'<h3 class="sub-h">How to connect them</h3><div class="sect"><ul class="rows">{rows}</ul></div>'
+            '<p class="foot">Advice only. An advisor never changes the fix, the pull request text or your OK.</p></section>')
+
+
 def connect_page(repo: str = "") -> str:
     from . import icons
     e = viewer.e
@@ -425,7 +461,7 @@ def connect_page(repo: str = "") -> str:
         repo = _connector["repo"]
     rows = _connected_rows()
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Connect a repo · {plain.NAME}</title><meta name="color-scheme" content="dark light"><link rel="stylesheet" href="/static/app.css">
+<title>Connect · {plain.NAME}</title><meta name="color-scheme" content="dark light"><link rel="stylesheet" href="/static/app.css">
 </head><body>
 <canvas id="topo" aria-hidden="true"></canvas><div class="ambient s-idle" aria-hidden="true"></div>
 <div class="scrim top" aria-hidden="true"></div>
@@ -435,8 +471,8 @@ def connect_page(repo: str = "") -> str:
     <a class="tbtn" href="/checks" aria-label="System check">{icons.check(16)}<span class="lbl">System check</span></a></div>
 </nav>
 <main>
-<header class="hero"><h1>Connect a repo</h1>
-  <p class="lede">Give it a GitHub repository. It works out how the repo installs and runs its tests, builds a test sandbox for it, and checks the tests pass there. After that, you can run any issue from that repo.</p></header>
+<header class="hero"><h1>Connect</h1>
+  <p class="lede">Connect a GitHub repository: it works out how the repo installs and runs its tests, builds a test sandbox for it, and checks the tests pass there. After that, you can run any issue from that repo. Below, the advisors who review each run.</p></header>
 <section class="group" aria-labelledby="h-repo"><h2 id="h-repo">GitHub repository</h2>
   <div class="sect"><div class="field"><input id="link" type="url" inputmode="url" placeholder="https://github.com/owner/repo" autocomplete="off" aria-label="GitHub repository link" value="{e(f'https://github.com/{repo}' if repo else '')}">
     <button type="button" class="btn glass prominent" id="go">Connect</button></div></div>
@@ -446,6 +482,7 @@ def connect_page(repo: str = "") -> str:
 <section class="group" aria-labelledby="h-conn"><h2 id="h-conn">Connected repos</h2>
   <div class="sect"><ul class="rows">{rows}</ul></div>
   {'<p class="foot">Connect again to move a repo to its latest code. Its current setup keeps working until the new one is ready.</p>' if 'class="btn glass again"' in rows else ''}</section>
+{_advisor_cards()}
 </main>
 <script src="/static/topo.js" defer></script><script src="/static/glass.js" defer></script>
 <script>
@@ -531,7 +568,7 @@ def home_page() -> str:
 <nav class="toolbar" aria-label="{plain.NAME}">
   <div class="tgroup glass"><a class="brand" href="/">{icons.mark()}<span>{plain.NAME}</span></a></div>
   <div class="tgroup glass"><a class="tbtn" href="#runs" aria-label="Runs">{icons.list_(16)}<span class="lbl">Runs</span></a>
-    <a class="tbtn" href="/connect" aria-label="Connect a repo">{icons.link(16)}<span class="lbl">Connect a repo</span></a>
+    <a class="tbtn" href="/connect" aria-label="Connect">{icons.link(16)}<span class="lbl">Connect</span></a>
     <a class="tbtn" href="/how" aria-label="How it works">{icons.play(16)}<span class="lbl">How it works</span></a>
     <a class="tbtn" href="/checks" aria-label="System check">{icons.check(16)}<span class="lbl">System check</span></a></div>
 </nav>

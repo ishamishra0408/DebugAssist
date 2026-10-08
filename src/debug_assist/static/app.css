@@ -386,3 +386,16 @@ ul.log li { white-space: pre-wrap; word-break: break-word; }
 .pages:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .page-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .page-head h3 { margin: 0; }
+
+/* advisors: one card per seat */
+.adv-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+.adv-card { background: var(--surface); border-radius: var(--r-group); box-shadow: inset 0 0 0 1px var(--hair); padding: 16px 18px; min-width: 0; }
+.adv-top { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 12px; align-items: center; }
+.adv-top b { display: block; font-size: 17px; } .adv-top div span { display: block; font-size: 14px; color: var(--label-2); }
+.adv-mark { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; font-weight: 700; font-size: 14px;
+  background: var(--surface-2); color: var(--label-2); letter-spacing: .02em; }
+.adv-card dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 14px 0 0; font-size: 14px; }
+.adv-card dt { color: var(--label-2); } .adv-card dd { margin: 0; }
+.sub-h { margin: 22px 18px 8px; font-size: 15px; font-weight: 600; color: var(--label-2); }
+.s-idle .dot, .dot.s-idle { background: #8e8e93; }
+.row.next .ic { background: color-mix(in srgb, var(--blue) 22%, transparent); color: var(--blue); }
