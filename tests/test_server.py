@@ -325,23 +325,33 @@ def test_the_connect_page_has_a_card_per_advisor_and_the_steps_to_connect_them(m
     assert "k3y" not in c and "Set.</span>" in c                                                         # the key is never shown
 
 
-def test_ask_both_advisors_now_is_page_only_and_only_when_they_are_on(live, monkeypatch):
+def test_each_advisor_can_be_asked_by_hand_with_empty_boxes_and_a_hint(live, monkeypatch):
+    """Isha 2026-10-08: no 'ask both' with a fixed question. Each card has its own two empty boxes (with a hint for
+    what to paste and the step after which the advisor is useful); the answer appears under that card."""
     import dataclasses
     from debug_assist import advisors
     monkeypatch.setattr("debug_assist.profiles.ready", lambda: [])
     monkeypatch.setitem(server._connector, "repo", None)
-    monkeypatch.delenv("ADVISORS_KEY", raising=False)
-    assert "Ask both advisors now" not in server.connect_page()                     # off: nothing to ask
-    code, out = _get(live, "/api/advisors-check", "POST", _ok_headers(live), b"{}")
+    assert 'class="adv-ask"' not in server.connect_page()                            # off: nothing to ask
+    code, out = _get(live, "/api/advisors-ask", "POST", _ok_headers(live), b'{"seat": "allspaw"}')
     assert code == 400 and "not switched on" in json.loads(out)["error"]
     cfg = dataclasses.replace(advisors.CFG, advisors_mcp="https://advisors.example/mcp/", advisors_reviewed=True)
     monkeypatch.setattr(advisors, "CFG", cfg)
     monkeypatch.setattr("debug_assist.config.CFG", cfg)
     monkeypatch.setenv("ADVISORS_KEY", "k")
-    monkeypatch.setattr(advisors, "check_both", lambda: [("allspaw", "ANSWERED", "Blame check: no sentence blames a person."),
-                                                         ("qe-ic-advisor", "FAILED", "AdvisorError: asleep")])
-    assert 'id="ask-advisors"' in server.connect_page()
-    assert _get(live, "/api/advisors-check", "POST", {"Content-Type": "application/json"}, b"{}")[0] == 403  # not from the page
-    code, out = _get(live, "/api/advisors-check", "POST", _ok_headers(live), b"{}")
-    assert code == 200 and json.loads(out)["answers"][0] == {"seat": "allspaw", "status": "ANSWERED",
-                                                             "said": "Blame check: no sentence blames a person."}
+    page = server.connect_page()
+    assert page.count('class="adv-ask"') == 2 and "Ask both" not in page
+    assert 'placeholder="Paste the report on why the bug slipped through' in page and "Most useful after step 6, Why it slipped" in page
+    assert "Most useful after step 7, Guard similar bugs" in page and 'value="' not in page.split('id="advisors"')[1]  # empty boxes
+    asked = []
+    monkeypatch.setattr(advisors, "_call", lambda seat, q, ev, consumer="debugassist": (asked.append((seat, q, ev, consumer)),
+                        "Blame check: no sentence blames a person.")[1])
+    body = json.dumps({"seat": "allspaw", "question": "The fix: x", "evidence": "The report."}).encode()
+    assert _get(live, "/api/advisors-ask", "POST", {"Content-Type": "application/json"}, body)[0] == 403  # not from the page
+    code, out = _get(live, "/api/advisors-ask", "POST", _ok_headers(live), body)
+    assert code == 200 and json.loads(out) == {"said": "Blame check: no sentence blames a person."}
+    assert asked == [("allspaw", "The fix: x", "The report.", "operator")]                     # marked as asked by hand
+    code, out = _get(live, "/api/advisors-ask", "POST", _ok_headers(live), json.dumps({"seat": "allspaw", "question": "", "evidence": "x"}).encode())
+    assert code == 400 and "fill in both boxes" in json.loads(out)["error"].lower()
+    code, out = _get(live, "/api/advisors-ask", "POST", _ok_headers(live), json.dumps({"seat": "nobody", "question": "q", "evidence": "e"}).encode())
+    assert code == 400 and "no such advisor" in json.loads(out)["error"].lower()

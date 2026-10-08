@@ -38,6 +38,16 @@ REVIEWS = {
                                   "instruction someone must remember?"},
 }
 
+# Asking a seat by hand (the Connect page): what its two boxes are, as the server's template reads them
+ASK = {
+    "allspaw": {"q": "The fix, in one line", "q_hint": "e.g. The finalizer now emits only tool calls whose input finished",
+                "e": "Text to check for blame", "e_hint": "Paste the report on why the bug slipped through, or any write-up of an incident",
+                "useful": "Most useful after step 6, Why it slipped: paste the report it wrote. It flags every sentence that blames a person."},
+    "qe-ic-advisor": {"q": "What the guard is", "q_hint": "e.g. A test that fails whenever a stream ends before a tool call is complete",
+                      "e": "The bug", "e_hint": "One or two lines: what went wrong",
+                      "useful": "Most useful after step 7, Guard similar bugs: describe the guard it wrote. It says whether the guard runs by itself or needs someone to remember it."},
+}
+
 CALL_WRITTEN = True    # _call is written against the reviewed server's `advise` tool (2026-10-08)
 TIMEOUT_S = 90         # the server is on a free plan that sleeps; the first call of a while wakes it (about 30 s)
 
@@ -95,6 +105,21 @@ SAMPLES = {  # made-up, fixed: what `debug-assist advisors-check` asks (consumer
                       "stream ends before a tool call is complete.",
                       "The bug: a tool call cut off mid-stream was reported as complete."),
 }
+
+
+def ask(seat: str, question: str, evidence: str) -> str:
+    """One question asked by hand (the Connect page), marked consumer "operator" so the server can tell it from runs.
+    Leaves a receipt like every seat use. Raises AdvisorError / ValueError with a plain reason."""
+    if seat not in ASK:
+        raise ValueError(f"no such advisor: {seat}")
+    if not question.strip() or not evidence.strip():
+        raise ValueError(f"fill in both boxes: {ASK[seat]['q'].lower()} and {ASK[seat]['e'].lower()}")
+    said = _call(seat, question.strip()[:4000], evidence.strip()[:12000], consumer="operator")
+    try:
+        receipt(seat, f"asked by hand: {question.strip()[:200]}", said)
+    except OSError:
+        pass
+    return said
 
 
 def check_both() -> list[tuple[str, str, str]]:
