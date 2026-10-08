@@ -8,18 +8,25 @@ write_fix   The model answers with exact SEARCH/REPLACE edits. Code applies them
             every affected package's whole suite must stay green. Otherwise the edits are reverted and the evidence fed
             back, up to FIX_ATTEMPTS times; then the run stops FIX NOT VALIDATED. No unproven fix reaches the PR.
 """
-import json
 import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import events, ladder
+from . import events, ladder, lang as langs
 from .budget import BudgetExceeded, TurnCapExceeded
+from .lang import is_test_path  # noqa: F401  (one rule for both languages; tests import it from here)
 from .models import write
 
 FIX_ATTEMPTS = 3
 CAUSE_LOOKUPS = 2
+MAX_DEPENDENT_SUITES = 8   # a connected repo installs every package: run at most this many dependents' suites
+
+
+def _cap(profile) -> int | None:
+    """vercel/ai installs exactly the dependents it runs (ruled 2026-10-07: all of them); a connected repo installs
+    everything, so its dependents are capped and the rest listed as not run."""
+    return MAX_DEPENDENT_SUITES if getattr(profile, "source", "") == "connected" else None
 
 
 class FixRefused(ValueError):
@@ -30,23 +37,18 @@ def _git(checkout: Path, *args) -> str:
     return subprocess.run(["git", "-C", str(checkout), *args], capture_output=True, text=True, timeout=120).stdout
 
 
-def is_test_path(path: str) -> bool:
-    return bool(re.search(r"\.test\.[tj]sx?$|__fixtures__/|__snapshots__/|/da-repro-|(^|/)tests?/|test_[^/]+\.py$", path))
-
-
 # ── definitions on request ───────────────────────────────────────────────────────────────────────
-def find_definition(checkout: Path, name: str, max_lines: int = 260, prefer: str = "") -> str:
+def find_definition(checkout: Path, name: str, max_lines: int = 260, prefer: str = "", profile=None) -> str:
     """Where `name` is defined (class / function / const / type / method), with the code from there on. Definitions
     under `prefer` (the package being fixed) come first: `doStream` exists in many packages."""
     if not re.fullmatch(r"[A-Za-z_$][\w$]{2,80}", name):
         return f"(not looked up: {name!r} is not an identifier)"
-    hits = _git(checkout, "grep", "-n", "-E", rf"(class|function|const|let|interface|type|enum)[[:space:]]+{name}([^[:alnum:]_$]|$)",
-                "--", "packages/*/src/**", ":!*.test.ts", ":!*.test.tsx").splitlines()
-    # and class methods: `  async doStream(` / `  private finishToolCall(` (Opus asked for doStream)
-    hits += _git(checkout, "grep", "-n", "-E", rf"^[[:space:]]+(public |private |protected |static |async |get )*{name}[[:space:]]*[<(]",
-                 "--", "packages/*/src/**", ":!*.test.ts", ":!*.test.tsx").splitlines()
+    lang = langs.of(profile)
+    hits = []
+    for pattern in lang.definition_patterns(name):
+        hits += [h for h in _git(checkout, "grep", "-n", "-E", pattern, "--", *lang.pathspec()).splitlines() if h not in hits]
     if not hits:
-        return f"(no definition of {name} found in packages/*/src)"
+        return f"(no definition of {name} found in {', '.join(lang.source_specs())})"
     hits.sort(key=lambda h: not (prefer and h.startswith(prefer)))
     path, num, _ = hits[0].split(":", 2)
     lines = (checkout / path).read_text().splitlines()
@@ -103,7 +105,7 @@ def parse_cause(reply: str, checkout: Path) -> dict:
     return {"file": path, "lines": [a, b], "why": why.group(1).strip(), "plan": (plan.group(1).strip() if plan else "")}
 
 
-def find_cause(state: dict, checkout: Path, ctx, test_path: str, evidence: str) -> dict:
+def find_cause(state: dict, checkout: Path, ctx, test_path: str, evidence: str, profile=None) -> dict:
     """Up to CAUSE_LOOKUPS rounds of definitions, then one answer; one retry if the answer breaks a rule."""
     test_code = (checkout / test_path).read_text()
     focus = state.get("focus") or state["issue"]["title"]
@@ -118,7 +120,8 @@ def find_cause(state: dict, checkout: Path, ctx, test_path: str, evidence: str) 
         wanted = [w for w in re.findall(r"NEED_DEFINITION:\s*`?([\w$]+)`?", reply) if w not in asked][:3]
         if wanted and len(asked) < 3 * CAUSE_LOOKUPS and "CAUSE_FILE:" not in reply:
             asked += wanted
-            looked_up += [find_definition(checkout, w, prefer="/".join(ctx.source.split("/")[:2])) for w in wanted]
+            looked_up += [find_definition(checkout, w, prefer=langs.of(profile).package_of(ctx.source), profile=profile)
+                          for w in wanted]
             continue
         try:
             cause = parse_cause(reply, checkout)
@@ -183,14 +186,14 @@ def parse_edits(reply: str) -> list[Edit]:
     return edits
 
 
-def apply_edits(checkout: Path, edits: list[Edit]) -> list[str]:
+def apply_edits(checkout: Path, edits: list[Edit], profile=None) -> list[str]:
     """All-or-nothing: every edit is checked before any file is written."""
-    staged = {}
+    staged, lang = {}, langs.of(profile)
     for e in edits:
         if is_test_path(e.path):
             raise FixRefused(f"a fix may not edit tests or fixtures: {e.path}")
-        if not re.match(r"packages/[^/]+/src/", e.path):
-            raise FixRefused(f"a fix edits package source only: {e.path}")
+        if not lang.is_source(e.path):
+            raise FixRefused(f"a fix edits package source only ({', '.join(lang.source_specs())}): {e.path}")
         f = checkout / e.path
         if not f.is_file():
             raise FixRefused(f"no such file: {e.path}")
@@ -245,22 +248,16 @@ def revert(checkout: Path, paths: list[str]) -> None:
 
 
 # which packages a change touches: the changed ones and every installed package that depends on them
-def package_map(checkout: Path) -> dict:
-    out = {}
-    for pj in (checkout / "packages").glob("*/package.json"):
-        d = json.loads(pj.read_text())
-        deps = set()
-        for k in ("dependencies", "devDependencies", "peerDependencies"):
-            deps |= set((d.get(k) or {}).keys())
-        out[d["name"]] = {"dir": pj.parent.name, "deps": deps}
-    return out
+def package_map(checkout: Path, profile=None) -> dict:
+    """{name: {"dir": package folder ("packages/ai"), "deps": names}} (lang.package_map, for either language)."""
+    return langs.package_map(checkout, profile)
 
 
-def affected(checkout: Path, changed_files: list[str], suite_names: list[str]) -> tuple[list[str], list[str]]:
+def affected(checkout: Path, changed_files: list[str], suite_names: list[str], profile=None) -> tuple[list[str], list[str]]:
     """(changed package names, package dirs whose suites must stay green: changed + dependents among the installed)."""
-    pmap = package_map(checkout)
+    pmap, lang = package_map(checkout, profile), langs.of(profile)
     by_dir = {v["dir"]: k for k, v in pmap.items()}
-    changed = sorted({by_dir[p.split("/")[1]] for p in changed_files if p.split("/")[1] in by_dir})
+    changed = sorted({by_dir[lang.package_of(p)] for p in changed_files if lang.package_of(p) in by_dir})
     hit = set(changed)
     grew = True
     while grew:
@@ -269,13 +266,15 @@ def affected(checkout: Path, changed_files: list[str], suite_names: list[str]) -
             if name not in hit and pmap.get(name, {}).get("deps", set()) & hit:
                 hit.add(name)
                 grew = True
-    return changed, sorted(pmap[n]["dir"] for n in hit if n in pmap and (n in suite_names or n in changed))
+    dependents = sorted(n for n in hit if n in pmap and n in suite_names and n not in changed)
+    return changed, sorted(pmap[n]["dir"] for n in changed + dependents[:_cap(profile)] if n in pmap)
 
 
-def not_run(checkout: Path, changed: list[str], suite_names: list[str]) -> list[str]:
-    """Packages that depend on a changed package, directly or not, whose suites are not installed, so the fix was not
-    run against them (independent grade 2026-10-07: "installed dependents" was silently empty)."""
-    pmap = package_map(checkout)
+def not_run(checkout: Path, changed: list[str], suite_names: list[str], profile=None) -> list[str]:
+    """Packages that depend on a changed package, directly or not, whose suites are not run, so the fix was not run
+    against them (independent grade 2026-10-07: "installed dependents" was silently empty): not installed, or past
+    MAX_DEPENDENT_SUITES."""
+    pmap = package_map(checkout, profile)
     hit, grew = set(changed), True
     while grew:
         grew = False
@@ -283,11 +282,15 @@ def not_run(checkout: Path, changed: list[str], suite_names: list[str]) -> list[
             if name not in hit and v["deps"] & hit:
                 hit.add(name)
                 grew = True
-    return sorted(hit - set(changed) - set(suite_names))
+    ran = sorted(n for n in hit if n in suite_names and n not in changed)[:_cap(profile)]
+    return sorted(hit - set(changed) - set(ran))
 
 
-def suite_names(profile) -> list[str]:
-    return re.findall(r"--filter '([^']+?)\.\.\.'", profile.filters or "")
+def suite_names(profile, checkout: Path | None = None) -> list[str]:
+    """Packages installed in the sandbox: the built-in profile's --filter list; a connected repo installs them all."""
+    if getattr(profile, "filters", ""):
+        return re.findall(r"--filter '([^']+?)\.\.\.'", profile.filters)
+    return sorted(package_map(checkout, profile)) if checkout is not None and profile is not None else []
 
 
 def fix_messages(focus: str, cause: dict, cause_file_text: str, test_path: str, test_code: str, evidence: str,
@@ -324,13 +327,14 @@ EARLIER FIX ATTEMPTS (reverted):{past}"""
 def validate(checkout: Path, profile, judges: list[str], built: set, changed_files: list[str], run_cmd) -> dict:
     """Rebuild every package ever changed (so a reverted attempt leaves no stale build), run every judging test, then
     the whole suite of each affected package. Returns {"ok", "red_to_green", "suites", "evidence"}."""
-    changed, suites = affected(checkout, changed_files, suite_names(profile))
+    names, lang = suite_names(profile, checkout), langs.of(profile)
+    changed, suites = affected(checkout, changed_files, names, profile)
     built |= set(changed)
     out = {"ok": False, "red_to_green": False, "suites": {}, "changed_packages": changed, "evidence": "",
-           "not_run": not_run(checkout, changed, suite_names(profile))}
-    if profile.build_cmd and built:
-        flt = " ".join(f"--filter '{n}'" for n in sorted(built))
-        r = run_cmd(profile.env + f"pnpm {flt} build", checkout, network=False, timeout=900, image=profile.image)
+           "not_run": not_run(checkout, changed, names, profile)}
+    rebuild = lang.rebuild_command(sorted(built))
+    if rebuild:
+        r = run_cmd(rebuild, checkout, network=False, timeout=900, image=profile.image)
         if r.returncode != 0:
             out["evidence"] = "build failed: " + (r.stdout + r.stderr)[-1500:]
             return out
@@ -342,8 +346,7 @@ def validate(checkout: Path, profile, judges: list[str], built: set, changed_fil
             return out
     out["red_to_green"] = True
     for d in suites:
-        r = run_cmd(profile.env + profile.test_cmd.format(package=d, test_path=""), checkout, network=False,
-                    timeout=900, image=profile.image)
+        r = run_cmd(lang.test_command(d), checkout, network=False, timeout=900, image=profile.image)
         out["suites"][d] = "pass" if r.returncode == 0 else "FAIL"
         if r.returncode != 0:
             out["evidence"] = f"the fix breaks the {d} suite:\n" + _assertion(r)
@@ -353,9 +356,8 @@ def validate(checkout: Path, profile, judges: list[str], built: set, changed_fil
 
 
 def run_one(checkout: Path, profile, test_path: str, run_cmd, extra: str = ""):
-    pkg = test_path.split("/")[1]
-    rel = str(Path(test_path).relative_to(f"packages/{pkg}")) + (f" {extra}" if extra else "")
-    return run_cmd(profile.env + profile.test_cmd.format(package=pkg, test_path=rel),
+    lang = langs.of(profile)
+    return run_cmd(lang.test_command(lang.package_of(test_path), test_path, extra),
                    checkout, network=False, timeout=300, image=profile.image)
 
 
@@ -374,10 +376,11 @@ def write_fix(state: dict, checkout: Path, cause: dict, test_path: str, evidence
     run_cmd = run_cmd or run_in_sandbox
     focus = state.get("focus") or state["issue"]["title"]
     judges = judges or [test_path]
-    test_code = "\n\n".join(f"// ===== {j}\n" + (checkout / j).read_text() for j in judges)
+    mark = "#" if getattr(profile, "language", "") == "python" else "//"
+    test_code = "\n\n".join(f"{mark} ===== {j}\n" + (checkout / j).read_text() for j in judges)
     history, attempts, asked = list(prior or []), [], []
     looked_up = list(looked_up or [])
-    built = set(affected(checkout, stale, suite_names(profile))[0]) if stale else set()
+    built = set(affected(checkout, stale, suite_names(profile, checkout), profile)[0]) if stale else set()
     for n in range(1, attempts_max + 1):
         for _ in range(2):  # up to 2 lookup rounds per attempt (each one model call, under the write_fix turn cap)
             try:
@@ -391,7 +394,8 @@ def write_fix(state: dict, checkout: Path, cause: dict, test_path: str, evidence
             if not wanted or "<<<<<<< SEARCH" in str(msg.content):
                 break
             asked += wanted
-            looked_up += [find_definition(checkout, w, prefer="/".join(cause["file"].split("/")[:2])) for w in wanted]
+            looked_up += [find_definition(checkout, w, prefer=langs.of(profile).package_of(cause["file"]), profile=profile)
+                          for w in wanted]
         flawed = re.search(r"^\s*TEST_FLAWED:\s*(.+)", str(msg.content), re.M)
         if flawed and "<<<<<<< SEARCH" not in str(msg.content):
             # The fixer may challenge the judge, never edit it. Dev run 2026-10-07: a made-up chunk was invalid JSON,
@@ -407,7 +411,7 @@ def write_fix(state: dict, checkout: Path, cause: dict, test_path: str, evidence
             (Path(drafts) / f"fix-{n}.md").write_text(str(msg.content))  # every raw reply, for the record
         changed: list[str] = []
         try:
-            changed = apply_edits(checkout, parse_edits(str(msg.content)))
+            changed = apply_edits(checkout, parse_edits(str(msg.content)), profile)
             result = validate(checkout, profile, judges, built, changed, run_cmd)
         except FixRefused as e:
             result = {"ok": False, "red_to_green": False, "suites": {}, "evidence": f"edit refused: {e}"}
@@ -425,9 +429,9 @@ def write_fix(state: dict, checkout: Path, cause: dict, test_path: str, evidence
 
 
 def _not_validated(checkout, profile, built, attempts, run_cmd, why: str) -> dict:
-    if built and profile.build_cmd:  # leave the copy's builds matching its (reverted) source
-        flt = " ".join(f"--filter '{n}'" for n in sorted(built))
-        run_cmd(profile.env + f"pnpm {flt} build", checkout, network=False, timeout=900, image=profile.image)
+    rebuild = langs.of(profile).rebuild_command(sorted(built))
+    if rebuild:  # leave the copy's builds matching its (reverted) source
+        run_cmd(rebuild, checkout, network=False, timeout=900, image=profile.image)
     return {"status": "NOT VALIDATED", "attempts": attempts, "changed": [], "patch": "", "red_to_green": False,
             "suites": {}, "why": why}
 

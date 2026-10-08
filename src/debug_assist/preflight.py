@@ -35,21 +35,24 @@ def _http(url, headers=None, timeout=4):
         return None, str(e), {}
 
 
-def check_e2b() -> Check:
-    """Hosted runs: the E2B key and template exist, and a sandbox starts and ends (about a second, a fraction of a cent)."""
+def check_e2b(template: str = "") -> Check:
+    """Hosted runs: the E2B key and the repo's template exist, and a sandbox starts and ends (about a second, a
+    fraction of a cent). Each connected repo has its own template; vercel/ai's is E2B_TEMPLATE."""
     import os
+    template = template or CFG.e2b_template
     if not os.environ.get("E2B_API_KEY"):
         return Check("Sandbox (E2B)", "FAIL", "E2B_API_KEY not set", "add it to the host's environment yourself (never in chat)")
-    if not CFG.e2b_template:
-        return Check("Sandbox (E2B)", "FAIL", "E2B_TEMPLATE not set", "build it: uv run python scripts/e2b_template.py vercel/ai --build")
+    if not template:
+        return Check("Sandbox (E2B)", "FAIL", "no E2B template for this repo",
+                     "connect the repo (Connect a repo page); vercel/ai: uv run python scripts/e2b_template.py vercel/ai --build")
     try:
         from e2b import Sandbox
-        sbx = Sandbox.create(template=CFG.e2b_template, timeout=60, allow_internet_access=False)
+        sbx = Sandbox.create(template=template, timeout=60, allow_internet_access=False)
         sbx.kill()
     except Exception as e:
         return Check("Sandbox (E2B)", "FAIL", f"could not start a sandbox ({type(e).__name__}: {str(e)[:120]})",
-                     "check the key and the template name")
-    return Check("Sandbox (E2B)", "PASS", f"template {CFG.e2b_template} starts with internet access off")
+                     "check the key and the template name (connecting the repo again rebuilds it)")
+    return Check("Sandbox (E2B)", "PASS", f"template {template} starts with internet access off")
 
 
 def check_docker(image: str | None) -> Check:
@@ -281,15 +284,16 @@ def check_advisors() -> Check:
 def run_preflight(issue_url: str, demo: bool = False, trace: bool = True) -> list[Check]:
     checks = []
     owner, repo, _ = parse_issue_url(issue_url)
+    template = ""
     try:
         prof = profile_for(owner, repo)
-        image = prof.image
+        image, template = prof.image, prof.e2b_template
         checks.append(Check("Repo profile", "PASS", f"{owner}/{repo} has a sandbox profile"))
         checks.append(check_base(prof))
     except UnknownRepo as e:
         image = None
-        checks.append(Check("Repo profile", "FAIL", str(e), "add the repo to profiles.py"))
-    checks.append(check_e2b() if CFG.sandbox_backend == "e2b" else check_docker(image))
+        checks.append(Check("Repo profile", "FAIL", str(e), "connect it first, from the Connect a repo page"))
+    checks.append(check_e2b(template) if CFG.sandbox_backend == "e2b" else check_docker(image))
     checks.append(check_mongo())
     oll, dims = check_voyage() if CFG.embed_provider == "voyage" else check_ollama()
     checks.append(check_vector_index(dims))

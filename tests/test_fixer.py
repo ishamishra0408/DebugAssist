@@ -67,8 +67,8 @@ def test_edits_are_all_or_nothing(repo):
 
 def test_a_change_to_a_shared_package_runs_every_dependent_suite(repo):
     changed, suites = affected(repo, ["packages/utils/src/tracker.ts"], ["@x/utils", "@x/compat", "@x/app", "@x/other"])
-    assert changed == ["@x/utils"] and suites == ["app", "compat", "utils"]  # transitive; 'other' untouched
-    assert affected(repo, ["packages/compat/src/model.ts"], ["@x/compat", "@x/app"])[1] == ["app", "compat"]
+    assert changed == ["@x/utils"] and suites == ["packages/app", "packages/compat", "packages/utils"]  # transitive; 'other' untouched
+    assert affected(repo, ["packages/compat/src/model.ts"], ["@x/compat", "@x/app"])[1] == ["packages/app", "packages/compat"]
 
 
 def test_dependents_whose_suites_are_not_installed_are_named(repo):
@@ -107,7 +107,7 @@ def test_a_failed_attempt_is_reverted_and_the_next_one_validated(repo, monkeypat
                           "AssertionError", PROFILE, run_cmd=_runner(repo, calls))
     assert fix["status"] == "VALIDATED" and len(fix["attempts"]) == 2 and not fix["attempts"][0]["ok"]
     assert "still RED" in fix["attempts"][0]["evidence"]
-    assert "+  if (done) emit(call);" in fix["patch"] and fix["suites"] == {"app": "pass", "compat": "pass", "utils": "pass"}
+    assert "+  if (done) emit(call);" in fix["patch"] and fix["suites"] == {"packages/app": "pass", "packages/compat": "pass", "packages/utils": "pass"}
     assert any("--filter '@x/utils' build" in c for c in calls)  # the changed shared package was rebuilt first
 
 

@@ -22,7 +22,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from . import github_read, testwriter
+from . import github_read, lang as langs, testwriter
 
 MAX_COMMENTS = 30
 TOP_FILES = 5
@@ -34,7 +34,6 @@ GENERIC_USERS = 60      # a name used in more source files than this is plumbing
 HANDLE = re.compile(r"(?<![\w/@.])@[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\b(?![/\w-])")  # not npm scopes: @ai-sdk/x
 FRAME = re.compile(r"\b((?:[\w@.-]+/)*[\w.-]+\.(?:tsx?|jsx?|mjs|cjs|py)):(\d+)(?::\d+)?")
 ERROR_LINE = re.compile(r"^[ \t>]*((?:[A-Z][\w.]*)?(?:Error|Exception)\b[:(].{0,220})$", re.M)
-IMPORT = re.compile(r"import\s+(?:type\s+)?\{([^}]+)\}\s+from\s+['\"]([^'\"]+)['\"]", re.S)
 SNIPPET_LINE = re.compile(r"^\s*(\d+)\s", re.M)
 
 
@@ -93,19 +92,14 @@ def ranked(checkout: Path, ctx: testwriter.Context) -> list[dict]:
     return out
 
 
-def imported_near(src_text: str, near: set[int], window: int = 40) -> list[tuple[str, str]]:
+def imported_near(src_text: str, near: set[int], window: int = 40, lang=None) -> list[tuple[str, str]]:
     """(name, module) for names a file imports from another package (not ./ or ../) and uses within `window` lines of
     a match, closest first. Type-only names last."""
-    names = {}
-    for m in IMPORT.finditer(src_text):
-        if m.group(2).startswith("."):
-            continue
-        for part in m.group(1).split(","):
-            is_type = part.strip().startswith("type ")
-            n = part.strip().removeprefix("type ").split(" as ")[-1].strip()
-            if re.fullmatch(r"[A-Za-z_$][\w$]*", n):
-                names[n] = (m.group(2), is_type)
+    lang = lang or langs.JS()
+    names = {n: (mod, is_type) for n, mod, is_type in lang.imports(src_text)}
     lines = src_text.splitlines()
+    if lang.key == "python":  # an import line is not a use (every imported name is "near" the top of the file)
+        lines = ["" if re.match(r"\s*(from|import)\s", line) else line for line in lines]
     used = []
     for n, (mod, is_type) in names.items():
         # code near the problem often uses an instance, not the class: `let tracker: Name` / `tracker = new Name(`
@@ -120,24 +114,27 @@ def imported_near(src_text: str, near: set[int], window: int = 40) -> list[tuple
     return [(n, mod) for _, _, n, mod in used]
 
 
-def users_of(checkout: Path, name: str) -> list[str]:
-    r = subprocess.run(["git", "-C", str(checkout), "grep", "-l", "-w", "-F", "-e", name, "--", "packages/*/src/**",
-                        ":!*.test.ts", ":!*.test.tsx"], capture_output=True, text=True, timeout=60)
+def users_of(checkout: Path, name: str, profile=None) -> list[str]:
+    r = subprocess.run(["git", "-C", str(checkout), "grep", "-l", "-w", "-F", "-e", name, "--", *langs.of(profile).pathspec()],
+                       capture_output=True, text=True, timeout=60)
     return sorted(r.stdout.split())
 
 
-def related(checkout: Path, ctx: testwriter.Context) -> list[dict]:
+def related(checkout: Path, ctx: testwriter.Context, profile=None) -> list[dict]:
     from .fixer import find_definition, package_map
     src_text = (checkout / ctx.source).read_text(errors="ignore")
     near = {int(n) for n in SNIPPET_LINE.findall(ctx.snippets)}
-    dirs = {name: v["dir"] for name, v in package_map(checkout).items()}
+    dirs = {}
+    for name, v in package_map(checkout, profile).items():
+        dirs[name] = dirs[name.replace("-", "_")] = v["dir"]  # Python: import langchain_core, package langchain-core
     out = []
-    for name, module in imported_near(src_text, near):
-        prefer = f"packages/{dirs[module]}" if module in dirs else ""
-        found = find_definition(checkout, name, max_lines=120, prefer=prefer)
+    for name, module in imported_near(src_text, near, lang=langs.of(profile)):
+        top = module.split(".")[0] if langs.of(profile).key == "python" else module
+        prefer = dirs.get(module) or dirs.get(top) or ""
+        found = find_definition(checkout, name, max_lines=120, prefer=prefer, profile=profile)
         if found.startswith("(") or (prefer and not found.startswith(f"--- {prefer}/")):
             continue  # not defined in this repo (e.g. zod), or not where the import says
-        files = users_of(checkout, name)
+        files = users_of(checkout, name, profile)
         if len(files) > GENERIC_USERS:
             continue
         out.append({"name": name, "module": module, "definition": found, "used_in": len(files), "files": files[:12]})
@@ -204,10 +201,10 @@ def brief(pack: dict) -> tuple[str, list[str]]:
 
 
 # ── the step ─────────────────────────────────────────────────────────────────────────────────────
-def collect(issue: dict, focus: str, checkout: Path, base_commit: str) -> dict:
+def collect(issue: dict, focus: str, checkout: Path, base_commit: str, profile=None) -> dict:
     """Everything the later steps read. Raises testwriter.WriterRefused when no source file matches the issue."""
     owner, repo, number = issue["owner"], issue["repo"], issue["number"]
-    ctx = testwriter.locate(checkout, issue.get("body", ""), focus)
+    ctx = testwriter.locate(checkout, issue.get("body", ""), focus, profile)
     missing = []
 
     def safe(what, fn, empty):
@@ -223,7 +220,7 @@ def collect(issue: dict, focus: str, checkout: Path, base_commit: str) -> dict:
                   "linked": safe("linked", lambda: linked(owner, repo, number), []),
                   "errors": errors_in(issue.get("body", ""), *[c["text"] for c in cs])},
         "code": {"best": ctx.source, "ranking": ranked(checkout, ctx), "ctx": dataclasses.asdict(ctx)},
-        "related": safe("related", lambda: related(checkout, ctx), []),
+        "related": safe("related", lambda: related(checkout, ctx, profile), []),
         "history": [{"path": p["path"], "changes": safe(f"history of {p['path']}",
                                                         lambda p=p: recent_changes(owner, repo, p["path"], base_commit), [])}
                     for p in ranked(checkout, ctx)[:2]],

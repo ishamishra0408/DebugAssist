@@ -50,7 +50,7 @@ def test_locate_follows_the_focus_not_the_louder_other_problem(repo):
 def test_parse_takes_the_ts_block_and_the_symptom():
     content, symptom = parse("here\n```ts\nit('x', () => expect(1).toBe(2));\n```\nSYMPTOM: emits tool-call")
     assert content.startswith("it('x'") and symptom == "emits tool-call"
-    with pytest.raises(WriterRefused, match="no ```ts block"):
+    with pytest.raises(WriterRefused, match="no code block"):
         parse("just prose")
 
 

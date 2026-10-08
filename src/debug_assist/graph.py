@@ -30,6 +30,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from . import advisors, backtest, context, events, fixer, guard, ladder, story, testwriter
+from . import lang as langs
 from .checkout import base_path, run_copy
 from .config import CFG, REPRO_ATTEMPT_CAP
 from .github_read import get_issue
@@ -166,7 +167,7 @@ def gather_context(s: RunState):
     checkout = run_copy(prof, run_dir(s) / "checkout")  # this run's own unmodified code (reused as-is on resume)
     focus = s.get("focus") or s["issue"]["title"]
     try:
-        pack = context.collect(s["issue"], focus, checkout, prof.base_commit)
+        pack = context.collect(s["issue"], focus, checkout, prof.base_commit, prof)
     except testwriter.WriterRefused as e:
         return {"context": {"status": "NOT FOUND", "checkout": str(checkout), "why": str(e)},
                 "outcome": stop(CONTEXT_NOT_FOUND, f"{e}; there is no code to show the bug in"),
@@ -186,7 +187,8 @@ def gather_context(s: RunState):
 
 def _ctx(s: RunState, checkout: Path):
     """The context every step reads: the saved pack when Gather context ran, else (older runs) a fresh locate."""
-    return context.load_ctx(s) or testwriter.locate(checkout, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"])
+    return context.load_ctx(s) or testwriter.locate(checkout, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"],
+                                                     profiles.get(s["profile"]["repo"]))
 
 
 def focus_of(issue: dict, focus: str | None, heading: str | None) -> str:
@@ -234,12 +236,13 @@ def reproduce(s: RunState):
     work = run_dir(s) / "sandbox"
     work.mkdir(exist_ok=True)
     image = s["profile"]["image"]
-    seen = secrets_visible(work, image)  # in the repo's own image (node for vercel/ai, python otherwise)
+    checkout = run_copy(profiles.get(s["profile"]["repo"]), run_dir(s) / "checkout")  # made by Gather context; reused
+    # in the repo's own image (node for vercel/ai, python otherwise); hosted: in the repo's own E2B template
+    seen = secrets_visible(checkout if CFG.sandbox_backend == "e2b" else work, image)
     if seen:
         raise GuardrailViolation(f"sandbox exposes secrets or failed its probe: {seen}")
     rungs, skipped = ladder.plan(s["triage"]["has_repro_p"], s["profile"].get("recorded_fixtures", False))
     plan = {"rungs": [r.name for r in rungs], "skipped": skipped, "cap": REPRO_ATTEMPT_CAP}
-    checkout = run_copy(profiles.get(s["profile"]["repo"]), run_dir(s) / "checkout")  # made by Gather context; reused
     ctx = _ctx(s, checkout)
     before = [{k: v for k, v in e.items() if k in ladder.Attempt.__dataclass_fields__}
               for e in events.for_run(s["run_id"]) if e["kind"] == "attempt" and e["step"] == "reproduce"]
@@ -280,7 +283,7 @@ def find_cause(s: RunState):
     ctx = _ctx(s, checkout)
     try:
         cause = fixer.find_cause(s, checkout, ctx, r.get("oracle_test") or r["failing_test"],
-                                 r.get("oracle_evidence") or r.get("evidence") or "")
+                                 r.get("oracle_evidence") or r.get("evidence") or "", profiles.get(s["profile"]["repo"]))
     except fixer.FixRefused as e:
         return {"cause": {"status": "NOT FOUND", "why": str(e)}, "outcome": stop("CAUSE NOT FOUND", str(e)),
                 "log": [f"find_cause: STOPPED CAUSE NOT FOUND: {e}"]}
@@ -296,7 +299,7 @@ def write_fix(s: RunState):
     dirty = [p for p in fixer._git(checkout, "diff", "--name-only").split() if p]
     fixer.revert(checkout, dirty)  # a crash mid-step can leave a half-applied attempt; start from clean source
     prof = profiles.get(s["profile"]["repo"])
-    looked = [fixer.find_definition(checkout, n) for n in c.get("looked_up", [])]
+    looked = [fixer.find_definition(checkout, n, profile=prof) for n in c.get("looked_up", [])]
     judge = r.get("oracle_test") or r["failing_test"]
     judge_evidence = r.get("oracle_evidence") or r.get("evidence") or ""
     fix = fixer.write_fix(s, checkout, c, judge, judge_evidence, prof, looked_up=looked,
@@ -304,7 +307,7 @@ def write_fix(s: RunState):
     ho = None
     if fix["status"] == "VALIDATED":  # a second, independent judge written without seeing the fix
         base_copy = run_copy(prof, run_dir(s) / "holdout-base")
-        ctx = testwriter.locate(base_copy, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"])
+        ctx = testwriter.locate(base_copy, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"], prof)
         ctx.extra = (s.get("context") or {}).get("brief", "")  # the second test reads the same gathered context
         ho = fixer.holdout(s, prof, checkout, base_copy, ctx, [judge], drafts=run_dir(s) / "holdout")
         if ho["status"] == "FIX INCOMPLETE":
@@ -320,7 +323,7 @@ def write_fix(s: RunState):
                 # Ruled 2026-10-07 (north-star-v1.2): this fix saw the second test fail, so that test no longer judges
                 # it blind. A fresh third test, written without seeing either fix, must also pass for two judges.
                 third_copy = run_copy(prof, run_dir(s) / "holdout3-base")
-                ctx3 = testwriter.locate(third_copy, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"])
+                ctx3 = testwriter.locate(third_copy, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"], prof)
                 ctx3.extra = ctx.extra
                 third = fixer.holdout(s, prof, checkout, third_copy, ctx3, [judge, ho["test"]],
                                       drafts=run_dir(s) / "holdout3")
@@ -397,10 +400,10 @@ def lasting_guard(s: RunState):
     fixed = Path(s["repro"]["checkout"])
     unfixed = run_copy(prof, run_dir(s) / "holdout-base")
     judge = s["repro"].get("oracle_test") or s["repro"]["failing_test"]
-    ctx = testwriter.locate(unfixed, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"])
+    ctx = testwriter.locate(unfixed, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"], prof)
     patch = _fix_patch(s)
     sig = story.signature_lines(patch)
-    siblings = guard.sibling_sites(fixed, sig, s["cause"]["file"])
+    siblings = guard.sibling_sites(fixed, sig, s["cause"]["file"], prof)
     g = guard.write_guard(s, prof, fixed, unfixed, judge, s["cause"], patch, s["condition"]["text"],
                           (s.get("second_story") or {}).get("text", ""), ctx.example_header, run_dir(s) / "guard",
                           fixtures=ctx.fixtures)
@@ -508,7 +511,7 @@ def _backtest_guard(s: RunState) -> dict | None:
     if g.get("status") != "CATCHES THE BUG" or not w.get("sha"):
         return None
     prof = profiles.get(s["profile"]["repo"])
-    return backtest.backtest(s["issue"], prof, base_path(prof), run_dir(s) / "history", g["repo_path"].split("/")[1],
+    return backtest.backtest(s["issue"], prof, base_path(prof), run_dir(s) / "history", langs.of(prof).package_of(g["repo_path"]),
                              judges=incident_tests(s),
                              guard_file=(g["repo_path"], Path(g["path"]).read_text()), anchor_sha=w["sha"],
                              focus=s.get("focus") or s["issue"]["title"])

@@ -14,12 +14,11 @@ whose correct fix still left two neighbouring triggers (an error mid-stream, the
 The guard file is kept in the run folder, not left in the fix: a test that fails on purpose doesn't belong in a PR's
 green suite until the open cases are fixed.
 """
-import html
 import re
 import subprocess
 from pathlib import Path
 
-from . import events, ladder
+from . import events, ladder, lang as langs
 from .budget import BudgetExceeded, TurnCapExceeded
 from .fixer import run_one
 from .models import write
@@ -27,13 +26,17 @@ from .testwriter import WriterRefused, parse, right_reason, validate
 
 GUARD_TRIES = 2
 # every case listed, passing ones too: vitest folds an all-green file into one line (Opus run 2026-10-07)
-VERBOSE = {"typescript": "--reporter=verbose"}
+VERBOSE = {"typescript": "--reporter=verbose", "python": langs.Python.VERBOSE}
+
+
+def _verbose(profile) -> str:
+    return langs.of(profile).VERBOSE if profile is not None else VERBOSE["typescript"]
 
 
 MAX_SIBLING_FILES = 15  # a line in more files than this is ordinary code, not a pattern worth naming
 
 
-def sibling_sites(checkout: Path, lines, fixed_file: str) -> list[str]:
+def sibling_sites(checkout: Path, lines, fixed_file: str, profile=None) -> list[str]:
     """Other files containing a distinctive line the fix changed: the same bug, waiting elsewhere. One entry per file,
     "path:line,line". (Opus run 2026-10-07: the first changed line was specific to the fixed file; the second,
     `toolCallTracker.flush();`, is in 6 others.)"""
@@ -41,9 +44,8 @@ def sibling_sites(checkout: Path, lines, fixed_file: str) -> list[str]:
     for line in ([lines] if isinstance(lines, str) else list(lines)):
         if not line:
             continue
-        got = subprocess.run(["git", "-C", str(checkout), "grep", "-n", "-F", "-e", line, "--", "packages/*/src/**",
-                              ":!*.test.ts", ":!*.test.tsx", ":!*.test-d.ts"], capture_output=True, text=True,
-                             timeout=60).stdout
+        got = subprocess.run(["git", "-C", str(checkout), "grep", "-n", "-F", "-e", line, "--",
+                              *langs.of(profile).pathspec()], capture_output=True, text=True, timeout=60).stdout
         hits = [l.split(":", 2)[:2] for l in got.splitlines() if not l.startswith(fixed_file + ":")]
         if len({h[0] for h in hits}) > MAX_SIBLING_FILES:
             continue
@@ -52,20 +54,24 @@ def sibling_sites(checkout: Path, lines, fixed_file: str) -> list[str]:
     return [f"{p}:{','.join(map(str, sorted(n)))}" for p, n in sorted(per_file.items())]
 
 
-SYSTEM = """You write a LASTING GUARD: ONE vitest test file that fails whenever this CLASS of bug exists, not only the
-one case that was reported. Parametrise it with it.each over every trigger of the class that this code can meet
+def system(lang: langs.Lang) -> str:
+    return f"""You write a LASTING GUARD: ONE {lang.framework} test file that fails whenever this CLASS of bug exists, not only the
+one case that was reported. {lang.guard_rules()}
 (for example every way a stream can end before a value is complete). Each case asserts the CORRECT behaviour and
 shows the evidence on failure (compare the actual parts, not counts).
 Use only the setup and helpers shown. No network, no env vars. Fixture paths are relative to the package directory.
 Reply exactly:
 COVERS: <one line: the class of input the cases cover>
-```ts
+```{lang.fence}
 <the whole test file>
 ```"""
 
 
+SYSTEM = system(langs.JS())  # vercel/ai's
+
+
 def messages(focus: str, condition: str, cause: dict, fix_patch: str, judge_code: str, header: str,
-             conditions_text: str, feedback: str, fixtures: list | None = None) -> list:
+             conditions_text: str, feedback: str, fixtures: list | None = None, lang: langs.Lang | None = None) -> list:
     user = f"""THE BUG (fixed): {focus}
 THE CONDITION THAT LET THIS CLASS SHIP: {condition}
 {conditions_text[:2500]}
@@ -82,27 +88,18 @@ SETUP OF THE PACKAGE'S OWN TEST FILE:
 
 FIXTURE FILES THAT EXIST (use only these, or made-up inline chunks): {', '.join(Path(f).name for f in (fixtures or [])) or 'none'}
 {('YOUR LAST GUARD: ' + feedback) if feedback else ''}"""
-    return [("system", SYSTEM), ("user", user)]
+    return [("system", system(lang or langs.JS())), ("user", user)]
 
 
-def failure_blocks(output: str) -> dict:
-    """vitest's ' FAIL  file > describe > case' sections: case header → what it printed."""
-    clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
-    parts = re.split(r"(?m)^ FAIL  ", clean)[1:]
-    heads = [p.splitlines()[0] for p in parts]
-    bodies = ["\n".join(p.splitlines()[1:25]) for p in parts]
-    # vitest prints cases that failed with the SAME error as consecutive headers sharing one block (trial 2026-10-07:
-    # the first case of a pair looked like it showed nothing and was called broken)
-    for i in range(len(bodies) - 2, -1, -1):
-        if not bodies[i].strip():
-            bodies[i] = bodies[i + 1]
-    return dict(zip(heads, bodies))
+def failure_blocks(output: str, lang: langs.Lang | None = None) -> dict:
+    """Case header → what it printed (vitest's ' FAIL  file > describe > case', pytest's '____ case ____')."""
+    return (lang or langs.JS()).failure_blocks(output)
 
 
-def judged(focus: str, output: str) -> dict:
+def judged(focus: str, output: str, lang: langs.Lang | None = None) -> dict:
     """Each case, judged on its OWN failure. Dev trial 2026-10-07: one case failed only because it read a fixture
     file that doesn't exist, and was nearly reported as a part of the bug class the fix left open."""
-    got, blocks = cases(output), failure_blocks(output)
+    got, blocks = cases(output, lang), failure_blocks(output, lang)
     out = {"passed": got["passed"], "symptom": [], "broken": []}
     for name in got["failed"]:
         block = next((b for h, b in blocks.items() if name.rstrip("…") in h), "")
@@ -112,16 +109,13 @@ def judged(focus: str, output: str) -> dict:
 
 
 def _first_error(block: str) -> str:
-    m = re.search(r"^\s*(\w*Error\b.*)$", block, re.M)
+    m = re.search(r"^\s*(?:E\s+)?(\w*(?:Error|Exception)\b.*)$", block, re.M)  # pytest prefixes its lines with E
     return m.group(1).strip() if m else ""
 
 
-def cases(output: str) -> dict:
-    """Per-case results from vitest's default reporter: {"passed": [...], "failed": [...]}."""
-    clean = html.unescape(re.sub(r"\x1b\[[0-9;]*m", "", output))  # vitest's verbose reporter prints &gt; for '>'
-    passed = re.findall(r"^\s*✓\s+(.+?)(?:\s+\d+ms)?$", clean, re.M)
-    failed = re.findall(r"^\s*[×✗]\s+(.+?)(?:\s+\d+ms)?$", clean, re.M)
-    return {"passed": passed, "failed": failed}
+def cases(output: str, lang: langs.Lang | None = None) -> dict:
+    """Per-case results: {"passed": [...], "failed": [...]} (vitest / jest / pytest, by the repo's language)."""
+    return (lang or langs.JS()).cases(output)
 
 
 def write_guard(state: dict, profile, fixed: Path, unfixed: Path, judge: str, cause: dict, fix_patch: str,
@@ -129,14 +123,14 @@ def write_guard(state: dict, profile, fixed: Path, unfixed: Path, judge: str, ca
                 fixtures: list | None = None) -> dict:
     from .sandbox import run_in_sandbox
     run_cmd = run_cmd or run_in_sandbox
-    focus = state.get("focus") or state["issue"]["title"]
-    rel = str(Path(judge).with_name(f"da-guard-{state['issue']['number']}.test.ts"))
+    focus, lang = state.get("focus") or state["issue"]["title"], langs.of(profile)
+    rel = lang.new_test(judge, "guard", state["issue"]["number"])
     judge_code = (Path(fixed) / judge).read_text()
     feedback, tries = "", []
     for n in range(1, GUARD_TRIES + 1):
         try:
             msg, _ = write(state, "lasting_guard", messages(focus, condition, cause, fix_patch, judge_code, header,
-                                                            conditions_text, feedback, fixtures), max_tokens=4000)
+                                                            conditions_text, feedback, fixtures, lang), max_tokens=4000)
         except (TurnCapExceeded, BudgetExceeded) as e:
             return {"status": "NOT WRITTEN", "why": f"stopped by a cap: {e}", "tries": tries}
         reply = str(msg.content)
@@ -145,7 +139,7 @@ def write_guard(state: dict, profile, fixed: Path, unfixed: Path, judge: str, ca
         covers = (re.search(r"COVERS:\s*(.+)", reply) or [None, ""])[1].strip()
         try:
             content, _ = parse(reply)
-            validate(content, ladder.Rung(0, "guard", "lasting guard"))  # no fixture rule either way
+            validate(content, ladder.Rung(0, "guard", "lasting guard"), lang)  # no fixture rule either way
         except WriterRefused as e:
             feedback = f"refused: {e}"
             tries.append({"n": n, "result": feedback})
@@ -153,11 +147,11 @@ def write_guard(state: dict, profile, fixed: Path, unfixed: Path, judge: str, ca
             continue
         # 1. on the UNFIXED code: it must catch this bug, for the focus's reason
         (Path(unfixed) / rel).write_text(content)
-        r = run_one(Path(unfixed), profile, rel, run_cmd, extra=VERBOSE.get(profile.language, ""))
+        r = run_one(Path(unfixed), profile, rel, run_cmd, extra=_verbose(profile))
         out_u = (r.stdout or "") + (r.stderr or "")
         outcome, line = ladder.classify(profile.language, r.returncode, out_u)
         (Path(unfixed) / rel).unlink()
-        on_unfixed = judged(focus, out_u)
+        on_unfixed = judged(focus, out_u, lang)
         last_try = n == GUARD_TRIES
         if not on_unfixed["symptom"] or (on_unfixed["broken"] and not last_try):
             feedback = (f"on the UNFIXED code {len(on_unfixed['symptom'])} case(s) failed with the bug's symptom; "
@@ -168,11 +162,11 @@ def write_guard(state: dict, profile, fixed: Path, unfixed: Path, judge: str, ca
             continue
         # 2. on the FIXED code: which cases of the class the fix closed, and which it left open
         (Path(fixed) / rel).write_text(content)
-        r = run_one(Path(fixed), profile, rel, run_cmd, extra=VERBOSE.get(profile.language, ""))
+        r = run_one(Path(fixed), profile, rel, run_cmd, extra=_verbose(profile))
         out_f = (r.stdout or "") + (r.stderr or "")
         (Path(keep_dir) / Path(rel).name).write_text(content)
         (Path(fixed) / rel).unlink()  # kept in the run folder, not in the fix (see the module note)
-        on_fixed = judged(focus, out_f)
+        on_fixed = judged(focus, out_f, lang)
         tries.append({"n": n, "result": "caught the bug on the unfixed code"})
         events.log("guard_try", key=f"try#{n}", n=n, result="accepted", on_unfixed=on_unfixed,
                    on_fixed={k: len(v) for k, v in on_fixed.items()})

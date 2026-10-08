@@ -1,12 +1,14 @@
 """The rung test writer: drafts ONE failing test for a ladder rung, places it as a NEW file beside the code it tests,
-runs it in the sandbox with the network off, and classifies the result.
+runs it in the sandbox with the network off, and classifies the result. What differs by language (where code and
+tests live, the framework, the checks on a draft) comes from lang.py; this file is the same for every repo.
 
 Built from the by-hand run of vercel/ai #21439 (2026-10-07), which reproduced the bug in exactly this shape: a new
 test beside the provider's own streaming tests, using that file's mock server and helpers; rung 1 fed made-up
 chunks, rung 2 a recorded fixture from `__fixtures__/` cut mid tool call.
 
 Decided in code, not left to the model ("prose is not a control"):
-  WHERE   the test goes: beside the example test, as da-repro-<issue>-<rung>-<n>.test.ts; no existing file is edited
+  WHERE   the test goes: beside the example test, as da-repro-<issue>-<rung>-<n>.test.ts (Python:
+          test_da_repro_<issue>_<rung>_<n>.py); no existing file is edited
   WHAT    a rung means: the integration rung must read a recorded fixture from __fixtures__ (a real stream's format)
   HOW     it is judged: the sandbox's own exit code and output, through ladder.classify()
 The model writes only the body of the test.
@@ -16,11 +18,10 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import ladder
+from . import ladder, lang as langs
 from .models import write
 
 MAX_SNIPPET_LINES = 220
-EXCLUDE = [":!*.test.ts", ":!*.test.tsx", ":!*__fixtures__*", ":!*__snapshots__*", ":!*.md"]
 
 
 class WriterRefused(ValueError):
@@ -29,7 +30,7 @@ class WriterRefused(ValueError):
 
 @dataclass
 class Context:
-    package: str                      # e.g. "openai-compatible"
+    package: str                      # e.g. "openai-compatible" (the package folder's name)
     source: str                       # repo-relative path of the most relevant source file
     snippets: str                     # numbered source lines around every anchor hit
     example_test: str                 # repo-relative path of the test file beside it
@@ -41,6 +42,7 @@ class Context:
     anchors: list = field(default_factory=list)
     ranking: list = field(default_factory=list)   # (file, score) for the record
     extra: str = ""                   # the brief from Gather context: discussion, linked items, shared code, history
+    package_dir: str = ""             # e.g. "packages/openai-compatible", "libs/partners/openai", "." (one package)
 
 
 # ── locate: deterministic, $0 ────────────────────────────────────────────────────────────────────
@@ -59,9 +61,9 @@ def anchors(text: str) -> list[str]:
     return out
 
 
-def _git_grep(checkout: Path, needle: str) -> list[tuple[str, int]]:
-    r = subprocess.run(["git", "-C", str(checkout), "grep", "-n", "-F", "-e", needle, "--", "packages/*/src/**",
-                        *EXCLUDE], capture_output=True, text=True, timeout=60)
+def _git_grep(checkout: Path, needle: str, lang: langs.Lang) -> list[tuple[str, int]]:
+    r = subprocess.run(["git", "-C", str(checkout), "grep", "-n", "-F", "-e", needle, "--", *lang.pathspec()],
+                       capture_output=True, text=True, timeout=60)
     hits = []
     for line in r.stdout.splitlines():
         path, num, _ = line.split(":", 2)
@@ -74,16 +76,16 @@ def _specificity(n_files: int) -> int:
     return 4 if n_files == 1 else 3 if n_files <= 3 else 2 if n_files <= 10 else 1 if n_files <= 40 else 0
 
 
-def locate(checkout: Path, issue_text: str, focus: str) -> Context:
+def locate(checkout: Path, issue_text: str, focus: str, profile=None) -> Context:
     """Rank source files by the issue's exact strings, rare strings counting most and the focus's counting double.
     When the focus names a package, only that package's files compete (the first try, on #21439, let the issue's
     OTHER problem outvote the focus). Then gather the test beside the winner, its setup, one pattern case, fixtures."""
-    checkout = Path(checkout)
+    checkout, lang = Path(checkout), langs.of(profile)
     focus_anchors = anchors(focus)
     found = focus_anchors + [a for a in anchors(issue_text) if a not in focus_anchors]
     score, lines = {}, {}
     for a in found:
-        hits = _git_grep(checkout, a)
+        hits = _git_grep(checkout, a, lang)
         weight = _specificity(len({p for p, _ in hits})) * (2 if a in focus_anchors else 1)
         if not weight:
             continue
@@ -92,18 +94,30 @@ def locate(checkout: Path, issue_text: str, focus: str) -> Context:
             lines.setdefault(path, {})[num] = min(pr, lines.get(path, {}).get(num, pr))
         for path in {p for p, _ in hits}:
             score[path] = score.get(path, 0) + weight
-    pkgs = [p.name for p in (checkout / "packages").iterdir() if p.is_dir()]
-    named = [k for k in pkgs if re.search(rf"\b{re.escape(k)}\b|\b{re.escape(k.replace('-', ' '))}\b", focus, re.I)]
+    pkgs = {Path(d).name: d for d in lang.package_dirs(checkout, need_marker=False) if d != "."}
+    named = [pkgs[k] for k in pkgs if re.search(rf"\b{re.escape(k)}\b|\b{re.escape(k.replace('-', ' '))}\b", focus, re.I)]
     words = {w for w in re.findall(r"\b[a-z][a-zA-Z]{4,}\b", focus)}
     if named:  # the focus names where to look: search there, by its exact strings and the words it uses as code
-        for k in named:
-            for path in subprocess.run(["git", "-C", str(checkout), "ls-files", f"packages/{k}/src/**", *EXCLUDE],
-                                       capture_output=True, text=True, timeout=60).stdout.split():
-                text = (checkout / path).read_text(errors="ignore")
-                code = sum(1 for w in words if re.search(rf"\.{w}\b|\b{w}\(", text))
-                if code or path in score:
-                    score[path] = score.get(path, 0) + code
-        score = {p: v for p, v in score.items() if p.split("/")[1] in named} or score
+        listed = subprocess.run(["git", "-C", str(checkout), "ls-files", "--", *lang.pathspec()],
+                                capture_output=True, text=True, timeout=60).stdout.split()
+        for path in (p for p in listed if lang.package_of(p) in named):
+            text = (checkout / path).read_text(errors="ignore")
+            code = sum(1 for w in words if re.search(rf"\.{w}\b|\b{w}\(", text))
+            if code or path in score:
+                score[path] = score.get(path, 0) + code
+        score = {p: v for p, v in score.items() if lang.package_of(p) in named} or score
+    # a function or class the focus names counts most where it is DEFINED, not where it is called (dry run on
+    # langchain 2026-10-08: `merge_lists` tied across its four callers and lost to them on name order)
+    for a in focus_anchors:
+        if re.fullmatch(r"[A-Za-z_$][\w$]{3,80}", a):
+            for pattern in lang.definition_patterns(a):
+                got = subprocess.run(["git", "-C", str(checkout), "grep", "-n", "-E", pattern, "--", *lang.pathspec()],
+                                     capture_output=True, text=True, timeout=60).stdout
+                for hit in got.splitlines():
+                    path, num, _ = hit.split(":", 2)
+                    if path in score:
+                        score[path] += 3
+                        lines.setdefault(path, {})[int(num)] = 0
     if not score:
         raise WriterRefused("no source file contains any exact string from the issue")
     ranking = sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))
@@ -115,15 +129,9 @@ def locate(checkout: Path, issue_text: str, focus: str) -> Context:
             lines.setdefault(source, {})[src_text.count("\n", 0, m.start()) + 1] = 0
     snippets = _snippets(src_text, lines.get(source, {}))
 
-    example = Path(source).with_name(Path(source).stem + ".test.ts")
-    if not (checkout / example).exists():
-        tests = sorted((checkout / source).parent.glob("*.test.ts"), key=lambda p: -p.stat().st_size)
-        if not tests:
-            raise WriterRefused(f"no test file beside {source} to follow")
-        example = tests[0].relative_to(checkout)
+    example = lang.example_test(checkout, source)
     test_text = (checkout / example).read_text()
-    first = re.search(r"^describe\(", test_text, re.M)
-    header = test_text[:first.start()] if first else test_text[:4000]
+    header = lang.header(test_text)
 
     fixtures_dir = (checkout / source).parent / "__fixtures__"
     fixtures = sorted(str(p.relative_to(checkout)) for p in fixtures_dir.glob("*")) if fixtures_dir.exists() else []
@@ -135,9 +143,11 @@ def locate(checkout: Path, issue_text: str, focus: str) -> Context:
     best = ", ".join(top)
     sample = "\n\n".join(f"--- {f}\n" + "\n".join(l[:400] for l in (checkout / f).read_text().splitlines()[:10])
                          for f in top)
-    return Context(package=source.split("/")[1], source=source, snippets=snippets, example_test=str(example),
-                   example_header=header.strip(), example_case=_pattern_case(test_text), fixtures=fixtures,
-                   fixture_best=best, fixture_sample=sample, anchors=found, ranking=ranking[:5])
+    pkg_dir = lang.package_of(source)
+    return Context(package=Path(pkg_dir).name if pkg_dir != "." else "", source=source, snippets=snippets,
+                   example_test=str(example), example_header=header.strip(),
+                   example_case=lang.pattern_case(test_text, focus), fixtures=fixtures, fixture_best=best,
+                   fixture_sample=sample, anchors=found, ranking=ranking[:5], package_dir=pkg_dir)
 
 
 def _snippets(text: str, hit_lines: dict, pad: int = 14) -> str:
@@ -158,35 +168,21 @@ def _snippets(text: str, hit_lines: dict, pad: int = 14) -> str:
     return "\n".join(out)
 
 
-def _pattern_case(test_text: str) -> str:
-    """One existing streaming test, whole, as the pattern to follow (the by-hand run copied exactly this shape)."""
-    lines = test_text.splitlines()
-    for i, l in enumerate(lines):
-        if re.match(r"\s+it\(", l) and "stream-chunks" in "\n".join(lines[i:i + 30]):
-            indent = len(l) - len(l.lstrip())
-            for j in range(i + 1, min(len(lines), i + 120)):
-                if lines[j].startswith(" " * indent + "});"):
-                    return "\n".join(lines[i:j + 1])
-    return ""
-
-
 # ── write: the only model call ───────────────────────────────────────────────────────────────────
-SYSTEM = """You write ONE vitest test file that reproduces ONE reported problem (the FOCUS) on the CURRENT, unfixed code.
+def system(lang: langs.Lang) -> str:
+    return f"""You write ONE {lang.framework} test file that reproduces ONE reported problem (the FOCUS) on the CURRENT, unfixed code.
 Rules:
 - Reproduce ONLY the FOCUS. The issue may describe other problems: ignore them completely.
 - The test must FAIL on the current code, and fail with the FOCUS symptom (assert the correct behaviour).
-- Start with the setup you are given (imports, mock server, model, helpers), adjusted only as needed. The file is
-  saved beside the example test, so its relative imports work unchanged.
-- No network, no API keys, no environment variables: use the mock server exactly as the pattern test does.
-- Fixture paths are relative to the package directory (vitest runs there), e.g. 'src/chat/__fixtures__/x.chunks.txt'.
-- Make the failing assertion SHOW the evidence: compare the actual parts or values (toStrictEqual / toEqual on the
-  list of stream parts), never a bare count or boolean, so the failure message prints what went wrong.
-- Do not test anything else. One describe block, one to three it() cases.
+{lang.rules()}
 Reply in exactly this shape:
 SYMPTOM: <one line: what the failing assertion will show on the current code>
-```ts
+```{lang.fence}
 <the whole test file>
 ```"""
+
+
+SYSTEM = system(langs.JS())  # vercel/ai's (kept for the record of what its runs were told)
 
 RUNG_RULES = {
     "unit": "RUNG 1 (unit): feed made-up input to the smallest code path that shows the bug. No fixture files.",
@@ -196,7 +192,8 @@ RUNG_RULES = {
 }
 
 
-def messages(issue_title: str, issue_text: str, focus: str, rung: ladder.Rung, history: list, ctx: Context) -> list:
+def messages(issue_title: str, issue_text: str, focus: str, rung: ladder.Rung, history: list, ctx: Context,
+             lang: langs.Lang | None = None) -> list:
     past = ""
     for a in history:
         past += f"\n- attempt {a.n} ({a.rung}): {a.outcome}. {a.evidence[:600]}"
@@ -204,9 +201,12 @@ def messages(issue_title: str, issue_text: str, focus: str, rung: ladder.Rung, h
                f"The most relevant, first lines (pick one; the setup above has a helper for each format):\n"
                f"{ctx.fixture_sample}"
                if ctx.fixtures and rung.name == "integration" else "")
+    rule = RUNG_RULES[rung.name]
+    if lang is not None and lang.key == "python":  # "fixture" means something else to pytest
+        rule = rule.replace("No fixture files.", "No recorded data files (fixtures from the setup are fine).")
     user = f"""FOCUS (the ONE problem to reproduce): {focus}
 
-{RUNG_RULES[rung.name]}
+{rule}
 
 BACKGROUND, the whole issue "{issue_title}" (any other problem in it is OUT OF SCOPE):
 {issue_text[:3000]}
@@ -221,16 +221,17 @@ A PATTERN TEST FROM THAT FILE:
 {ctx.example_case[:3500]}{fixture}
 
 EARLIER ATTEMPTS:{past or " none"}"""
-    return [("system", SYSTEM), ("user", user)]
+    return [("system", system(lang or langs.JS())), ("user", user)]
 
 
-_TS_BLOCK = re.compile(r"```(?:ts|typescript)?[ \t]*\n(.*?)(?:```|\Z)", re.S)  # an unclosed block (cut off) still parses
+# an unclosed block (cut off) still parses
+_TS_BLOCK = re.compile(r"```(?:ts|typescript|tsx|js|javascript|jsx|python|py)?[ \t]*\n(.*?)(?:```|\Z)", re.S)
 
 
 def parse(reply: str) -> tuple[str, str]:
     m = _TS_BLOCK.search(reply)
     if not m or not m.group(1).strip():
-        raise WriterRefused("the reply has no ```ts block")
+        raise WriterRefused("the reply has no code block")
     symptom = re.search(r"SYMPTOM:\s*(.+)", reply)
     # trial 2026-10-07: the model put its SYMPTOM line inside the code twice, which broke compilation
     code = re.sub(r"^\s*SYMPTOM:.*$", "", m.group(1), flags=re.M).strip()
@@ -283,17 +284,8 @@ def assertion_text(output: str) -> list[str]:
     return found
 
 
-def validate(content: str, rung: ladder.Rung) -> None:
-    if "expect(" not in content:
-        raise WriterRefused("the test asserts nothing (no expect)")
-    if re.search(r"\b(it|describe|test)\.only\(", content):
-        raise WriterRefused(".only would hide other cases")
-    if re.search(r"process\.env|https?://(?!my\.api\.com|localhost|127\.0\.0\.1)[\w.-]+\.\w", content):
-        raise WriterRefused("the test reaches for env vars or a real host; the sandbox has neither")
-    if rung.name == "integration" and not ("__fixtures__/" in content and re.search(r"readFile(Sync)?\(", content)):
-        raise WriterRefused("the integration rung must read a recorded fixture from __fixtures__")
-    if rung.name == "unit" and "__fixtures__/" in content:
-        raise WriterRefused("the unit rung uses made-up input, not a recorded fixture")
+def validate(content: str, rung: ladder.Rung, lang: langs.Lang | None = None) -> None:
+    (lang or langs.JS()).validate(content, rung.name)
     if len(content) > 20_000:
         raise WriterRefused("the test file is too long to be one focused reproduction")
 
@@ -303,23 +295,21 @@ def attempt(state: dict, rung: ladder.Rung, n: int, history: list, ctx: Context,
             run_cmd=None, drafts: Path | None = None, step: str = "reproduce", label: str = "") -> ladder.Attempt:
     """Draft (one model call, metered), validate, write beside the example test, run network-off, classify."""
     from .sandbox import run_in_sandbox
-    issue = state["issue"]
-    name = f"da-repro-{issue['number']}-{label or rung.name}-{n}.test.ts"
-    rel = str(Path(ctx.example_test).with_name(name))
+    issue, lang = state["issue"], langs.of(profile)
+    rel = lang.new_test(ctx.example_test, "repro", issue["number"], label or rung.name, n)
     try:
         focus = state.get("focus") or issue["title"]
         msg, _ = write(state, step, messages(issue["title"], state.get("issue_text") or issue.get("body", ""),
-                                                    focus, rung, history, ctx), max_tokens=4000)
+                                                    focus, rung, history, ctx, lang), max_tokens=4000)
         if drafts:
             Path(drafts).mkdir(parents=True, exist_ok=True)
             (Path(drafts) / f"{n}-{label or rung.name}.md").write_text(str(msg.content))  # every raw reply, for the record
         content, symptom = parse(str(msg.content))
-        validate(content, rung)
+        validate(content, rung, lang)
     except WriterRefused as e:
         return ladder.Attempt(rung=rung.name, n=n, outcome=ladder.ERROR, evidence=f"writer refused: {e}", test_path="")
     (Path(checkout) / rel).write_text(content)
-    in_pkg = str(Path(rel).relative_to(f"packages/{ctx.package}"))
-    cmd = profile.env + profile.test_cmd.format(package=ctx.package, test_path=in_pkg)
+    cmd = lang.test_command(ctx.package_dir or lang.package_of(rel), rel)
     r = (run_cmd or run_in_sandbox)(cmd, Path(checkout), network=False, timeout=300, image=profile.image)
     out = (r.stdout or "") + (r.stderr or "")
     outcome, line = ladder.classify(profile.language, r.returncode, out)

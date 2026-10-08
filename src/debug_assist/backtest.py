@@ -34,9 +34,9 @@ def _git(repo: Path, *args, timeout=600) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=timeout)
 
 
-def relevant_dirs(base: Path, package_dir: str) -> set[str]:
-    """The guard's package and every workspace package it depends on (dev included), transitively."""
-    pmap = package_map(base)
+def relevant_dirs(base: Path, package_dir: str, profile=None) -> set[str]:
+    """The guard's package ("packages/ai") and every workspace package it depends on (dev included), transitively."""
+    pmap = package_map(base, profile)
     by_dir = {v["dir"]: k for k, v in pmap.items()}
     names, todo = set(), [by_dir.get(package_dir)]
     while todo:
@@ -44,7 +44,7 @@ def relevant_dirs(base: Path, package_dir: str) -> set[str]:
         if n and n not in names and n in pmap:
             names.add(n)
             todo += [d for d in pmap[n]["deps"] if d in pmap]
-    return {f"packages/{pmap[n]['dir']}/" for n in names}
+    return {f"{pmap[n]['dir']}/" for n in names}
 
 
 def window(owner: str, repo: str, anchor_sha: str, n: int = WINDOW) -> list[dict]:
@@ -120,9 +120,9 @@ def run_at(hist: Path, sha: str, profile, package_dir: str, files: dict, focus: 
     r = _git(hist, "checkout", "-q", "-f", sha)
     if r.returncode != 0:
         return {"state": "UNEVALUABLE", "why": f"checkout failed: {r.stderr[-200:]}"}
-    pj = hist / "packages" / package_dir / "package.json"
+    pj = hist / package_dir / "package.json"
     if not pj.exists():
-        return {"state": "UNEVALUABLE", "why": f"packages/{package_dir} did not exist yet"}
+        return {"state": "UNEVALUABLE", "why": f"{package_dir} did not exist yet"}
     name = json.loads(pj.read_text())["name"]
     try:
         inst = run_cmd(profile.env + f"pnpm install --frozen-lockfile --store-dir /work/.pnpm-store --filter '{name}...'"
@@ -159,12 +159,15 @@ def backtest(issue: dict, profile, base: Path, hist: Path, package_dir: str, jud
     if CFG.sandbox_backend == "e2b" and run_cmd is None:
         # older commits need their own install and their logs read back; the E2B sandbox only syncs one way so far
         return {"would_have_caught": None, "why": "the back-test runs only with the local sandbox for now"}
+    if getattr(profile, "manager", "pnpm") != "pnpm":
+        # each older commit is installed afresh; that recipe exists for pnpm monorepos (vercel/ai) only so far
+        return {"would_have_caught": None, "why": f"the back-test runs only on pnpm repos for now ({profile.repo} uses {getattr(profile, 'manager', '')})"}
     run_cmd = run_cmd or run_in_sandbox
     owner, repo = issue["owner"], issue["repo"]
     commits = window(owner, repo, anchor_sha, n)
     if not commits:
         return {"would_have_caught": None, "why": "could not list the commits before the anchor"}
-    dirs = relevant_dirs(base, package_dir)
+    dirs = relevant_dirs(base, package_dir, profile)
     touched = [True] + [touches(owner, repo, c["sha"], dirs) for c in commits[1:]]
     grouped = groups(commits, touched)
     prepare_history(base, hist, f"{owner}/{repo}", anchor_sha, depth=n + 2)
