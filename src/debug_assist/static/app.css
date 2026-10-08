@@ -315,3 +315,4 @@ details.foot > summary { cursor: pointer; color: var(--blue); }
 ul.log { list-style: none; margin: 8px 0 0; padding: 12px 14px; border-radius: 12px; background: var(--surface);
   font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--label-2); overflow-x: auto; }
 ul.log li { white-space: pre-wrap; word-break: break-word; }
+.row .btn.again { padding: 6px 12px; font-size: 14px; min-height: 0; }

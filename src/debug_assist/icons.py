@@ -43,6 +43,11 @@ def list_(size: int = 18) -> str:
     return _svg('<path d="M9 7h10M9 12h10M9 17h10"/><circle cx="5" cy="7" r=".6"/><circle cx="5" cy="12" r=".6"/><circle cx="5" cy="17" r=".6"/>', size)
 
 
+def link(size: int = 18) -> str:
+    """Two chain links: connect a repo."""
+    return _svg('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>', size)
+
+
 def mark(size: int = 22) -> str:
     """DebugAssistAgent's mark: a target ring around a point, the thing it finds."""
     return _svg('<circle cx="12" cy="12" r="8.2"/><circle cx="12" cy="12" r="3.6"/><path d="M12 1.8v3M12 19.2v3M1.8 12h3M19.2 12h3"/>', size)

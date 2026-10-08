@@ -33,6 +33,10 @@ services:
         value: /opt/render/project/src/.checkouts/base
       - key: E2B_TEMPLATE
         value: debugassist-vercel-ai-e7f55a4
+      - key: AUTO_RUNS              # 1: an issue labelled debug-assist in a connected repo starts a run (spends money)
+        value: "0"
+      - key: GITHUB_WEBHOOK_SECRET  # the secret typed into the repo's GitHub webhook; only signed deliveries are read
+        sync: false
       - key: APP_PASSWORD           # 12+ characters; the sign-in for this public address
         sync: false
       - key: MONGODB_URI            # MongoDB Atlas connection string

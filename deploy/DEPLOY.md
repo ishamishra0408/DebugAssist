@@ -37,6 +37,22 @@ Render tells the app its own address (`RENDER_EXTERNAL_HOSTNAME`), so there is n
 Open the address, sign in, then on your Mac: `uv run debug-assist preflight <issue-url>` with the same environment, or
 watch the first run's page: the start-up checks list every missing piece by name.
 
+## 6. Connect a repo
+Open **Connect a repo**, paste `https://github.com/<owner>/<repo>`. It reads the repo's own files (no AI), builds the
+repo's own E2B template (5–15 minutes, a few cents of E2B credit), runs its biggest test suites with the network off,
+and saves the setup in MongoDB (`repos`). Public JavaScript, TypeScript and Python repos. Same from a terminal:
+`uv run debug-assist connect https://github.com/<owner>/<repo>`. **Connect again** moves a repo to its latest code.
+
+## 7. Automatic start (optional; off until you turn it on)
+1. Render ▸ Environment: `GITHUB_WEBHOOK_SECRET` = a long random string (make it in the Terminal app:
+   `openssl rand -hex 32`), and `AUTO_RUNS` = `1`.
+2. GitHub ▸ the connected repo ▸ Settings ▸ Webhooks ▸ Add webhook: payload URL `https://<render address>/hooks/github`,
+   content type `application/json`, the same secret, events: **Issues** only.
+3. Create a label `debug-assist` in the repo. Adding it to an issue queues a run (standard AI, one at a time, at most
+   10 a day). The home page lists them under **Started from GitHub**.
+The free plan sleeps; GitHub's delivery may time out while it wakes. On waking, the app checks every connected repo
+for open issues with the label, so none is lost. Each issue runs automatically once.
+
 ## Known limits of the free plan
 - The service sleeps after 15 idle minutes and can restart at any time. Runs continue where they stopped
   (`resume`); run files come back from MongoDB.

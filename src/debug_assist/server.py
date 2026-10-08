@@ -147,9 +147,19 @@ def read_issue(link: str) -> dict:
 
 # ── one run at a time, started the same way the terminal starts it ───────────────────────────────────────────────
 _child: dict = {"proc": None, "run_id": None}
+_start_lock = threading.Lock()   # the home page and the automatic worker never start two runs at once
+
+
+def run_going() -> bool:
+    return _child["proc"] is not None and _child["proc"].poll() is None
 
 
 def start_run(link: str, heading: str, ai: str) -> str:
+    with _start_lock:
+        return _start_run(link, heading, ai)
+
+
+def _start_run(link: str, heading: str, ai: str) -> str:
     owner, repo, number = _issue_parts(link)
     _ready_repo(owner, repo)
     if ai not in ("standard", "opus"):
@@ -177,14 +187,18 @@ def start_run(link: str, heading: str, ai: str) -> str:
 _connector: dict = {"proc": None, "repo": None}
 
 
-def start_connect(link: str) -> str:
+def start_connect(link: str, again: bool = False) -> str:
+    """again: connect a repo that is already connected, at its latest code (a new test sandbox; the old setup keeps
+    working until the new one is saved)."""
     from .connect import parse_repo
-    from .profiles import ready
+    from .profiles import PROFILES, ready
     try:
         repo = parse_repo(link)
     except ValueError as ex:
         raise Refused(str(ex))
-    if repo in ready():
+    if repo in PROFILES and PROFILES[repo].base_commit:
+        raise Refused(f"{repo} was set up by hand; it is not connected again from here.")
+    if repo in ready() and not again:
         raise Refused(f"{repo} is already connected. Paste one of its issues on the home page.")
     proc = _connector["proc"]
     if proc is not None and proc.poll() is None:
@@ -318,8 +332,10 @@ def _connected_rows() -> str:
         passed = sum(r == "pass" for _, r in p.baseline)
         sub = (f"Connected {p.connected_at[:10]} · {p.language} · {p.manager} · {passed} of {len(p.baseline)} test suites pass"
                if p.source == "connected" else f"Set up by hand · {p.language} · {p.manager}")
+        again = (f'<button type="button" class="btn glass again" data-repo="{e(repo)}">Connect again</button>'
+                 if p.source == "connected" else "")
         rows.append(f'<li class="row done"><span class="ic">{icons.check()}</span><span class="t"><b>{e(repo)}</b>'
-                    f'<span>{e(sub)}</span></span></li>')
+                    f'<span>{e(sub)}</span></span>{again}</li>')
     return "".join(rows) or '<li class="row pending"><span class="ic"></span><span class="t"><span>None yet</span></span></li>'
 
 
@@ -356,6 +372,7 @@ def connect_page(repo: str = "") -> str:
     e = viewer.e
     if not repo and _connector["repo"]:
         repo = _connector["repo"]
+    rows = _connected_rows()
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Connect a repo · {plain.NAME}</title><meta name="color-scheme" content="dark light"><link rel="stylesheet" href="/static/app.css">
 </head><body>
@@ -376,22 +393,25 @@ def connect_page(repo: str = "") -> str:
   <p class="err" id="err" role="alert"></p></section>
 {_connect_progress(repo)}
 <section class="group" aria-labelledby="h-conn"><h2 id="h-conn">Connected repos</h2>
-  <div class="sect"><ul class="rows">{_connected_rows()}</ul></div></section>
+  <div class="sect"><ul class="rows">{rows}</ul></div>
+  {'<p class="foot">Connect again to move a repo to its latest code. Its current setup keeps working until the new one is ready.</p>' if 'class="btn glass again"' in rows else ''}</section>
 </main>
 <script src="/static/topo.js" defer></script><script src="/static/glass.js" defer></script>
 <script>
 const H = {{ "{TOKEN_HEADER}": {json.dumps(TOKEN)}, "Content-Type": "application/json" }};
 const $ = id => document.getElementById(id);
 $("link").addEventListener("keydown", ev => {{ if (ev.key === "Enter") $("go").click(); }});
-$("go").onclick = async () => {{
-  $("err").textContent = ""; $("go").disabled = true;
+async function connect(url, again, btn) {{
+  $("err").textContent = ""; btn.disabled = true;
   try {{
-    const r = await fetch("/api/connect", {{ method: "POST", headers: H, body: JSON.stringify({{ url: $("link").value.trim() }}) }});
+    const r = await fetch("/api/connect", {{ method: "POST", headers: H, body: JSON.stringify({{ url, again }}) }});
     const j = await r.json();
-    if (!r.ok) {{ $("go").disabled = false; $("err").textContent = j.error || "Something went wrong."; return; }}
+    if (!r.ok) {{ btn.disabled = false; $("err").textContent = j.error || "Something went wrong."; return; }}
     location.href = "/connect?repo=" + encodeURIComponent(j.repo);
-  }} catch (ex) {{ $("go").disabled = false; $("err").textContent = "Could not reach {plain.NAME}. Is it still running?"; }}
-}};
+  }} catch (ex) {{ btn.disabled = false; $("err").textContent = "Could not reach {plain.NAME}. Is it still running?"; }}
+}}
+$("go").onclick = () => connect($("link").value.trim(), false, $("go"));
+document.querySelectorAll("button.again").forEach(b => b.onclick = () => connect("https://github.com/" + b.dataset.repo, true, b));
 async function poll() {{
   try {{
     const r = await fetch(location.href, {{ cache: "no-store" }});
@@ -404,6 +424,29 @@ async function poll() {{
 }}
 if (document.querySelector('[data-k="progress"]') && !document.querySelector('[data-final="1"]')) setTimeout(poll, 3000);
 </script></body></html>"""
+
+
+def _label_queue() -> str:
+    """Issues labelled on GitHub (autostart.py): waiting, started, or not started and why. Hidden when off and empty."""
+    from . import autostart, icons
+    e, items = viewer.e, autostart.recent()
+    if not items and not autostart.enabled():
+        return ""
+    rows = []
+    for it in items:
+        st = it.get("status")
+        cls, word = {"queued": ("waiting", "Waiting to start"), "started": ("done", "Started"),
+                     "refused": ("stopped", "Not started")}.get(st, ("pending", st))
+        sub = word + (f": {it['why']}" if it.get("why") else "")
+        inner = (f'<span class="ic">{icons.STATE.get(cls, icons.pause)()}</span><span class="t"><b>{e(it["repo"])} '
+                 f'#{it["number"]} {e(it.get("title", ""))}</b><span>{e(sub)}</span></span>')
+        rows.append(f'<li><a class="row {cls}" href="/run/{e(it["run_id"])}">{inner}<span class="tr">{icons.chevron()}</span></a></li>'
+                    if it.get("run_id") else f'<li class="row {cls}">{inner}</li>')
+    state = (f"On. Add the label <b>{e(autostart.LABEL)}</b> to an issue in a connected repo and it starts here, one at a time."
+             if autostart.enabled() else "Off.")
+    return (f'<section class="group" aria-labelledby="h-auto"><h2 id="h-auto">Started from GitHub</h2>'
+            f'<p class="foot">{state}</p>'
+            + (f'<div class="sect"><ul class="rows">{"".join(rows)}</ul></div>' if rows else "") + "</section>")
 
 
 def home_page() -> str:
@@ -433,7 +476,7 @@ def home_page() -> str:
 <nav class="toolbar" aria-label="{plain.NAME}">
   <div class="tgroup glass"><a class="brand" href="/">{icons.mark()}<span>{plain.NAME}</span></a></div>
   <div class="tgroup glass"><a class="tbtn" href="#runs" aria-label="Runs">{icons.list_(16)}<span class="lbl">Runs</span></a>
-    <a class="tbtn" href="/connect" aria-label="Connect a repo">{icons.plus(16)}<span class="lbl">Connect a repo</span></a>
+    <a class="tbtn" href="/connect" aria-label="Connect a repo">{icons.link(16)}<span class="lbl">Connect a repo</span></a>
     <a class="tbtn" href="/how" aria-label="How it works">{icons.play(16)}<span class="lbl">How it works</span></a>
     <a class="tbtn" href="/checks" aria-label="System check">{icons.check(16)}<span class="lbl">System check</span></a></div>
 </nav>
@@ -462,6 +505,7 @@ def home_page() -> str:
     <p class="foot" id="aifoot">Cheaper. It often cannot fix the bug.</p></section>
   <div class="start" style="margin-top:22px"><button type="button" class="btn glass prominent" id="start">{icons.play(16)}<span>Start the run</span></button></div>
 </div>
+{_label_queue()}
 <section class="group" id="runs" aria-labelledby="h-runs"><h2 id="h-runs">Runs</h2>
   <div class="sect"><ul class="rows">{''.join(rows) or '<li class="row pending"><span class="ic"></span><span class="t"><span>No runs yet</span></span></li>'}</ul></div></section>
 </main>
@@ -635,7 +679,24 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(302, "", "text/plain", location="/",
                           cookie=f"da_session={make_session()}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_S}{secure}")
 
-    def do_POST(self):  # sign in, start a run, or connect a repo
+    def _github_hook(self):
+        """GitHub's webhook: no sign-in (GitHub can't), so only a delivery signed with the shared secret is read."""
+        from . import autostart
+        if not autostart.secret():
+            return self._json(503, {"error": "the webhook is not set up (GITHUB_WEBHOOK_SECRET)"})
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > 1_000_000:
+            return self._json(413, {"error": "too large"})
+        body = self.rfile.read(n)
+        if not autostart.signature_ok(body, self.headers.get("X-Hub-Signature-256")):
+            return self._json(401, {"error": "bad signature"})
+        try:
+            code, said = autostart.on_event(self.headers.get("X-GitHub-Event") or "", json.loads(body or b"{}"))
+        except Exception as ex:
+            return self._json(500, {"error": f"could not queue it ({type(ex).__name__})"})
+        return self._json(code, {"result": said})
+
+    def do_POST(self):  # sign in, start a run, connect a repo, or a GitHub webhook
         self.server.last = time.monotonic()
         if getattr(self.server, "locked", ""):
             return self._send(503, f"{plain.NAME} is locked. {self.server.locked}", "text/plain; charset=utf-8")
@@ -643,6 +704,8 @@ class Handler(BaseHTTPRequestHandler):
             if not self._host_ok() or (self.headers.get("Origin") and not self._origin_ok()):
                 return self._send(403, "forbidden", "text/plain")
             return self._login()
+        if urlparse(self.path).path == "/hooks/github":
+            return self._github_hook()
         if (not self._host_ok() or not self._token_ok() or not self._origin_ok() or not self._signed_in()
                 or not (self.headers.get("Content-Type") or "").startswith("application/json")):
             return self._json(403, {"error": "Not allowed. Start runs from the DebugAssistAgent home page."})
@@ -655,7 +718,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
             if path == "/api/connect":
-                repo = start_connect(str(body.get("url", "")))
+                repo = start_connect(str(body.get("url", "")), again=bool(body.get("again")))
                 return self._json(200, {"repo": repo, "page": f"/connect?repo={repo}"})
             rid = start_run(str(body.get("url", "")), str(body.get("heading", "")), str(body.get("ai", "")))
             return self._json(200, {"run_id": rid, "page": f"/run/{rid}"})
@@ -699,6 +762,13 @@ def serve(port: int = PORT, idle_s: int = IDLE_S, host: str = "127.0.0.1") -> No
                 return
     if idle_s:  # hosted (idle 0): the platform decides when it sleeps
         threading.Thread(target=watchdog, daemon=True).start()
+    from . import autostart
+    if autostart.enabled() and not why:
+        ai = os.environ.get("AUTO_RUN_AI", "standard")
+        threading.Thread(target=autostart.worker, args=(lambda link: start_run(link, "", ai), run_going,
+                                                         threading.Event()), daemon=True).start()
+        print(f"{plain.NAME}: automatic runs ON: issues labelled '{autostart.LABEL}' in connected repos start a run "
+              f"({ai} AI, at most {autostart.MAX_PER_DAY} a day)", flush=True)
     print(f"{plain.NAME}: http://{host}:{port}/" + (f" (stops after {idle_s // 60} min without a request)" if idle_s else ""), flush=True)
     httpd.serve_forever()
 

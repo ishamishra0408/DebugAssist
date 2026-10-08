@@ -205,7 +205,7 @@ def test_the_system_check_shows_each_service_in_plain_words(live, monkeypatch):
 
 def test_a_repo_is_connected_like_the_terminal_connects_it_and_only_one_at_a_time(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "CFG", SimpleNamespace(runs_dir=tmp_path))
-    monkeypatch.setattr("debug_assist.profiles.ready", lambda: ["vercel/ai"])
+    monkeypatch.setattr("debug_assist.profiles.ready", lambda: ["vercel/ai", "acme/done"])
     calls = []
 
     class Proc:
@@ -224,7 +224,11 @@ def test_a_repo_is_connected_like_the_terminal_connects_it_and_only_one_at_a_tim
         server.start_connect("https://github.com/acme/other")
     monkeypatch.setitem(server._connector, "proc", None)
     with pytest.raises(server.Refused, match="already connected"):
-        server.start_connect("https://github.com/vercel/ai")
+        server.start_connect("https://github.com/acme/done")
+    assert server.start_connect("https://github.com/acme/done", again=True) == "acme/done"   # its latest code
+    monkeypatch.setitem(server._connector, "proc", None)
+    with pytest.raises(server.Refused, match="set up by hand"):
+        server.start_connect("https://github.com/vercel/ai", again=True)
     with pytest.raises(server.Refused, match="not a GitHub repository"):
         server.start_connect("https://gitlab.com/acme/widgets")
 
@@ -245,7 +249,7 @@ def test_the_connect_page_shows_each_step_live_and_only_the_page_can_start_it(li
     assert '<section class="group" data-final="1"' in _get(live, "/connect?repo=acme/widgets")[1]
     assert "Connecting" not in _get(live, "/connect?repo=../../etc")[1]            # a bad name reads nothing
     started = []
-    monkeypatch.setattr(server, "start_connect", lambda u: started.append(u) or "acme/widgets")
+    monkeypatch.setattr(server, "start_connect", lambda u, again=False: started.append((u, again)) or "acme/widgets")
     body = json.dumps({"url": "https://github.com/acme/widgets"}).encode()
     assert _get(live, "/api/connect", "POST", {"Content-Type": "application/json"}, body)[0] == 403 and not started
     code, out = _get(live, "/api/connect", "POST", _ok_headers(live), body)
