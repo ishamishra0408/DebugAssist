@@ -17,6 +17,7 @@ def live(tmp_path, monkeypatch):
     (tmp_path / "ai-1-x").mkdir()
     monkeypatch.setattr(server, "CFG", SimpleNamespace(runs_dir=tmp_path))
     monkeypatch.setattr(viewer, "gather", lambda rid, at=None: _data(run_id=rid))
+    monkeypatch.setattr("debug_assist.store.reachable", lambda ttl_s=15.0: True)
     httpd = server.make(0)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield httpd
@@ -272,3 +273,23 @@ def test_a_connection_that_ends_before_saving_says_why(tmp_path, monkeypatch):
     monkeypatch.setitem(server._connector, "proc", SimpleNamespace(poll=lambda: 1))
     out = server._connect_progress("acme/w")
     assert 'data-final="1"' in out and "Could not connect acme/w. Nothing was saved: ServerSelectionTimeoutError" in out
+
+
+def test_with_the_database_off_pages_answer_at_once_and_say_so(tmp_path, monkeypatch):
+    import time
+    (tmp_path / "ai-1-20261007-010101").mkdir()
+    (tmp_path / "ai-1-20261007-010101" / "console.log").write_text("x")
+    (tmp_path / "not-a-run").mkdir()
+    monkeypatch.setattr(server, "CFG", SimpleNamespace(runs_dir=tmp_path))
+    monkeypatch.setattr("debug_assist.store.reachable", lambda ttl_s=15.0: False)
+    monkeypatch.setattr(server, "_status_of", lambda rid: pytest.fail("read a run's state with the database off"))
+    t0 = time.monotonic()
+    page = server.home_page()
+    assert time.monotonic() - t0 < 1 and "Status unavailable: the database is off" in page and "not-a-run" not in page
+    httpd = server.make(0)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        code, text = _get(httpd, "/run/ai-1-20261007-010101")
+        assert code == 503 and "The database is off" in text
+    finally:
+        httpd.shutdown()

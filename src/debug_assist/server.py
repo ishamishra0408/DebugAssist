@@ -502,10 +502,14 @@ def _label_queue() -> str:
 
 def home_page() -> str:
     from . import icons
+    from .store import reachable
     e = viewer.e
-    rows = []
+    rows, db_up = [], reachable()
     for rid in _runs():
-        got = _status_of(rid)
+        if db_up:
+            got = _status_of(rid)
+        else:  # each run's state is in the database: list the runs without it rather than wait on it
+            got = ("", "Status unavailable: the database is off") if (CFG.runs_dir / rid / "console.log").exists() else None
         if got is None:
             continue
         m = re.search(r"-(\d{8})-(\d{6})$", rid)
@@ -696,6 +700,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(302, "", "text/plain", location=f"/{parts[0]}/{_runs()[0]}")
                 if not RUN_ID.match(rid) or not (CFG.runs_dir / rid).is_dir():
                     return self._send(404, "no such run", "text/plain")
+                from .store import reachable
+                if not reachable():
+                    return self._send(503, "The database is off, so this run can't be read. On this Mac it runs in "
+                                           "Docker Desktop: open it, wait a minute, then reload.", "text/plain; charset=utf-8")
                 if parts[0] == "run":
                     return self._send(200, viewer.render(viewer.gather(rid), mode="live"))
                 speed = min(60.0, max(1.0, float((q.get("speed") or ["8"])[0])))

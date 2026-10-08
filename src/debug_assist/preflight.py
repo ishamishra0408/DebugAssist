@@ -294,9 +294,11 @@ def run_preflight(issue_url: str, demo: bool = False, trace: bool = True) -> lis
         image = None
         checks.append(Check("Repo profile", "FAIL", str(e), "connect it first, from the Connect a repo page"))
     checks.append(check_e2b(template) if CFG.sandbox_backend == "e2b" else check_docker(image))
-    checks.append(check_mongo())
+    mongo = check_mongo()
+    checks.append(mongo)
     oll, dims = check_voyage() if CFG.embed_provider == "voyage" else check_ollama()
-    checks.append(check_vector_index(dims))
+    checks.append(check_vector_index(dims) if mongo.status != "FAIL" else
+                  Check("Vector index", "FAIL", "the database is not reachable", "fix MongoDB first"))
     checks.append(oll)
     checks.append(check_laya())
     checks.append(check_openrouter(demo))

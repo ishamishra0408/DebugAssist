@@ -136,7 +136,9 @@ def worker(start, busy, stop: threading.Event) -> None:
 def recent(limit: int = 10) -> list[dict]:
     try:
         from .config import CFG
-        from .store import client
+        from .store import client, reachable
+        if not reachable():
+            return []
         return list(client(1500)[CFG.db_name]["queue"].find().sort("queued_at", -1).limit(limit))
     except Exception:
         return []

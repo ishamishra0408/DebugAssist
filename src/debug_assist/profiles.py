@@ -105,7 +105,9 @@ def connected(repo: str) -> RepoProfile | None:
     """A repo the connect-a-repo pipeline set up, from MongoDB; None when there is none (or no database)."""
     try:
         from .config import CFG
-        from .store import client
+        from .store import client, reachable
+        if not reachable():
+            return None
         doc = client(1500)[CFG.db_name]["repos"].find_one({"_id": repo, "status": "connected"}, {"profile": 1})
     except Exception:
         return None
@@ -129,9 +131,10 @@ def ready() -> list[str]:
     out = [k for k, p in PROFILES.items() if p.base_commit]
     try:
         from .config import CFG
-        from .store import client
-        out += [d["_id"] for d in client(1500)[CFG.db_name]["repos"].find({"status": "connected"}, {"_id": 1})
-                if d["_id"] not in out]
+        from .store import client, reachable
+        if reachable():
+            out += [d["_id"] for d in client(1500)[CFG.db_name]["repos"].find({"status": "connected"}, {"_id": 1})
+                    if d["_id"] not in out]
     except Exception:
         pass
     return out

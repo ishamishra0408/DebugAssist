@@ -452,8 +452,10 @@ def prove_tests(p: RepoProfile, root: Path, packages: list[str], log) -> list[tu
 def recent(limit: int = 12) -> list[dict]:
     """The latest connections tried, newest first (the Connect page lists the ones not connected yet)."""
     from .config import CFG
-    from .store import client
+    from .store import client, reachable
     try:
+        if not reachable():
+            return []
         return list(client(1500)[CFG.db_name]["connects"].find().sort("started_at", -1).limit(limit))
     except Exception:
         return []
@@ -461,8 +463,10 @@ def recent(limit: int = 12) -> list[dict]:
 
 def status(repo: str) -> dict | None:
     from .config import CFG
-    from .store import client
+    from .store import client, reachable
     try:
+        if not reachable():
+            return None
         return client(1500)[CFG.db_name]["connects"].find_one({"_id": repo})
     except Exception:
         return None
