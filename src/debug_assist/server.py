@@ -430,7 +430,7 @@ def how_page() -> str:
 <main>
 <header class="hero"><h1>How it works</h1>
   <p class="lede">A run moves through these states, one action at a time. If an action fails, it tries again a fixed number of times, then stops and tells you why.</p></header>
-<p class="legend"><span>Box: where the run is</span><span>Arrow: what it does next</span><span class="a">Amber: it tries again</span><span class="r">Red: it stops, with the reason</span><span class="b">Dot: the run</span></p>
+<p class="legend"><span>Box: where the run is</span><span>Arrow: what it does next</span><span class="a">Amber: it tries again</span><span class="r">Red: it stops, with the reason</span><span class="b">Dot: the run</span><span class="g">Advisor: reviews that step, advice only</span></p>
 {chart.section(None)}
 </main>
 <script src="/static/topo.js" defer></script><script src="/static/glass.js" defer></script><script src="/static/chart.js"></script>

@@ -281,34 +281,44 @@ details.eng > summary::after { content: "Show"; color: var(--blue); font-weight:
 .chart-modes { width: max-content; } .chart-modes label { min-height: 36px; padding: 2px 16px; }
 .chart-box { padding: 12px; overflow-x: auto; }
 .chart-svg { width: 100%; min-width: 640px; height: auto; display: block; cursor: pointer; }
-.cn rect { fill: var(--surface-2); stroke: var(--hair); stroke-width: 1.2; transition: stroke .3s, fill .3s; }
-.cn text { font: 600 14px var(--font); fill: var(--label-2); letter-spacing: -.01em; }
-.cn.seen rect { stroke: color-mix(in srgb, var(--green) 60%, transparent); } .cn.seen text { fill: var(--label); }
-.cn.on rect { stroke: var(--blue); stroke-width: 2.5; fill: color-mix(in srgb, var(--blue) 14%, var(--surface-2)); } .cn.on text { fill: var(--label); }
-.ce { fill: none; stroke: var(--label-3); stroke-width: 1.6; transition: stroke .3s; }
-.ce.warn { stroke: color-mix(in srgb, var(--orange) 55%, transparent); stroke-dasharray: 5 4; }
-.ce.bad { stroke: color-mix(in srgb, var(--red) 45%, transparent); }
-.ce.seen { stroke: color-mix(in srgb, var(--green) 70%, transparent); }
+.cn rect { fill: var(--surface-2); stroke: var(--hair); stroke-width: 1.2; transition: stroke .35s, fill .35s; }
+.cn text { font: 600 14px var(--font); fill: var(--label-2); letter-spacing: -.01em; transition: fill .35s; }
+.cn.seen rect { stroke: color-mix(in srgb, var(--green) 55%, transparent); } .cn.seen text { fill: var(--label); }
+.cn.on rect { stroke: var(--blue); stroke-width: 2; fill: color-mix(in srgb, var(--blue) 16%, var(--surface-2)); }
+.cn.on text { fill: var(--label); }
+@media (prefers-reduced-motion: no-preference) { .cn.on rect { animation: cn-breathe 2.4s ease-in-out infinite; } }
+@keyframes cn-breathe { 50% { stroke-width: 3.5; stroke: color-mix(in srgb, var(--blue) 70%, white); } }
+.ce { fill: none; stroke: var(--label-3); stroke-width: 1.5; opacity: .55; transition: stroke .35s, opacity .35s; }
+.ce.warn { stroke: var(--orange); stroke-dasharray: 4 4; opacity: .45; }
+.ce.bad { stroke: var(--red); opacity: .3; }
+.ce.seen { stroke: color-mix(in srgb, var(--green) 75%, transparent); opacity: 1; }
 .ce.warn.seen { stroke: var(--orange); } .ce.bad.seen { stroke: var(--red); }
-.ce.hot { stroke-width: 3; stroke: var(--blue); } .ce.warn.hot { stroke: var(--orange); } .ce.bad.hot { stroke: var(--red); }
+.ce.hot { opacity: .9; }
+.beam { fill: none; stroke: var(--blue); stroke-width: 3; stroke-linecap: round; transition: opacity .8s; }
+.beam.warn { stroke: var(--orange); } .beam.bad { stroke: var(--red); } .beam.fade { opacity: 0; }
 .mk.g { fill: var(--label-3); } .mk.a { fill: var(--orange); } .mk.r { fill: var(--red); }
-.cl { font: 12.5px var(--font); fill: var(--label-2); } .cl.warn { fill: var(--orange); }
-.cpill rect { fill: color-mix(in srgb, var(--red) 9%, var(--surface-2)); stroke: color-mix(in srgb, var(--red) 35%, transparent); }
-.cpill text { font: 500 12.5px var(--font); fill: var(--label-2); }
-.cpill.on rect { stroke: var(--red); stroke-width: 2.5; fill: color-mix(in srgb, var(--red) 18%, var(--surface-2)); } .cpill.on text { fill: var(--label); }
-.ctok { fill: var(--blue); stroke: var(--surface); stroke-width: 3; }
+.cl { font: 12.5px var(--font); fill: var(--label-3); }
+.lane { font: 600 11px var(--font); letter-spacing: .06em; text-transform: uppercase; fill: var(--label-3); }
+.cloop rect { fill: color-mix(in srgb, var(--orange) 7%, var(--surface-2)); stroke: color-mix(in srgb, var(--orange) 35%, transparent);
+  stroke-width: 1.2; transition: stroke .35s, fill .35s; }
+.cloop .t1 { font: 600 12.5px var(--font); fill: var(--orange); } .cloop .t2 { font: 11.5px var(--font); fill: var(--label-2); }
+.cloop.on rect { stroke: var(--orange); stroke-width: 2; fill: color-mix(in srgb, var(--orange) 16%, var(--surface-2)); }
+.cloop.seen rect { stroke: color-mix(in srgb, var(--orange) 70%, transparent); }
+.cpill rect { fill: color-mix(in srgb, var(--red) 6%, var(--surface-2)); stroke: color-mix(in srgb, var(--red) 28%, transparent); }
+.cpill text { font: 500 12.5px var(--font); fill: var(--label-3); }
+.cpill.on rect { stroke: var(--red); stroke-width: 2; fill: color-mix(in srgb, var(--red) 18%, var(--surface-2)); } .cpill.on text { fill: var(--label); }
+.ctok { fill: var(--blue); stroke: var(--surface); stroke-width: 2.5; }
+/* an advisor: a quiet second line inside the box of the step it reviews (advice only) */
+.cn text.cadv { font: 500 11.5px var(--font); fill: var(--label-3); letter-spacing: 0; }
+.cadv .adot { fill: var(--label-3); } .cadv.on .adot { fill: var(--green); } .cadv.answered .adot { fill: var(--blue); }
+.cadv.blocked .adot, .cadv.failed .adot { fill: var(--orange); } .cn.seen text.cadv, .cn.on text.cadv { fill: var(--label-2); }
 .chart-cap { margin: 0 6px; font-size: 16px; min-height: 24px; }
 .chart.paused .chart-hint::after { content: " (paused)"; color: var(--orange); }
 .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 0 6px; font-size: 14px; color: var(--label-2); }
 .legend span::before { content: ""; display: inline-block; width: 18px; height: 3px; border-radius: 2px; margin-right: 7px; vertical-align: middle; background: var(--label-3); }
+.legend .g::before { background: var(--green); height: 8px; width: 8px; border-radius: 50%; }
 .legend .a::before { background: var(--orange); } .legend .r::before { background: var(--red); } .legend .b::before { background: var(--blue); height: 10px; width: 10px; border-radius: 50%; }
 
-/* advisors on the chart: dotted, beside the step they review; they never change the run */
-.ce.adv-link { stroke: var(--label-3); stroke-dasharray: 2 4; }
-.cadv rect { fill: transparent; stroke: var(--label-3); stroke-dasharray: 4 4; }
-.cadv text { font: 500 12.5px var(--font); fill: var(--label-3); }
-.cadv.answered rect { stroke: var(--blue); stroke-dasharray: none; fill: color-mix(in srgb, var(--blue) 10%, var(--surface-2)); }
-.cadv.answered text { fill: var(--label); } .cadv.blocked rect, .cadv.failed rect { stroke: var(--orange); } .cadv.blocked text { fill: var(--orange); }
 
 /* connect a repo: the build's latest output, folded */
 details.foot > summary { cursor: pointer; color: var(--blue); }

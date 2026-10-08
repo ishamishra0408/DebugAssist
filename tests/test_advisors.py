@@ -132,10 +132,10 @@ def test_an_unreachable_server_is_a_note_not_a_stop(monkeypatch, tmp_path):
 def test_the_chart_shows_each_seat_beside_the_step_it_reviews(monkeypatch, tmp_path):
     _cfg(monkeypatch, tmp_path)
     svg = chart.svg(chart.advisor_states(None))
-    assert 'id="ca-why"' in svg and "Advisor allspaw: off" in svg and "Advisor qe-ic-advisor: off" in svg
+    assert 'id="ca-why"' in svg and "Advisor allspaw · off" in svg and "Advisor qe-ic-advisor · off" in svg
     done = chart.advisor_states({"state": {"advisors": {"why_it_shipped": {"status": "ANSWERED"}}}})
     assert done == {"read_issue": "OFF", "find_cause": "OFF", "why_it_shipped": "ANSWERED", "lasting_guard": "OFF"}
-    assert 'id="ca-triaged"' in svg and 'id="ca-cause"' in svg and "Advisor cause-locator: off" in svg
+    assert 'id="ca-triaged"' in svg and 'id="ca-cause"' in svg and "Advisor cause-locator · off" in svg
 
 
 def test_the_check_asks_both_review_points_once_and_says_it_is_a_test(fake_server):

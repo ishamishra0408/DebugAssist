@@ -21,16 +21,20 @@ STOPS = {"issue": "Stopped: not a bug, or a person must read it", "triaged": "St
          "context": "Stopped: bug never shown (4 tries)", "shown": "Stopped: cause not found",
          "cause": "Stopped: no fix passed (3 tries)", "proven": "Stopped: could not explain why it slipped",
          "why": "Stopped: no check for similar bugs", "wait": "Stopped: you said no"}
-# retries: (id, from state, to state, label)
-LOOPS = [("try", "context", "context", "test failed for another reason: try again"),
-         ("refix", "cause", "cause", "fix failed the tests: try again"),
-         ("round2", "fixed", "cause", "second test failed: write the fix again")]
+# retries: (id, from state, to state, what it does, why) — each drawn as an amber card in the left lane
+LOOPS = [("try", "context", "context", "Try again · up to 4 tries", "the test failed for another reason"),
+         ("refix", "cause", "cause", "Try again · up to 3 fixes", "the fix failed the tests"),
+         ("round2", "fixed", "cause", "Write the fix again", "the second test failed")]
 EXIT_FROM = {"NEEDS PERSON": "issue", "NOT A DEFECT": "issue", "CONTEXT NOT FOUND": "triaged",
              "NEVER REPRODUCED": "context", "CAUSE NOT FOUND": "shown", "FIX NOT VALIDATED": "cause",
              "TEST FLAWED": "cause", "STORY NOT WRITTEN": "proven", "GUARD NOT WRITTEN": "why", "REJECTED": "wait"}
 
-W, X0, BW, BH, GAP, TOP = 1000, 330, 250, 52, 100, 28  # canvas width, box x, box w/h, vertical pitch, top
-PX, PW = 680, 300                                         # stop pills: x and width
+# Three lanes that never share space (Isha 2026-10-08: the advisor tags and the retry labels drew over each other):
+# left, the retries (amber cards); middle, the states (an advisor's line sits inside the box of the step it reviews);
+# right, where a run stops (red pills).
+W, X0, BW, BH, GAP, TOP = 1000, 330, 260, 58, 106, 28   # canvas width, box x, box w/h, vertical pitch, top
+PX, PW = 680, 296                                         # stop pills: x and width
+LX, LW, LH = 56, 206, 44                                  # retry cards: x, width, height (right edge 70 px left of the boxes)
 
 
 def _y(i: int) -> int:
@@ -58,49 +62,53 @@ def svg(adv: dict | None = None) -> str:
     adv = adv or {}
     idx = {s: i for i, (s, _) in enumerate(STATES)}
     cx = X0 + BW / 2
-    parts = ['<defs>'
-             '<marker id="cG" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="mk g"/></marker>'
-             '<marker id="cA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="mk a"/></marker>'
-             '<marker id="cR" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="mk r"/></marker>'
-             '</defs>']
+    mk = lambda i, c: (f'<marker id="{i}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" '  # noqa: E731
+                       f'orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="mk {c}"/></marker>')
+    parts = ['<defs>' + mk("cG", "g") + mk("cA", "a") + mk("cR", "r")
+             + '<filter id="cGlow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3.5" result="b"/>'
+               '<feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>'
+               '<filter id="cLift" x="-20%" y="-40%" width="140%" height="190%"><feDropShadow dx="0" dy="3" stdDeviation="6" '
+               'flood-color="#000" flood-opacity=".28"/></filter></defs>',
+             '<g class="lanes" aria-hidden="true">'
+             f'<text class="lane" x="{LX + LW / 2}" y="14" text-anchor="middle">Tries again</text>'
+             f'<text class="lane" x="{cx}" y="14" text-anchor="middle">Where the run is</text>'
+             f'<text class="lane" x="{PX + PW / 2}" y="14" text-anchor="middle">Stops, with the reason</text></g>']
     # spine: one arrow per action
     for i, act in enumerate(ACTIONS):
         y1, y2 = _y(i) + BH, _y(i + 1)
         parts.append(f'<path class="ce" id="ce-{STATES[i][0]}" d="M{cx} {y1 + 2} L{cx} {y2 - 4}" marker-end="url(#cG)"/>')
         parts.append(f'<text class="cl" x="{cx + 12}" y="{(y1 + y2) / 2 + 4}">{_e(act)}</text>')
-    # retries on the left
-    for lid, a, b, label in LOOPS:
+    # retries: a small loop beside the box, and its card in the left lane
+    for lid, a, b, title, why in LOOPS:
         ya, yb = _y(idx[a]) + BH / 2, _y(idx[b]) + BH / 2
-        if a == b:
-            d = f"M{X0} {ya + 10} C{X0 - 90} {ya + 46}, {X0 - 90} {ya - 46}, {X0 - 4} {ya - 10}"
-            ty = ya + 4
-        else:
-            d = f"M{X0} {ya} C{X0 - 140} {ya}, {X0 - 140} {yb}, {X0 - 4} {yb}"
-            ty = (ya + yb) / 2 + 4
+        if a == b:   # back into the same box: out of its lower left, into its upper left
+            d = f"M{X0} {ya + 12} C{X0 - 58} {ya + 34}, {X0 - 58} {ya - 34}, {X0 - 3} {ya - 12}"
+        else:        # back up to an earlier box: into its bottom edge, clear of that box's own loop
+            d = f"M{X0} {ya} C{X0 - 46} {ya}, {X0 + 30} {_y(idx[b]) + BH + 36}, {X0 + 30} {_y(idx[b]) + BH + 3}"
         parts.append(f'<path class="ce warn" id="ce-{lid}" d="{d}" marker-end="url(#cA)"/>')
-        parts.append(f'<text class="cl warn" x="{X0 - 104 if a == b else X0 - 128}" y="{ty}" text-anchor="end">'
-                     + "".join(f'<tspan x="{X0 - 104 if a == b else X0 - 128}" dy="{0 if k == 0 else 15}">{_e(w)}</tspan>'
-                               for k, w in enumerate(label.split(": ")))
-                     + '</text>')
+        parts.append(f'<g class="cloop" id="cl-{lid}"><rect x="{LX}" y="{ya - LH / 2}" width="{LW}" height="{LH}" rx="12"/>'
+                     f'<text x="{LX + 14}" y="{ya - 3}" class="t1">{_e(title)}</text>'
+                     f'<text x="{LX + 14}" y="{ya + 13}" class="t2">{_e(why)}</text></g>')
     # stops on the right
     for s, reason in STOPS.items():
         y = _y(idx[s]) + BH / 2
         parts.append(f'<path class="ce bad" id="ce-stop-{s}" d="M{X0 + BW} {y} L{PX - 4} {y}" marker-end="url(#cR)"/>')
         parts.append(f'<g class="cpill" id="cp-{s}"><rect x="{PX}" y="{y - 17}" width="{PW}" height="34" rx="17"/>'
                      f'<text x="{PX + PW / 2}" y="{y + 4}" text-anchor="middle">{_e(reason)}</text></g>')
-    # advisors: a seat beside the step it reviews (advice only; dotted, because it never changes the run)
-    for s, step in ADVISED.items():
-        y, st = _y(idx[s]) + BH / 2, adv.get(step, "OFF")
-        seat = REVIEWS[step]["seat"]
-        parts.append(f'<path class="ce adv-link" d="M{X0 - 44} {y} L{X0 - 4} {y}"/>')
-        parts.append(f'<g class="cadv {st.lower()}" id="ca-{s}"><rect x="{X0 - 294}" y="{y - 17}" width="250" height="34" rx="17"/>'
-                     f'<text x="{X0 - 169}" y="{y + 4}" text-anchor="middle">Advisor {_e(seat)}: {_e(ADV_WORD.get(st, st.lower()))}</text></g>')
-    # states
+    # states; a step an advisor reviews carries it as a second line (advice only: it never changes the run)
     for i, (s, label) in enumerate(STATES):
         y = _y(i)
-        parts.append(f'<g class="cn" id="cn-{s}"><rect x="{X0}" y="{y}" width="{BW}" height="{BH}" rx="14"/>'
-                     f'<text x="{cx}" y="{y + BH / 2 + 5}" text-anchor="middle">{_e(label)}</text></g>')
-    parts.append('<circle class="ctok" r="8" cx="-20" cy="-20"/>')
+        step = ADVISED.get(s)
+        if step:
+            st = adv.get(step, "OFF")
+            seat = REVIEWS[step]["seat"]
+            inner = (f'<text x="{cx}" y="{y + BH / 2 - 3}" text-anchor="middle">{_e(label)}</text>'
+                     f'<text class="cadv {st.lower()}" id="ca-{s}" x="{cx}" y="{y + BH / 2 + 15}" text-anchor="middle">'
+                     f'<tspan class="adot">●</tspan> Advisor {_e(seat)} · {_e(ADV_WORD.get(st, st.lower()))}</text>')
+        else:
+            inner = f'<text x="{cx}" y="{y + BH / 2 + 5}" text-anchor="middle">{_e(label)}</text>'
+        parts.append(f'<g class="cn" id="cn-{s}"><rect x="{X0}" y="{y}" width="{BW}" height="{BH}" rx="14" filter="url(#cLift)"/>{inner}</g>')
+    parts.append('<g class="beams"></g><circle class="ctok" r="7" cx="-20" cy="-20" filter="url(#cGlow)"/>')
     h = _y(len(STATES) - 1) + BH + TOP
     return (f'<svg class="chart-svg" viewBox="0 0 {W} {h}" role="img" aria-label="How a run moves: states and the '
             f'actions between them">{"".join(parts)}</svg>')
