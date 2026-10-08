@@ -352,7 +352,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
             trail = e(plain.duration(secs[r["key"]])) if secs.get(r["key"]) is not None else ""
             if r["key"] == "reproduce" and proof_html:
                 trail = (f'<button type="button" class="tbtn proof-btn" popovertarget="proof">{icons.check(14)}'
-                         f'<span>See the proof</span></button>') + trail
+                         f'<span>Check proof</span></button>') + trail
         elif st == "running":
             sub = " · ".join(chips[-2:] + ([cnt] if cnt else [])) or "Starting this step"
             trail = _since(d, d.get("since"), is_replay)
@@ -504,10 +504,10 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
 {_k("final", f'<i hidden data-final="{int(final)}"></i>')}
 {eng}
 </main>
-{f"""<div id="proof" popover class="pop sheet glass" aria-label="Proof the bug happens">
+<div id="proof" popover class="pop sheet glass" aria-label="Proof the bug happens">
   <div class="pop-head"><b>Proof the bug happens</b><button type="button" class="tbtn" popovertarget="proof" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>
-  {_k("proof", proof_html)}
-</div>""" if proof_html else ""}
+  {_k("proof", proof_html or '<div class="proof"><p class="foot">Not shown yet.</p></div>')}
+</div>
 <div id="acts" popover class="pop glass" aria-label="Latest activity">
   <div class="pop-head"><b>Latest activity</b><button type="button" class="tbtn" popovertarget="acts" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>
   {_k("log", f'<ul class="rows acts-list">{acts or "<li class=row><span></span><span class=t><span>Nothing yet</span></span></li>"}</ul>')}

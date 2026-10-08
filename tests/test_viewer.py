@@ -191,7 +191,7 @@ def test_show_the_bug_carries_its_proof(tmp_path, monkeypatch):
                         "evidence": "AssertionError: expected [ { type: 'tool-call' } ] to strictly equal []\nwriter's symptom: emits a tool-call"},
                        {"step": "reproduce", "n": 3, "rung": "integration", "outcome": "RED", "test_path": integ, "evidence": "AssertionError: same"}]}
     page = viewer.render(_data(state=st), mode="live")
-    assert 'popovertarget="proof"' in page and "See the proof" in page and '<div id="proof" popover' in page
+    assert 'popovertarget="proof"' in page and "Check proof" in page and '<div id="proof" popover' in page
     sheet = page.split('<div id="proof"')[1].split('<div id="acts"')[0]
     text = re.sub(r"<[^>]+>", " ", sheet)
     # the checklist, in Isha's order: the repo's own tests first, then what was written at each level
@@ -212,4 +212,12 @@ def test_show_the_bug_carries_its_proof(tmp_path, monkeypatch):
     sheet = viewer.render(_data(state=old), mode="live").split('<div id="proof"')[1]
     assert "Not checked" in sheet and "Waiting for the fix" in sheet
     no = viewer.render(_data(state={**st, "repro": {"status": "NEVER REPRODUCED"}}), mode="live")
-    assert "See the proof" not in no
+    assert "Check proof" not in no and '<div id="proof" popover' in no   # the sheet is always there
+
+
+def test_a_proof_button_added_by_a_live_update_has_a_sheet_to_open():
+    """2026-10-08, live run of #22288: the page was opened while the bug was not shown yet; the update added the
+    button, but the sheet existed only on pages built after the proof, so the button opened nothing."""
+    st = {**_data()["state"], "repro": {"status": "RUNNING"}, "attempts": []}
+    before = viewer.render(_data(state=st, interrupt={}, next=["reproduce"]), mode="live")
+    assert '<div id="proof" popover' in before and 'data-k="proof"' in before and "Not shown yet." in before
