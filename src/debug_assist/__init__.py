@@ -10,6 +10,7 @@
   uv run debug-assist cleanup [--yes]                               delete finished runs' code copies (dry run without --yes)
   uv run debug-assist view <run-id> [--watch]                       the run viewer: runs/<run-id>/view.html (read-only)
   uv run debug-assist serve [--port=8777]                           the run viewer on localhost, live (run/resume open it)
+  uv run debug-assist laya-serve [--port=8790]                      Laya for hosted runs (needs LAYA_TOKEN; put a tunnel in front)
 
 --focus=TEXT            the one problem in the issue to reproduce (default: the issue's title)
 --focus-heading=HEADING the same, taken from the issue's section under that markdown heading
@@ -23,7 +24,7 @@ import sys
 from contextlib import ExitStack
 from datetime import datetime
 
-COMMANDS = {"preflight", "run", "resume", "approve", "reject", "status", "events", "cleanup", "view", "serve"}
+COMMANDS = {"preflight", "run", "resume", "approve", "reject", "status", "events", "cleanup", "view", "serve", "laya-serve"}
 
 
 def _tracing():
@@ -123,7 +124,7 @@ def _open_viewer(run_id: str, port: int) -> None:
 def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     flags = {a for a in sys.argv[1:] if a.startswith("--")}
-    if not args or args[0] not in COMMANDS or (len(args) < 2 and args[0] not in ("cleanup", "serve")):
+    if not args or args[0] not in COMMANDS or (len(args) < 2 and args[0] not in ("cleanup", "serve", "laya-serve")):
         print(__doc__)
         sys.exit(2)
     cmd, arg = args[0], (args[1] if len(args) > 1 else "")
@@ -135,6 +136,10 @@ def main() -> None:
         return
     if cmd == "cleanup":
         _cleanup(yes="--yes" in flags)
+        return
+    if cmd == "laya-serve":
+        from .laya_server import serve as laya_serve
+        laya_serve(int(opts.get("port", 8790)))
         return
     if cmd == "serve":
         from .server import PORT, serve
@@ -216,6 +221,9 @@ def main() -> None:
         elif cmd in {"approve", "reject"}:
             app.invoke(Command(resume="go" if cmd == "approve" else "reject"), cfg)
 
+    if CFG.sandbox_backend == "e2b":  # the run paused, stopped or finished: end its sandboxes now, not in an hour
+        from .sandbox_e2b import close_run
+        close_run(run_id)
     snap, intr = _pause(app, cfg)
     print("\n".join(snap.values.get("log", [])))
     print(_summary(snap.values, run_id))

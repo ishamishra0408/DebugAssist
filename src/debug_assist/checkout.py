@@ -26,6 +26,9 @@ def check_base(profile) -> tuple[bool, str]:
     dirty = subprocess.run(["git", "-C", str(b), "status", "--porcelain"], capture_output=True, text=True).stdout
     if dirty.strip():
         return False, f"base has edits ({len(dirty.splitlines())} files); runs must start from unmodified code"
+    from .config import CFG
+    if CFG.sandbox_backend == "e2b":  # hosted: the base is source only; installs and builds live in the E2B template
+        return True, f"{b.name}, clean, source only (installs and builds are in the E2B template)"
     if not (b / "node_modules").exists() and profile.language == "typescript":
         return False, "base is not installed (no node_modules)"
     return True, f"{b.name}, clean, installed"

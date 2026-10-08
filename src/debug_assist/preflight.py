@@ -35,6 +35,23 @@ def _http(url, headers=None, timeout=4):
         return None, str(e), {}
 
 
+def check_e2b() -> Check:
+    """Hosted runs: the E2B key and template exist, and a sandbox starts and ends (about a second, a fraction of a cent)."""
+    import os
+    if not os.environ.get("E2B_API_KEY"):
+        return Check("Sandbox (E2B)", "FAIL", "E2B_API_KEY not set", "add it to the host's environment yourself (never in chat)")
+    if not CFG.e2b_template:
+        return Check("Sandbox (E2B)", "FAIL", "E2B_TEMPLATE not set", "build it: uv run python scripts/e2b_template.py vercel/ai --build")
+    try:
+        from e2b import Sandbox
+        sbx = Sandbox.create(template=CFG.e2b_template, timeout=60, allow_internet_access=False)
+        sbx.kill()
+    except Exception as e:
+        return Check("Sandbox (E2B)", "FAIL", f"could not start a sandbox ({type(e).__name__}: {str(e)[:120]})",
+                     "check the key and the template name")
+    return Check("Sandbox (E2B)", "PASS", f"template {CFG.e2b_template} starts with internet access off")
+
+
 def check_docker(image: str | None) -> Check:
     try:
         up = subprocess.run(["docker", "info"], capture_output=True, timeout=8).returncode == 0
@@ -102,6 +119,8 @@ def check_ollama() -> tuple[Check, int | None]:
 
 
 def check_laya() -> Check:
+    if CFG.laya_url:  # hosted: Laya answers from the Mac through the tunnel
+        return check_remote_laya()
     triage = Path(CFG.laya_triage_checkpoint) / "model.safetensors"
     if not triage.exists():
         return Check("Laya", "FAIL", f"fine-tuned triage model missing at {triage.parent}",
@@ -115,6 +134,20 @@ def check_laya() -> Check:
         return Check("Laya", "FAIL", f"general model {CFG.laya_checkpoint} missing cached files: {missing}",
                      "run once online: uv run python -c \"import laya_mlx; laya_mlx.load('aac6fef/laya-mlx')\"")
     return Check("Laya", "PASS", "triage (fine-tuned) + general checkpoints on disk")
+
+
+def check_remote_laya() -> Check:
+    """The Mac's Laya API is up, reachable, and accepts our token (one tiny decision, milliseconds, $0)."""
+    if len(CFG.laya_token) < 24:
+        return Check("Laya", "FAIL", "LAYA_URL is set but LAYA_TOKEN is missing or short", "set the same LAYA_TOKEN here and on the Mac")
+    try:
+        from .models import _remote_decide
+        _remote_decide("probe", {"ok": {"type": "choice", "instructions": "Is this a probe?",
+                                        "criteria": {"yes": "it is", "no": "it is not"}}}, "general")
+    except Exception as e:
+        return Check("Laya", "FAIL", f"the Mac's Laya API did not answer ({type(e).__name__}: {str(e)[:100]})",
+                     "on the Mac: LAYA_TOKEN=... uv run debug-assist laya-serve, and keep the tunnel running")
+    return Check("Laya", "PASS", "answering from the Mac through the tunnel")
 
 
 def check_openrouter(demo: bool) -> Check:
@@ -208,7 +241,7 @@ def run_preflight(issue_url: str, demo: bool = False, trace: bool = True) -> lis
     except UnknownRepo as e:
         image = None
         checks.append(Check("Repo profile", "FAIL", str(e), "add the repo to profiles.py"))
-    checks.append(check_docker(image))
+    checks.append(check_e2b() if CFG.sandbox_backend == "e2b" else check_docker(image))
     checks.append(check_mongo())
     oll, dims = check_ollama()
     checks.append(check_vector_index(dims))

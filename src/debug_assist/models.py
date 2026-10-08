@@ -26,13 +26,25 @@ def laya(which: str = "general"):
 
 
 def decide(state_text: str, questions: dict, which: str = "general") -> dict:
-    """Typed decisions with calibrated probabilities (local, milliseconds, $0)."""
+    """Typed decisions with calibrated probabilities (local, milliseconds, $0). Hosted: the same Laya, on the Mac."""
     t0 = time.monotonic()
-    answers = laya(which).predict(state_text, questions)["answers"]
+    answers = (_remote_decide(state_text, questions, which) if CFG.laya_url
+               else laya(which).predict(state_text, questions)["answers"])
     events.log("laya", model=which, ms=round((time.monotonic() - t0) * 1000),
                answers={q: {k: a[k] for k in ("choice", "noul", "answer_confidence") if k in a}
                         for q, a in answers.items()})
     return answers
+
+
+def _remote_decide(state_text: str, questions: dict, which: str) -> dict:
+    """Ask laya_server.py on the Mac (through the tunnel). The shared secret goes in a header, never in the URL."""
+    import json
+    import urllib.request
+    req = urllib.request.Request(f"{CFG.laya_url}/decide", method="POST",
+                                 data=json.dumps({"text": state_text, "questions": questions, "which": which}).encode(),
+                                 headers={"Content-Type": "application/json", "X-Laya-Token": CFG.laya_token})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.load(r)["answers"]
 
 
 @lru_cache(maxsize=1)

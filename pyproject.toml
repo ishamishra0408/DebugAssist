@@ -9,12 +9,13 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "arize-phoenix-otel>=0.17.2",
+    "e2b>=1.0",
     "langchain-mcp-adapters>=0.3.2",
     "langchain-ollama>=1.1.0",
     "langchain-openrouter>=0.2.9",
     "langgraph>=1.2.14",
     "langgraph-checkpoint-mongodb>=0.5.0",
-    "laya-mlx>=0.3.0",
+    "laya-mlx>=0.3.0; sys_platform == 'darwin' and platform_machine == 'arm64'",  # Apple chips only; hosted runs ask the Mac (LAYA_URL)
     "openinference-instrumentation-langchain>=0.1.78",
     "pymongo>=4.17.0",
     "python-dotenv>=1.2.4",

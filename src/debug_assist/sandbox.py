@@ -32,6 +32,10 @@ def image_env_names(image: str = IMAGE) -> frozenset:
 
 def run_in_sandbox(command: str, workdir: Path, network: bool = False, timeout: int = 600,
                    image: str = IMAGE) -> subprocess.CompletedProcess:
+    from .config import CFG
+    if CFG.sandbox_backend == "e2b":  # hosted: the same contract in an E2B sandbox (sandbox_e2b.py)
+        from .sandbox_e2b import run
+        return run(command, workdir, network=network, timeout=timeout, image=image)
     ctx = events.current()
     if ctx:
         timeout = meter.reserve_seconds(ctx["run_id"], timeout)  # may shrink to what the run has left, or refuse
@@ -68,6 +72,10 @@ def run_in_sandbox(command: str, workdir: Path, network: bool = False, timeout: 
 def secrets_visible(workdir: Path, image: str) -> list[str]:
     """Secret-looking env names inside the container that the image itself didn't declare. Works in any image
     (uses `env`, not python). Empty list = clean."""
+    from .config import CFG
+    if CFG.sandbox_backend == "e2b":
+        from .sandbox_e2b import secrets_visible as e2b_secrets
+        return e2b_secrets(workdir)
     r = run_in_sandbox("env", workdir, image=image, timeout=60)
     if r.returncode != 0:
         return [f"PROBE_FAILED: {r.stderr.strip()[:200]}"]

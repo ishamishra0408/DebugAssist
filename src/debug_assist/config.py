@@ -22,11 +22,17 @@ class Config:
     laya_checkpoint: str = os.getenv("LAYA_CHECKPOINT", "aac6fef/laya-mlx")  # general decisions (guard class, checks)
     # Fine-tuned on Colab 2026-10-06 for triage only (DECISIONS: option B). Test: is_defect 174 → 215 of 232.
     laya_triage_checkpoint: str = os.getenv("LAYA_TRIAGE_CHECKPOINT", str(ROOT / "models" / "laya-triage-mlx"))
+    # Hosted runs ask Laya on Isha's Mac (laya_server.py) through a tunnel; empty = load Laya here
+    laya_url: str = os.getenv("LAYA_URL", "").rstrip("/")
+    laya_token: str = os.getenv("LAYA_TOKEN", "")
     triage_review_below: float = 0.6  # confidence below this → a person checks the triage
     run_budget_usd: float = float(os.getenv("RUN_BUDGET_USD", "0.50"))     # dev runs (Qwen3-Coder-Next)
     demo_budget_usd: float = float(os.getenv("DEMO_BUDGET_USD", "2.50"))   # the Opus demo run (ruled 2026-10-06)
     # Total sandbox wall time per run (install + every test run), reserved before each command (meter.py)
     sandbox_budget_s: int = int(os.getenv("SANDBOX_BUDGET_S", "1800"))
+    # Where test commands run: "docker" on this Mac (default), "e2b" when hosted (Render cannot run Docker)
+    sandbox_backend: str = os.getenv("SANDBOX_BACKEND", "docker").strip().lower()
+    e2b_template: str = os.getenv("E2B_TEMPLATE", "")   # built by scripts/e2b_template.py
     # Advisors over MCP (advisors.py): OFF unless both are set; the second only after the server was reviewed
     advisors_mcp: str = os.getenv("ADVISORS_MCP", "")
     advisors_reviewed: bool = os.getenv("ADVISORS_REVIEWED", "").strip().lower() == "yes"

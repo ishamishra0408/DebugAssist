@@ -154,7 +154,11 @@ def run_at(hist: Path, sha: str, profile, package_dir: str, files: dict, focus: 
 
 def backtest(issue: dict, profile, base: Path, hist: Path, package_dir: str, judges: list, guard_file: tuple,
              anchor_sha: str, focus: str, run_cmd=None, n: int = WINDOW, max_groups: int = MAX_GROUPS) -> dict:
+    from .config import CFG
     from .sandbox import run_in_sandbox
+    if CFG.sandbox_backend == "e2b" and run_cmd is None:
+        # older commits need their own install and their logs read back; the E2B sandbox only syncs one way so far
+        return {"would_have_caught": None, "why": "the back-test runs only with the local sandbox for now"}
     run_cmd = run_cmd or run_in_sandbox
     owner, repo = issue["owner"], issue["repo"]
     commits = window(owner, repo, anchor_sha, n)
