@@ -309,3 +309,9 @@ details.eng > summary::after { content: "Show"; color: var(--blue); font-weight:
 .cadv text { font: 500 12.5px var(--font); fill: var(--label-3); }
 .cadv.answered rect { stroke: var(--blue); stroke-dasharray: none; fill: color-mix(in srgb, var(--blue) 10%, var(--surface-2)); }
 .cadv.answered text { fill: var(--label); } .cadv.blocked rect, .cadv.failed rect { stroke: var(--orange); } .cadv.blocked text { fill: var(--orange); }
+
+/* connect a repo: the build's latest output, folded */
+details.foot > summary { cursor: pointer; color: var(--blue); }
+ul.log { list-style: none; margin: 8px 0 0; padding: 12px 14px; border-radius: 12px; background: var(--surface);
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--label-2); overflow-x: auto; }
+ul.log li { white-space: pre-wrap; word-break: break-word; }

@@ -11,6 +11,7 @@
   uv run debug-assist view <run-id> [--watch]                       the run viewer: runs/<run-id>/view.html (read-only)
   uv run debug-assist serve [--port=8777]                           the run viewer on localhost, live (run/resume open it)
   uv run debug-assist laya-serve [--port=8790]                      Laya for hosted runs (needs LAYA_TOKEN; put a tunnel in front)
+  uv run debug-assist connect <repo-url>                            connect a repo: work out its setup, build its test sandbox, prove its tests
 
 --focus=TEXT            the one problem in the issue to reproduce (default: the issue's title)
 --focus-heading=HEADING the same, taken from the issue's section under that markdown heading
@@ -24,7 +25,7 @@ import sys
 from contextlib import ExitStack
 from datetime import datetime
 
-COMMANDS = {"preflight", "run", "resume", "approve", "reject", "status", "events", "cleanup", "view", "serve", "laya-serve"}
+COMMANDS = {"preflight", "run", "resume", "approve", "reject", "status", "events", "cleanup", "view", "serve", "laya-serve", "connect"}
 
 
 def _tracing():
@@ -137,6 +138,9 @@ def main() -> None:
     if cmd == "cleanup":
         _cleanup(yes="--yes" in flags)
         return
+    if cmd == "connect":
+        from .connect import run_cli
+        sys.exit(run_cli(arg))
     if cmd == "laya-serve":
         from .laya_server import serve as laya_serve
         laya_serve(int(opts.get("port", 8790)))

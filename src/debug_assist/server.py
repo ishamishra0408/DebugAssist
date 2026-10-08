@@ -3,6 +3,7 @@
   uv run debug-assist serve [--port=8777]     http://127.0.0.1:8777/            home: start a run, list of runs
                                               /run/<id>                          one run, live
                                               /replay/<id>?speed=8               a past run played back
+                                              /connect                           connect a repo (connect.py), live
 `run` and `resume` start it (detached, if it isn't up) and open the run's page; --no-view skips that.
 
 What the pages can do (ruled 2026-10-07): read everything, and start a run from a GitHub issue link (Isha asked for
@@ -172,6 +173,32 @@ def start_run(link: str, heading: str, ai: str) -> str:
     return run_id
 
 
+# ── connect a repo: one at a time, started the same way the terminal starts it ───────────────────────────────────
+_connector: dict = {"proc": None, "repo": None}
+
+
+def start_connect(link: str) -> str:
+    from .connect import parse_repo
+    from .profiles import ready
+    try:
+        repo = parse_repo(link)
+    except ValueError as ex:
+        raise Refused(str(ex))
+    if repo in ready():
+        raise Refused(f"{repo} is already connected. Paste one of its issues on the home page.")
+    proc = _connector["proc"]
+    if proc is not None and proc.poll() is None:
+        raise Refused(f"{_connector['repo']} is being connected. Wait for it to finish, then connect another.")
+    folder = CFG.runs_dir / "_connect"
+    folder.mkdir(parents=True, exist_ok=True)
+    with open(folder / f"{repo.replace('/', '-')}.log", "w") as log:
+        _connector["proc"] = subprocess.Popen([sys.executable, "-m", "debug_assist", "connect", f"https://github.com/{repo}"],
+                                              cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                              start_new_session=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
+    _connector["repo"] = repo
+    return repo
+
+
 # ── pages ────────────────────────────────────────────────────────────────────────────────────────────────────────
 def _status_of(run_id: str) -> tuple[str, str] | None:
     """(issue, result) for the run list; None for folders that are not runs (test scripts' trial folders)."""
@@ -276,6 +303,109 @@ def how_page() -> str:
 </body></html>"""
 
 
+CONNECT_STATE = {"done": ("done", "Done"), "running": ("running", "Working"), "waiting": ("pending", "Not started"),
+                 "failed": ("stopped", "Stopped")}
+
+
+def _connected_rows() -> str:
+    from . import icons, profiles
+    e, rows = viewer.e, []
+    for repo in profiles.ready():
+        try:
+            p = profiles.get(repo)
+        except Exception:
+            continue
+        passed = sum(r == "pass" for _, r in p.baseline)
+        sub = (f"Connected {p.connected_at[:10]} · {p.language} · {p.manager} · {passed} of {len(p.baseline)} test suites pass"
+               if p.source == "connected" else f"Set up by hand · {p.language} · {p.manager}")
+        rows.append(f'<li class="row done"><span class="ic">{icons.check()}</span><span class="t"><b>{e(repo)}</b>'
+                    f'<span>{e(sub)}</span></span></li>')
+    return "".join(rows) or '<li class="row pending"><span class="ic"></span><span class="t"><span>None yet</span></span></li>'
+
+
+def _connect_progress(repo: str) -> str:
+    """The six steps of one connection, from MongoDB's `connects`; data-final once it has finished."""
+    from . import icons
+    from .connect import STEPS, status
+    e = viewer.e
+    doc = status(repo) if repo else None
+    if not doc:
+        return '<section hidden></section>'
+    rows = []
+    for s in doc.get("steps") or [{"key": k, "label": label, "status": "waiting"} for k, label in STEPS]:
+        cls, word = CONNECT_STATE.get(s.get("status"), ("pending", s.get("status", "")))
+        ic = icons.STATE[cls]() if cls in icons.STATE else icons.list_(18)
+        rows.append(f'<li class="row {cls}"><span class="ic">{ic}</span><span class="t"><b>{e(s["label"])}</b>'
+                    f'<span>{e(s.get("detail") or word)}</span></span></li>')
+    st = doc.get("status")
+    verdict = {"running": f"Connecting {repo}. It takes 10 to 20 minutes. You can leave this page.",
+               "connected": f"Connected. Issues from {repo} can now be run.",
+               "failed": f"Could not connect {repo}. {doc.get('why', '')}"}.get(st, st)
+    cls = {"running": "s-live", "connected": "s-done", "failed": "s-stopped"}.get(st, "s-idle")
+    log = "".join(f"<li>{e(x)}</li>" for x in (doc.get("log") or [])[-8:])
+    final = ' data-final="1"' if st in ("connected", "failed") else ""
+    return viewer._k("progress", f'<section class="group"{final}>'
+            f'<h2>Connecting {e(repo)}</h2><p class="status {cls}"><span class="dot"></span><span>{e(verdict)}</span></p>'
+            f'<div class="sect"><ul class="rows">{"".join(rows)}</ul></div>'
+            + (f'<details class="foot"><summary>Latest output</summary><ul class="log">{log}</ul></details>' if log else "")
+            + ('<p class="foot"><a href="/">Start a run</a></p>' if st == "connected" else "") + "</section>")
+
+
+def connect_page(repo: str = "") -> str:
+    from . import icons
+    e = viewer.e
+    if not repo and _connector["repo"]:
+        repo = _connector["repo"]
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Connect a repo · {plain.NAME}</title><meta name="color-scheme" content="dark light"><link rel="stylesheet" href="/static/app.css">
+</head><body>
+<canvas id="topo" aria-hidden="true"></canvas><div class="ambient s-idle" aria-hidden="true"></div>
+<div class="scrim top" aria-hidden="true"></div>
+<nav class="toolbar" aria-label="{plain.NAME}">
+  <div class="tgroup glass"><a class="brand" href="/">{icons.mark()}<span>{plain.NAME}</span></a></div>
+  <div class="tgroup glass"><a class="tbtn" href="/" aria-label="New run">{icons.plus(16)}<span class="lbl">New run</span></a>
+    <a class="tbtn" href="/checks" aria-label="System check">{icons.check(16)}<span class="lbl">System check</span></a></div>
+</nav>
+<main>
+<header class="hero"><h1>Connect a repo</h1>
+  <p class="lede">Give it a GitHub repository. It works out how the repo installs and runs its tests, builds a test sandbox for it, and checks the tests pass there. After that, you can run any issue from that repo.</p></header>
+<section class="group" aria-labelledby="h-repo"><h2 id="h-repo">GitHub repository</h2>
+  <div class="sect"><div class="field"><input id="link" type="url" inputmode="url" placeholder="https://github.com/owner/repo" autocomplete="off" aria-label="GitHub repository link" value="{e(f'https://github.com/{repo}' if repo else '')}">
+    <button type="button" class="btn glass prominent" id="go">Connect</button></div></div>
+  <p class="foot">Public repos only, in JavaScript, TypeScript or Python. Building the test sandbox uses a few cents of E2B credit.</p>
+  <p class="err" id="err" role="alert"></p></section>
+{_connect_progress(repo)}
+<section class="group" aria-labelledby="h-conn"><h2 id="h-conn">Connected repos</h2>
+  <div class="sect"><ul class="rows">{_connected_rows()}</ul></div></section>
+</main>
+<script src="/static/topo.js" defer></script><script src="/static/glass.js" defer></script>
+<script>
+const H = {{ "{TOKEN_HEADER}": {json.dumps(TOKEN)}, "Content-Type": "application/json" }};
+const $ = id => document.getElementById(id);
+$("link").addEventListener("keydown", ev => {{ if (ev.key === "Enter") $("go").click(); }});
+$("go").onclick = async () => {{
+  $("err").textContent = ""; $("go").disabled = true;
+  try {{
+    const r = await fetch("/api/connect", {{ method: "POST", headers: H, body: JSON.stringify({{ url: $("link").value.trim() }}) }});
+    const j = await r.json();
+    if (!r.ok) {{ $("go").disabled = false; $("err").textContent = j.error || "Something went wrong."; return; }}
+    location.href = "/connect?repo=" + encodeURIComponent(j.repo);
+  }} catch (ex) {{ $("go").disabled = false; $("err").textContent = "Could not reach {plain.NAME}. Is it still running?"; }}
+}};
+async function poll() {{
+  try {{
+    const r = await fetch(location.href, {{ cache: "no-store" }});
+    const doc = new DOMParser().parseFromString(await r.text(), "text/html");
+    const n = doc.querySelector('[data-k="progress"]'), o = document.querySelector('[data-k="progress"]');
+    if (n && o && n.dataset.h !== o.dataset.h) o.replaceWith(document.importNode(n, true));
+    if (n && n.dataset.final === "1") return location.reload();
+  }} catch (ex) {{}}
+  setTimeout(poll, 3000);
+}}
+if (document.querySelector('[data-k="progress"]') && !document.querySelector('[data-final="1"]')) setTimeout(poll, 3000);
+</script></body></html>"""
+
+
 def home_page() -> str:
     from . import icons
     e = viewer.e
@@ -303,6 +433,7 @@ def home_page() -> str:
 <nav class="toolbar" aria-label="{plain.NAME}">
   <div class="tgroup glass"><a class="brand" href="/">{icons.mark()}<span>{plain.NAME}</span></a></div>
   <div class="tgroup glass"><a class="tbtn" href="#runs" aria-label="Runs">{icons.list_(16)}<span class="lbl">Runs</span></a>
+    <a class="tbtn" href="/connect" aria-label="Connect a repo">{icons.plus(16)}<span class="lbl">Connect a repo</span></a>
     <a class="tbtn" href="/how" aria-label="How it works">{icons.play(16)}<span class="lbl">How it works</span></a>
     <a class="tbtn" href="/checks" aria-label="System check">{icons.check(16)}<span class="lbl">System check</span></a></div>
 </nav>
@@ -451,6 +582,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, checks_page())
             if parts == ["how"]:
                 return self._send(200, how_page())
+            if parts == ["connect"]:
+                from .connect import REPO
+                repo = (q.get("repo") or [""])[0]
+                return self._send(200, connect_page(repo if REPO.match(repo) else ""))
             if len(parts) == 2 and parts[0] == "static" and parts[1] in STATIC_FILES:
                 return self._send(200, (viewer.STATIC / parts[1]).read_text(), STATIC_FILES[parts[1]])
             if parts == ["api", "issue"]:
@@ -500,7 +635,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(302, "", "text/plain", location="/",
                           cookie=f"da_session={make_session()}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_S}{secure}")
 
-    def do_POST(self):  # sign in, or start a run
+    def do_POST(self):  # sign in, start a run, or connect a repo
         self.server.last = time.monotonic()
         if getattr(self.server, "locked", ""):
             return self._send(503, f"{plain.NAME} is locked. {self.server.locked}", "text/plain; charset=utf-8")
@@ -511,21 +646,25 @@ class Handler(BaseHTTPRequestHandler):
         if (not self._host_ok() or not self._token_ok() or not self._origin_ok() or not self._signed_in()
                 or not (self.headers.get("Content-Type") or "").startswith("application/json")):
             return self._json(403, {"error": "Not allowed. Start runs from the DebugAssistAgent home page."})
-        if urlparse(self.path).path != "/api/start":
+        path = urlparse(self.path).path
+        if path not in ("/api/start", "/api/connect"):
             return self._json(404, {"error": "not found"})
         n = int(self.headers.get("Content-Length") or 0)
         if n > 4096:
             return self._json(413, {"error": "too large"})
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
+            if path == "/api/connect":
+                repo = start_connect(str(body.get("url", "")))
+                return self._json(200, {"repo": repo, "page": f"/connect?repo={repo}"})
             rid = start_run(str(body.get("url", "")), str(body.get("heading", "")), str(body.get("ai", "")))
             return self._json(200, {"run_id": rid, "page": f"/run/{rid}"})
         except Refused as r:
-            return self._json(409 if "already going" in str(r) else 400, {"error": str(r)})
+            return self._json(409 if "already going" in str(r) or "being connected" in str(r) else 400, {"error": str(r)})
         except (ValueError, json.JSONDecodeError):
             return self._json(400, {"error": "bad request"})
         except Exception as ex:
-            return self._json(500, {"error": f"Could not start the run ({type(ex).__name__})."})
+            return self._json(500, {"error": f"Could not start ({type(ex).__name__})."})
 
 
 def make(port: int = PORT, host: str = "127.0.0.1") -> ThreadingHTTPServer:

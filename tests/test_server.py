@@ -201,3 +201,52 @@ def test_the_system_check_shows_each_service_in_plain_words(live, monkeypatch):
     assert "Embeddings (Voyage)" in page and "Not working: VOYAGE_API_KEY not set" in page and "To fix:" in page
     import html
     assert "1 thing is not working. A run can't start until it is fixed." in html.unescape(page)
+
+
+def test_a_repo_is_connected_like_the_terminal_connects_it_and_only_one_at_a_time(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "CFG", SimpleNamespace(runs_dir=tmp_path))
+    monkeypatch.setattr("debug_assist.profiles.ready", lambda: ["vercel/ai"])
+    calls = []
+
+    class Proc:
+        def __init__(self, argv, **kw):
+            calls.append(argv)
+
+        def poll(self):
+            return None
+    monkeypatch.setattr(server.subprocess, "Popen", Proc)
+    monkeypatch.setitem(server._connector, "proc", None)
+    monkeypatch.setitem(server._connector, "repo", None)
+    assert server.start_connect("https://github.com/acme/widgets.git") == "acme/widgets"
+    assert calls[0][2:] == ["debug_assist", "connect", "https://github.com/acme/widgets"]
+    assert (tmp_path / "_connect" / "acme-widgets.log").exists() and not server.RUN_ID.match("_connect")  # not a run
+    with pytest.raises(server.Refused, match="being connected"):
+        server.start_connect("https://github.com/acme/other")
+    monkeypatch.setitem(server._connector, "proc", None)
+    with pytest.raises(server.Refused, match="already connected"):
+        server.start_connect("https://github.com/vercel/ai")
+    with pytest.raises(server.Refused, match="not a GitHub repository"):
+        server.start_connect("https://gitlab.com/acme/widgets")
+
+
+def test_the_connect_page_shows_each_step_live_and_only_the_page_can_start_it(live, monkeypatch):
+    doc = {"_id": "acme/widgets", "status": "running", "log": ["Step 3/7: RUN uv sync"], "steps": [
+        {"key": "read", "label": "Read the repo", "status": "done", "detail": "main at fffffff"},
+        {"key": "detect", "label": "Work out its setup", "status": "done", "detail": "package manager uv"},
+        {"key": "build", "label": "Build its test sandbox", "status": "running", "detail": "usually 5 to 15 minutes"},
+        {"key": "prove", "label": "Run its tests", "status": "waiting", "detail": ""}]}
+    monkeypatch.setattr("debug_assist.connect.status", lambda repo: doc if repo == "acme/widgets" else None)
+    monkeypatch.setattr("debug_assist.profiles.ready", lambda: [])
+    monkeypatch.setitem(server._connector, "repo", None)
+    code, page = _get(live, "/connect?repo=acme/widgets")
+    assert code == 200 and "Connecting acme/widgets" in page and 'data-k="progress"' in page and '<section class="group" data-final' not in page
+    assert "package manager uv" in page and "RUN uv sync" in page and "Not started" in page
+    doc["status"], doc["why"] = "failed", "Build its test sandbox: E2B build failed"
+    assert '<section class="group" data-final="1"' in _get(live, "/connect?repo=acme/widgets")[1]
+    assert "Connecting" not in _get(live, "/connect?repo=../../etc")[1]            # a bad name reads nothing
+    started = []
+    monkeypatch.setattr(server, "start_connect", lambda u: started.append(u) or "acme/widgets")
+    body = json.dumps({"url": "https://github.com/acme/widgets"}).encode()
+    assert _get(live, "/api/connect", "POST", {"Content-Type": "application/json"}, body)[0] == 403 and not started
+    code, out = _get(live, "/api/connect", "POST", _ok_headers(live), body)
+    assert code == 200 and json.loads(out)["page"] == "/connect?repo=acme/widgets" and started
