@@ -37,6 +37,7 @@ from .issue_text import TRIAGE_QUESTIONS, clean
 from .guardrails import (GuardrailViolation, assert_no_names, fingerprint, freeze_condition, now,
                          record_approval, verify_approval, verify_condition_frozen)
 from .models import decide, embedder, write
+from . import profiles
 from .profiles import PROFILES, profile_for
 from .sandbox import secrets_visible
 from .store import client, db
@@ -161,7 +162,7 @@ CONTEXT_NOT_FOUND = "CONTEXT NOT FOUND"
 
 def gather_context(s: RunState):
     """One step, no AI: collect what the later steps read (context.py), save it with the run, lock it with a sha256."""
-    prof = PROFILES[s["profile"]["repo"]]
+    prof = profiles.get(s["profile"]["repo"])
     checkout = run_copy(prof, run_dir(s) / "checkout")  # this run's own unmodified code (reused as-is on resume)
     focus = s.get("focus") or s["issue"]["title"]
     try:
@@ -205,7 +206,7 @@ def _write_and_run_test(s: RunState, rung: ladder.Rung, n: int, history: list, c
     evidence; the sandbox runs it with the network off; classify() and the right-reason check decide."""
     drafts = run_dir(s) / "writer"
     drafts.mkdir(exist_ok=True)
-    return testwriter.attempt(s, rung, n, history, ctx, checkout, PROFILES[s["profile"]["repo"]], drafts=drafts)
+    return testwriter.attempt(s, rung, n, history, ctx, checkout, profiles.get(s["profile"]["repo"]), drafts=drafts)
 
 
 def _record_attempt(s: RunState, a: ladder.Attempt) -> ladder.Attempt:
@@ -238,7 +239,7 @@ def reproduce(s: RunState):
         raise GuardrailViolation(f"sandbox exposes secrets or failed its probe: {seen}")
     rungs, skipped = ladder.plan(s["triage"]["has_repro_p"], s["profile"].get("recorded_fixtures", False))
     plan = {"rungs": [r.name for r in rungs], "skipped": skipped, "cap": REPRO_ATTEMPT_CAP}
-    checkout = run_copy(PROFILES[s["profile"]["repo"]], run_dir(s) / "checkout")  # made by Gather context; reused
+    checkout = run_copy(profiles.get(s["profile"]["repo"]), run_dir(s) / "checkout")  # made by Gather context; reused
     ctx = _ctx(s, checkout)
     before = [{k: v for k, v in e.items() if k in ladder.Attempt.__dataclass_fields__}
               for e in events.for_run(s["run_id"]) if e["kind"] == "attempt" and e["step"] == "reproduce"]
@@ -294,7 +295,7 @@ def write_fix(s: RunState):
     checkout = Path(r["checkout"])
     dirty = [p for p in fixer._git(checkout, "diff", "--name-only").split() if p]
     fixer.revert(checkout, dirty)  # a crash mid-step can leave a half-applied attempt; start from clean source
-    prof = PROFILES[s["profile"]["repo"]]
+    prof = profiles.get(s["profile"]["repo"])
     looked = [fixer.find_definition(checkout, n) for n in c.get("looked_up", [])]
     judge = r.get("oracle_test") or r["failing_test"]
     judge_evidence = r.get("oracle_evidence") or r.get("evidence") or ""
@@ -392,7 +393,7 @@ A1_Q = {"a1": {"type": "choice",
 def lasting_guard(s: RunState):
     """guard.py: one test over the CLASS of triggers; it must fail on the unfixed code, and its cases on the fixed code
     say which parts of the class this fix closed and which it left open. Plus every other site with the same line."""
-    prof = PROFILES[s["profile"]["repo"]]
+    prof = profiles.get(s["profile"]["repo"])
     fixed = Path(s["repro"]["checkout"])
     unfixed = run_copy(prof, run_dir(s) / "holdout-base")
     judge = s["repro"].get("oracle_test") or s["repro"]["failing_test"]
@@ -506,7 +507,7 @@ def _backtest_guard(s: RunState) -> dict | None:
     w = ((s.get("second_story") or {}).get("evidence") or {}).get("written") or {}
     if g.get("status") != "CATCHES THE BUG" or not w.get("sha"):
         return None
-    prof = PROFILES[s["profile"]["repo"]]
+    prof = profiles.get(s["profile"]["repo"])
     return backtest.backtest(s["issue"], prof, base_path(prof), run_dir(s) / "history", g["repo_path"].split("/")[1],
                              judges=incident_tests(s),
                              guard_file=(g["repo_path"], Path(g["path"]).read_text()), anchor_sha=w["sha"],

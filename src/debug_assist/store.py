@@ -15,8 +15,8 @@ from .config import CFG
 
 
 @lru_cache(maxsize=1)
-def client() -> MongoClient:
-    return MongoClient(CFG.mongodb_uri, serverSelectionTimeoutMS=5000)
+def client(timeout_ms: int = 5000) -> MongoClient:
+    return MongoClient(CFG.mongodb_uri, serverSelectionTimeoutMS=timeout_ms)
 
 
 def db(name: str | None = None):

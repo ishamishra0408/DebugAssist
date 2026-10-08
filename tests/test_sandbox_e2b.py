@@ -116,3 +116,9 @@ def test_the_secret_probe_flags_only_what_the_template_did_not_declare(e2b, monk
 def test_a_runs_sandboxes_end_together(e2b, monkeypatch):
     sandbox_e2b._sandbox(e2b, "run-1")
     assert sandbox_e2b.close_run("run-1") == 1 and FakeSandbox.made[0].killed
+
+
+def test_each_repo_runs_in_its_own_template(e2b):
+    (e2b / ".git" / "da-template").write_text("debugassist-acme-widgets-1234567\n")
+    sandbox.run_in_sandbox("pytest", e2b)
+    assert FakeSandbox.made[0].kw["template"] == "debugassist-acme-widgets-1234567"

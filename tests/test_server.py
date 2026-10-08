@@ -191,7 +191,8 @@ def test_a_public_address_without_its_password_stays_locked_and_says_why(monkeyp
 
 
 def test_the_system_check_shows_each_service_in_plain_words(live, monkeypatch):
-    from debug_assist import preflight
+    from debug_assist import preflight, profiles
+    monkeypatch.setattr(profiles, "ready", lambda: ["vercel/ai"])
     monkeypatch.setattr(preflight, "run_preflight", lambda url, **k: [
         preflight.Check("MongoDB", "PASS", "writable primary"),
         preflight.Check("Embeddings", "FAIL", "VOYAGE_API_KEY not set", "add it to the host's environment yourself")])

@@ -113,6 +113,7 @@ def _profile_of(run_id: str):
     try:
         from .viewer import _app
         repo = ((_app().get_state({"configurable": {"thread_id": run_id}}).values or {}).get("profile") or {}).get("repo")
-        return PROFILES.get(repo)
+        from . import profiles
+        return profiles.get(repo) if repo else None
     except Exception:
         return None

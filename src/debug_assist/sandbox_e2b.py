@@ -41,13 +41,21 @@ def _sandbox(workdir: Path, run_id: str | None):
     key = str(Path(workdir).resolve())
     if key in _live:
         return _live[key]
-    if not CFG.e2b_template:
+    template = template_for(workdir)
+    if not template:
         raise SandboxUnavailable("E2B_TEMPLATE is not set (build it with scripts/e2b_template.py)")
     Sandbox, _, _ = _sdk()
-    sbx = Sandbox.create(template=CFG.e2b_template, timeout=3600, allow_internet_access=False,
+    sbx = Sandbox.create(template=template, timeout=3600, allow_internet_access=False,
                          metadata={"run": run_id or "", "dir": Path(workdir).name})
     _live[key], _synced[key], _owner[key] = sbx, {}, run_id
     return sbx
+
+
+def template_for(workdir: Path) -> str:
+    """The template this code runs in: written into .git/da-template when the code copy was made (each connected repo
+    has its own); the global E2B_TEMPLATE otherwise."""
+    f = Path(workdir) / ".git" / "da-template"
+    return f.read_text().strip() if f.exists() else CFG.e2b_template
 
 
 def changed_files(workdir: Path) -> set[str]:
@@ -119,7 +127,7 @@ def run(command: str, workdir: Path, network: bool = False, timeout: int = 600, 
     finally:
         if ctx:
             meter.settle_seconds(ctx["run_id"], timeout, time.monotonic() - t0)
-    events.log("sandbox", key=name, command=command[:300], image=f"e2b:{CFG.e2b_template}", network=network,
+    events.log("sandbox", key=name, command=command[:300], image=f"e2b:{template_for(workdir)}", network=network,
                timeout_s=timeout, exit=r.returncode, seconds=round(time.monotonic() - t0, 1), container=sbx_id or name,
                killed=r.returncode == 124, backend="e2b")
     return r

@@ -117,13 +117,11 @@ def _issue_parts(link: str) -> tuple[str, str, int]:
 
 
 def _ready_repo(owner: str, repo: str):
-    from .checkout import check_base
-    from .profiles import PROFILES
-    prof = PROFILES.get(f"{owner}/{repo}")
-    ready = [k for k, p in PROFILES.items() if check_base(p)[0]]
-    if not prof or not check_base(prof)[0]:
-        raise Refused(f"{owner}/{repo} is not set up yet. Repositories that are ready: {', '.join(ready) or 'none'}.")
-    return prof
+    from . import profiles
+    if f"{owner}/{repo}" not in profiles.ready():
+        raise Refused(f"{owner}/{repo} is not connected yet. Connect it first, from Connect a repo. "
+                      f"Connected now: {', '.join(profiles.ready()) or 'none'}.")
+    return profiles.get(f"{owner}/{repo}")
 
 
 def read_issue(link: str) -> dict:
@@ -218,10 +216,10 @@ def checks_page() -> str:
     """Everything a run needs, green or red: the same start-up checks every run does (preflight.py), run now."""
     from . import icons
     from .preflight import run_preflight
-    from .profiles import PROFILES
+    from .profiles import ready
     e = viewer.e
     t0 = time.monotonic()
-    repo = next(iter(PROFILES))
+    repo = (ready() or ["vercel/ai"])[0]
     checks = run_preflight(f"https://github.com/{repo}/issues/1")
     took = time.monotonic() - t0
     word = {"PASS": "Working", "WARN": "Working, with a note", "FAIL": "Not working"}

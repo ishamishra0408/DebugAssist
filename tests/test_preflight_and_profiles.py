@@ -40,7 +40,7 @@ def test_classic_github_token_is_refused(monkeypatch):
 def test_profiles_route_by_language():
     assert profile_for("vercel", "ai").image == NODE_IMAGE
     assert profile_for("langchain-ai", "langchain").image == PYTHON_IMAGE
-    with pytest.raises(UnknownRepo, match="no sandbox profile"):
+    with pytest.raises(UnknownRepo, match="not connected yet"):
         profile_for("someone", "unknown")
 
 

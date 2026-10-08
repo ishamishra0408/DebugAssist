@@ -1,10 +1,14 @@
-"""One profile per repo: which sandbox image, how to install, how to test.
+"""One profile per repo: which sandbox image, how to install, how to test, and where its code and tests live.
+
+Two kinds: BUILT-IN (vercel/ai, set up by hand on 2026-10-06) and CONNECTED (written by the connect-a-repo pipeline,
+connect.py, and stored in MongoDB's `repos` collection). get(repo) finds either; built-ins win.
 
 Two phases (ruled 2026-10-06): INSTALL runs with network (package registries); BUILD and TEST run with network OFF.
 Images are pinned by digest so a new upstream release can't change behaviour mid-week.
 Install/test commands are starting points; Friday's by-hand run refines them per issue.
 """
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, fields
 
 PYTHON_IMAGE = "python@sha256:05cda9777409a9c3ffddd94a4c476b79f0769a0b4857f0c7ed9226b6800b0d6f"  # python:3.12-slim
 NODE_IMAGE = "node@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392"      # node:22-slim
@@ -22,6 +26,19 @@ class RepoProfile:
     recorded_fixtures: bool = False  # the repo ships recorded streams the ladder's integration rung can cut
     base_commit: str = ""            # the pinned commit runs start from (checkout.py), unmodified
     filters: str = ""                # which packages to install and build (monorepos), for {filters}
+    # added for connect-a-repo (2026-10-08); the defaults describe vercel/ai, so the built-in profile is unchanged
+    e2b_template: str = ""           # the E2B template hosted runs start from (built by connect.py or scripts/e2b_template.py)
+    default_branch: str = "main"
+    manager: str = "pnpm"            # pnpm | npm | yarn | uv | poetry | pip
+    runner: str = "vitest"           # vitest | jest | pytest
+    package_globs: tuple = ("packages/*",)          # where packages live (a single-package repo: ("."))
+    source_globs: tuple = ("packages/*/src/**",)    # where source files live (what Gather context searches)
+    test_style: str = "beside"       # new tests go "beside" the source, or in the package's "tests" folder
+    test_suffix: str = ".test.ts"    # how a test file is named: a suffix (".test.ts") or a prefix pattern ("test_*.py")
+    source: str = "built-in"         # built-in | connected
+    connected_at: str = ""
+    baseline: tuple = ()             # (package dir, "pass" | "fail") for each suite run at connection, network off
+    notes: tuple = ()                # what the connection found and why it chose each setting
 
 
 # vercel/ai, proven 2026-10-06 at e7f55a4 in NODE_IMAGE: install 55 s, build 63 s, then provider-utils 1,064, gateway 645
@@ -37,6 +54,7 @@ _PNPM = ("export COREPACK_HOME=/work/.corepack COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 PROFILES = {
     "vercel/ai": RepoProfile(
         "vercel/ai", "typescript", NODE_IMAGE,
+        e2b_template=os.getenv("E2B_TEMPLATE", "debugassist-vercel-ai-e7f55a4"),
         install_cmd="pnpm install --frozen-lockfile --store-dir /work/.pnpm-store {filters}",
         build_cmd="pnpm {filters} build",
         test_cmd="cd packages/{package} && pnpm test:node {test_path}",
@@ -71,8 +89,52 @@ class UnknownRepo(KeyError):
     pass
 
 
+def to_doc(p: RepoProfile) -> dict:
+    return {f.name: (list(getattr(p, f.name)) if isinstance(getattr(p, f.name), tuple) else getattr(p, f.name))
+            for f in fields(RepoProfile)}
+
+
+def from_doc(d: dict) -> RepoProfile:
+    names = {f.name for f in fields(RepoProfile)}
+    return RepoProfile(**{k: (tuple(tuple(x) if isinstance(x, list) else x for x in v) if isinstance(v, list) else v)
+                          for k, v in d.items() if k in names})
+
+
+def connected(repo: str) -> RepoProfile | None:
+    """A repo the connect-a-repo pipeline set up, from MongoDB; None when there is none (or no database)."""
+    try:
+        from .config import CFG
+        from .store import client
+        doc = client(1500)[CFG.db_name]["repos"].find_one({"_id": repo, "status": "connected"}, {"profile": 1})
+    except Exception:
+        return None
+    return from_doc(doc["profile"]) if doc else None
+
+
+def get(repo: str) -> RepoProfile:
+    """The profile for owner/name: built-in first, then connected."""
+    if repo in PROFILES and PROFILES[repo].base_commit:
+        return PROFILES[repo]
+    p = connected(repo)
+    if p:
+        return p
+    if repo in PROFILES:
+        return PROFILES[repo]
+    raise UnknownRepo(f"{repo} is not connected yet. Connect it first (the Connect a repo page).")
+
+
+def ready() -> list[str]:
+    """Repos a run can start on: built-ins with a pinned commit, plus every connected repo."""
+    out = [k for k, p in PROFILES.items() if p.base_commit]
+    try:
+        from .config import CFG
+        from .store import client
+        out += [d["_id"] for d in client(1500)[CFG.db_name]["repos"].find({"status": "connected"}, {"_id": 1})
+                if d["_id"] not in out]
+    except Exception:
+        pass
+    return out
+
+
 def profile_for(owner: str, repo: str) -> RepoProfile:
-    key = f"{owner}/{repo}"
-    if key not in PROFILES:
-        raise UnknownRepo(f"no sandbox profile for {key}; add one to profiles.py (image, install, test)")
-    return PROFILES[key]
+    return get(f"{owner}/{repo}")
