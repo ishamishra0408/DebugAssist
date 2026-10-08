@@ -17,6 +17,8 @@
 
 --focus=TEXT            the one problem in the issue to reproduce (default: the issue's title)
 --focus-heading=HEADING the same, taken from the issue's section under that markdown heading
+--look-in=PATH,PATH     optional: files to look in first for the cause (searched first, named to the AI)
+--test-in=PATH          optional: an existing test file; the unit test is added to it as new cases at its end
 --demo      use the demo model (Claude Opus) under the demo cap ($2.50) instead of Qwen3-Coder-Next ($0.50 cap)
 --no-trace  allowed only on purpose: the run proceeds without Phoenix and records trace OFF
 --no-view   run/resume: don't start the localhost viewer or open the run's page
@@ -246,7 +248,9 @@ def main() -> None:
             meter.open_run(run_id, run_cap({"demo": demo}), CFG.sandbox_budget_s)
             app.invoke({"run_id": run_id, "issue_url": arg, "log": [], "demo": demo, "trace": trace,
                         "preflight": as_records(checks), "focus": opts.get("focus", ""),
-                        "focus_heading": opts.get("focus-heading", "")}, cfg)
+                        "focus_heading": opts.get("focus-heading", ""),
+                        "hints": {"look_in": [p for p in opts.get("look-in", "").split(",") if p],
+                                  "test_in": opts.get("test-in", "")}}, cfg)
         elif cmd == "resume":
             meter.open_run(run_id, run_cap({"demo": demo}), CFG.sandbox_budget_s)  # no-op if it exists (runs from before Thursday get one)
             print(f"resuming {run_id} from after its last finished step")

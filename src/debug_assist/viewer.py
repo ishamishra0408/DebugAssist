@@ -510,9 +510,9 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
 {_k("final", f'<i hidden data-final="{int(final)}"></i>')}
 {eng}
 </main>
-<div id="proof" popover class="pop sheet glass" aria-label="Proof the bug happens">
-  <div class="pop-head"><b>Proof the bug happens</b><button type="button" class="tbtn" popovertarget="proof" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>
-  {_k("proof", proof_html or '<div class="proof"><p class="foot">Not shown yet.</p></div>')}
+<div id="proof" popover class="pop sheet gh" aria-label="Proof the bug happens">
+  <div class="gh-top"><button type="button" class="gh-close" popovertarget="proof" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>
+  <div class="gh-body">{_k("proof", proof_html or '<div class="proof gh-proof"><p class="gh-muted">Not shown yet.</p></div>')}</div>
 </div>
 {_check_pr(d, rid, served and not is_replay, approve, reject) if phase == "waiting" and not is_replay else ""}
 <div id="acts" popover class="pop glass" aria-label="Latest activity">
@@ -531,8 +531,7 @@ const show = (id, text) => {{
   else {{ const pre = document.createElement("pre"); pre.textContent = text; el.appendChild(pre); }}
 }};
 const renderMd = () => {{ const MD = JSON.parse(document.getElementById("md").textContent); show("story", MD.story); show("pr", MD.pr); show("pr-sheet", MD.pr); }};
-{_DECIDE_JS.replace('__TOKEN__', json.dumps(token)) if served else ''} }}
-}});
+{_DECIDE_JS.replace('__TOKEN__', json.dumps(token)) if served else ''}
 const fmt = s => s < 90 ? Math.round(s) + " s" : s < 5400 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h";
 const tick = () => document.querySelectorAll("[data-since]").forEach(el => {{
   el.textContent = fmt(Math.max(0, (Date.now() - Date.parse(el.dataset.since)) / 1000)) + (el.dataset.suffix || "");
@@ -545,6 +544,12 @@ const pagerSync = w => {{ if (w._to == null) pagerMark(w, pagerAt(w)); }};
 const pagerGo = (w, i) => {{ const p = w.querySelector(".pages"); i = Math.max(0, Math.min(p.children.length - 1, i));
   w._to = i; pagerMark(w, i); clearTimeout(w._t); w._t = setTimeout(() => {{ w._to = null; pagerSync(w); }}, 700);
   p.scrollTo({{ left: i * p.clientWidth, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }}); }};
+document.addEventListener("click", ev => {{   // the pull request's tabs
+  const t = ev.target.closest(".gh-tabs [data-tab]"); if (!t) return;
+  const sheet = t.closest(".gh");
+  sheet.querySelectorAll(".gh-tabs [data-tab]").forEach(x => {{ const on = x === t; x.classList.toggle("on", on); x.setAttribute("aria-selected", String(on)); }});
+  sheet.querySelectorAll(".pr-pane").forEach(p => {{ p.hidden = p.dataset.pane !== t.dataset.tab; }});
+}});
 document.addEventListener("click", ev => {{
   const b = ev.target.closest(".pg"); if (!b) return;
   const w = b.closest("[data-pager]"), i = pagerAt(w);
@@ -594,51 +599,140 @@ def _try_outcome(a: dict) -> tuple[str, str]:
     return "Did not run properly", "amber"
 
 
+GH_STATUS = {"pass": ("Successful", "ok"), "fail": ("Failing", "bad"), "skip": ("Skipped", "muted"),
+             "wait": ("Expected: waiting for the fix", "warn"), "none": ("Not re-run", "muted")}
+
+
+def checks_of(s: dict) -> list[dict]:
+    """The checks a reviewer would see on the pull request, each on `main` and with the change (Isha 2026-10-08: the
+    proof as GitHub shows checks). From the run's own records: the repo's tests, each test written, the second test."""
+    r, f = s.get("repro") or {}, s.get("fix") or {}
+    after = {x["test_path"]: x.get("outcome") for x in f.get("after_fix") or []}
+    validated = f.get("status") == "VALIDATED"
+    out, ex = [], r.get("existing_tests") or {}
+    if ex:
+        n = (ex.get("passed") or 0) + (ex.get("failed") or 0)
+        out.append({"name": f"Existing tests / {ex.get('package', '')}", "main": "pass" if ex.get("status") == "NONE FAIL" else
+                    "fail" if ex.get("status") in ("FOUND", "OTHER FAILURES") else "none",
+                    "change": "pass" if validated else "wait",
+                    "detail": f"{n} tests" + (f", {ex.get('failed')} failing" if ex.get("failed") else "")})
+    judge = r.get("oracle_test") or r.get("failing_test")
+    for path in dict.fromkeys(x for x in (r.get("failing_test"), r.get("oracle_test")) if x):
+        kind = diffview.kind_of_test(path)
+        got = after.get(path)
+        change = ("pass" if got == "GREEN" else "fail") if got else ("pass" if validated and path == judge else "wait" if not validated else "none")
+        out.append({"name": f"{kind.capitalize()} test / {Path(path).name}", "main": "fail", "change": change,
+                    "detail": "written for this issue: fails on main, showing the problem"})
+    ho = f.get("holdout") or {}
+    if ho.get("test"):
+        out.append({"name": f"Second test / {Path(ho['test']).name}", "main": "fail",
+                    "change": "pass" if str(ho.get("status", "")).startswith("PASSED") else "fail",
+                    "detail": "written without seeing the change"})
+    skipped = (r.get("ladder_plan") or {}).get("skipped") or {}
+    if "end_to_end" in skipped:
+        out.append({"name": "Automation test (end to end)", "main": "skip", "change": "skip",
+                    "detail": "needs live provider keys and the internet; the test machine has neither, on purpose"})
+    return out
+
+
+def _gh_checks(rows: list[dict]) -> str:
+    if not rows:
+        return '<p class="gh-muted">No checks yet.</p>'
+    def st(k, col):
+        word, tone = GH_STATUS[k]
+        return f'<span class="gh-st {tone}" data-col="{col}"><span class="gh-dot"></span>{e(word)}</span>'
+    return ('<div class="gh-box cols"><div class="gh-box-head"><span>Check</span><span>On main</span><span>With this change</span></div>'
+            + "".join(f'<div class="gh-check"><span class="gh-cname"><b>{e(c["name"])}</b><span class="gh-muted">{e(c["detail"])}</span></span>'
+                      f'{st(c["main"], "On main")}{st(c["change"], "With this change")}</div>' for c in rows) + "</div>")
+
+
+_LOG_BAD = re.compile(r"AssertionError|\w*Error\b|\bFAIL\b|\bfailed\b|×|✗|^\s*not ok|^\s*E\s{2,}")
+
+
+def _actions_log(cmd: str, output: str, opened: bool = True) -> str:
+    """A test run as GitHub Actions shows a step: `Run <command>`, then the log with numbered lines, errors red."""
+    all_lines = (output or "").splitlines()
+    lines, skip = all_lines[-400:], max(0, len(all_lines) - 400)
+    rows = "".join(f'<tr class="{"err" if _LOG_BAD.search(l) else ""}"><td class="ln">{i}</td><td>{e(l)}</td></tr>'
+                   for i, l in enumerate(lines, skip + 1))
+    more = f'<p class="gh-muted gh-cut">The first {skip} lines are in the proof file.</p>' if skip else ""
+    return (f'<details class="gh-step"{" open" if opened else ""}><summary>Run {e(cmd)}</summary>'
+            f'<div class="gh-log">{more}<table>{rows}</table></div></details>')
+
+
 def _check_pr(d: dict, rid: str, can_decide: bool, approve_cmd: str, reject_cmd: str) -> str:
-    """The pull request as GitHub shows it (Isha 2026-10-08): its title, then Conversation (the description), Commits
-    (the commit message, editable before you approve) and Files changed (the fix and its tests, git style). Approving
-    binds to exactly this text and change (its sha256); either answer runs the same command the terminal runs."""
+    """The pull request as GitHub shows it, in GitHub's words and colours (Isha 2026-10-08): title, Draft, "wants to
+    merge 1 commit into main from …", then Conversation, Commits (the commit message and extended description, yours to
+    edit), Checks (the tests, on main and with the change) and Files changed (git style); at the bottom, Approve or Close
+    pull request. Approving binds to exactly this text and change (its sha256); either runs the terminal's own command."""
     sha = str((d.get("interrupt") or {}).get("sha256") or "")
     st = d.get("state") or {}
     issue = st.get("issue") or {}
-    msg = d.get("commit_message") or ""
-    title = (msg.splitlines() or [f"fix: #{issue.get('number', '')}"])[0]
+    msg = (d.get("commit_message") or "").rstrip("\n")
+    title, _, extended = msg.partition("\n")
+    title = title or f"fix: #{issue.get('number', '')}"
     files = diffview.parse(d.get("pr_patch") or "")
     add, rem = sum(f["added"] for f in files), sum(f["removed"] for f in files)
-    decide = (f'<div class="decide" data-run="{e(rid)}" data-sha="{e(sha)}">'
-              f'<button type="button" class="btn glass" data-decide="reject" data-label="Say no" data-confirm="Tap again to say no">'
-              f'<span>Say no</span></button>'
-              f'<button type="button" class="btn glass prominent" data-decide="approve" data-label="Approve" '
-              f'data-confirm="Tap again to approve"><span>Approve</span></button>'
+    rows = checks_of(st)
+    got = [c["change"] for c in rows]
+    n = {k: got.count(k) for k in GH_STATUS}
+    counts = ", ".join(x for x in (f"{n['fail']} failing" * bool(n["fail"]), f"{n['wait']} expected" * bool(n["wait"]),
+                                   f"{n['pass']} successful" * bool(n["pass"]), f"{n['skip']} skipped" * bool(n["skip"]),
+                                   f"{n['none']} not re-run with the change" * bool(n["none"])) if x)
+    verdict = ("Some checks were not successful" if n["fail"] else "Some checks haven't completed yet" if n["wait"] else
+               "All checks have passed" if n["pass"] else "No checks ran")   # GitHub's merge box, in its words
+    head = f'debugassist/fix-{issue.get("number", "")}'
+    decide = (f'<div class="decide gh-merge" data-run="{e(rid)}" data-sha="{e(sha)}">'
+              f'<div class="gh-merge-lines"><b>{verdict}</b><span class="gh-muted">{e(counts)}</span>'
+              f'<span class="gh-muted">This pull request is a draft. Approving records your approval for exactly this text and '
+              f'change; nothing is posted to GitHub.</span></div>'
+              f'<div class="gh-merge-btns"><button type="button" class="gh-btn danger" data-decide="reject" data-label="Close pull request" '
+              f'data-confirm="Confirm: close pull request"><span>Close pull request</span></button>'
+              f'<button type="button" class="gh-btn primary" data-decide="approve" data-label="Approve" '
+              f'data-confirm="Confirm approve"><span>Approve</span></button></div>'
               f'<p class="decide-msg" role="status"></p></div>') if can_decide else (
-              f'<div class="cmd"><code>{e(approve_cmd)}</code></div><div class="cmd"><code>{e(reject_cmd)}</code></div>')
-    commit = (f'<textarea class="commit-msg" id="commit-msg" spellcheck="true" rows="9" data-recommended="{e(msg)}">{e(msg)}</textarea>'
-              f'<p class="foot"><span id="commit-note">Recommended. Edit it: your message is what the commit will carry, saved '
-              f'with your approval.</span> <button type="button" class="linkbtn" id="commit-reset">Back to the recommendation</button></p>'
-              ) if can_decide else f'<pre class="out">{e(msg)}</pre>'
-    return (f'<div id="check-pr" popover class="pop sheet glass" aria-label="Check the pull request">'
-            f'<div class="pop-head"><b>Check the pull request</b><button type="button" class="tbtn" popovertarget="check-pr" '
-            f'popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>'
-            f'<div class="prv"><h3 class="pr-title" id="pr-title">{e(title)}</h3>'
-            f'<p class="pr-meta"><span class="pr-state">Draft</span> {e(issue.get("owner", ""))}/{e(issue.get("repo", ""))} · '
-            f'1 commit into <code>main</code> from <code>debugassist/fix-{e(issue.get("number", ""))}</code> · '
-            f'<span class="plus">+{add}</span> <span class="minus">−{rem}</span></p>'
-            f'<div class="seg glass pr-tabs" role="tablist">'
+              f'<div class="gh-box"><div class="cmd"><code>{e(approve_cmd)}</code></div><div class="cmd"><code>{e(reject_cmd)}</code></div></div>')
+    commits = ((f'<div class="gh-box gh-commit"><label class="gh-label" for="commit-title">Commit message</label>'
+                f'<input id="commit-title" class="gh-input" value="{e(title)}" data-recommended="{e(title)}" autocomplete="off">'
+                f'<label class="gh-label" for="commit-body">Extended description</label>'
+                f'<textarea id="commit-body" class="gh-input mono" rows="8" data-recommended="{e(extended.strip())}">{e(extended.strip())}</textarea>'
+                f'<p class="gh-muted"><span id="commit-note">Recommended by DebugAssistAgent. Edit it: your message is what the '
+                f'commit carries, saved with your approval.</span> <button type="button" class="gh-link" id="commit-reset">'
+                f'Restore the recommendation</button></p></div>') if can_decide else
+               f'<div class="gh-box"><pre class="gh-pre">{e(msg)}</pre></div>')
+    who = "debugassist"
+    return (f'<div id="check-pr" popover class="pop sheet gh" aria-label="Pull request">'
+            f'<div class="gh-top"><button type="button" class="gh-close" popovertarget="check-pr" popovertargetaction="hide" '
+            f'aria-label="Close">{icons.cross(16)}</button>'
+            f'<h3 class="gh-title"><span id="pr-title">{e(title)}</span> <span class="gh-muted">#{e(issue.get("number", ""))}</span></h3>'
+            f'<p class="gh-meta"><span class="gh-state draft">Draft</span><b>{who}</b> wants to merge 1 commit into '
+            f'<code class="gh-ref">main</code> from <code class="gh-ref">{e(head)}</code>'
+            f'<span class="gh-diffstat"><span class="plus">+{add}</span> <span class="minus">−{rem}</span></span></p>'
+            f'<nav class="gh-tabs" role="tablist">'
             f'<button type="button" role="tab" class="on" data-tab="conv" aria-selected="true">Conversation</button>'
             f'<button type="button" role="tab" data-tab="commits" aria-selected="false">Commits <span class="cnt">1</span></button>'
-            f'<button type="button" role="tab" data-tab="files" aria-selected="false">Files changed <span class="cnt">{len(files)}</span></button></div>'
-            f'<div class="pr-pane" data-pane="conv"><div class="md" id="pr-sheet"></div></div>'
-            f'<div class="pr-pane" data-pane="commits" hidden>{commit}</div>'
+            f'<button type="button" role="tab" data-tab="checks" aria-selected="false">Checks <span class="cnt">{len(rows)}</span></button>'
+            f'<button type="button" role="tab" data-tab="files" aria-selected="false">Files changed <span class="cnt">{len(files)}</span></button></nav></div>'
+            f'<div class="prv gh-body">'
+            f'<div class="pr-pane" data-pane="conv"><div class="gh-comment"><div class="gh-comment-head"><b>{who}</b> opened this '
+            f'pull request</div><div class="md gh-md" id="pr-sheet"></div></div></div>'
+            f'<div class="pr-pane" data-pane="commits" hidden>{commits}</div>'
+            f'<div class="pr-pane" data-pane="checks" hidden>{_gh_checks(rows)}</div>'
             f'<div class="pr-pane" data-pane="files" hidden>{diffview.html(d.get("pr_patch") or "")}</div>'
-            f'<p class="foot">Fingerprint sha256 <code>{e(sha[:12])}</code>: approving binds to exactly this text and change. '
-            f'Nothing is posted to GitHub: approving writes <code>publish.sh</code>, which you run with your own login.</p>'
-            f'{decide}</div></div>')
+            f'{decide}<p class="gh-muted gh-fp">Fingerprint sha256 <code>{e(sha[:12])}</code></p></div></div>')
+
+
+def _gh_row(dot: str, name: str, word: str, detail: str, extra: str = "") -> str:
+    return (f'<div class="gh-check"><span class="gh-dot {dot}"></span><span class="gh-cname"><b>{e(name)}</b>'
+            f'<span class="gh-muted">{e(detail)}</span>{extra}</span><span class="gh-st {dot}">{e(word)}</span></div>')
 
 
 def _proof(s: dict, rid: str) -> str:
-    """Proof the bug happens (Isha 2026-10-08): first, does a test already in the repo fail for this issue; if not,
-    the test written for it at each level (unit, integration, automation) and whether it passes after the fix; then
-    every try, one page each. Empty until the bug has been shown."""
+    """Proof the bug happens, as GitHub shows a workflow run (Isha 2026-10-08: "check proof should also have git style
+    format", in GitHub's words and colours): a Summary of checks (a test already in the repo failing for this issue?
+    then unit, integration, automation), then every try as a job, turned to by number: its annotation (the failing
+    assertion), the test as a change to the code (git style), and its steps and log (as Actions shows them).
+    Empty until the bug has been shown."""
     from .testwriter import read_proof
     r = s.get("repro") or {}
     if r.get("status") != "REPRODUCED" or not r.get("failing_test"):
@@ -649,111 +743,143 @@ def _proof(s: dict, rid: str) -> str:
     fix = s.get("fix") or {}
     after = {x["test_path"]: x for x in fix.get("after_fix") or []}
     judge = r.get("oracle_test") or r.get("failing_test")
+    issue = s.get("issue") or {}
+    prof = s.get("profile") or {}
 
-    def after_fix(path: str) -> str:
+    def after_fix(path: str) -> tuple[str, str]:
+        """(GitHub status word, tone) for the test once the change is in."""
         got = after.get(path)
         if got:
-            return (_pill("Passes after the fix", "green") if got["outcome"] == "GREEN" else
-                    _pill("Still fails after the fix", "red"))
+            return ("Successful with the change", "ok") if got["outcome"] == "GREEN" else ("Still failing with the change", "bad")
         if not fix.get("status"):
-            return _pill("Waiting for the fix", "grey")
+            return "Expected: waiting for the fix", "warn"
         if fix["status"] != "VALIDATED":
-            return _pill("No fix passed yet", "grey")
+            return "No change passed yet", "muted"
         if path == judge:  # a validated fix passed its judging test by definition
-            return _pill("Passes after the fix", "green")
-        return _pill("Not re-run after the fix (runs before 8 Oct 2026)", "grey")
+            return "Successful with the change", "ok"
+        return "Not re-run with the change (runs before 8 Oct 2026)", "muted"
 
-    # 1. the checklist
-    ex, rows = r.get("existing_tests") or {}, []
+    # 1. the summary: one check per question
+    rows = []
+    ex = r.get("existing_tests") or {}
     pkg = ex.get("package") or ""
     total = (ex.get("passed") or 0) + (ex.get("failed") or 0)
     if ex.get("status") == "FOUND":
-        ans, tone, why = "Found", "green", f"Already in the repo and failing for this issue: {', '.join(ex['for_issue'][:2])}"
+        ans, dot, why = "Found", "bad", f"Already in the repo and failing on main for this issue: {', '.join(ex['for_issue'][:2])}"
     elif ex.get("status") == "NONE FAIL":
-        ans, tone, why = "Not found", "grey", (f"All {total} of the repo's own tests in {pkg} pass on the unfixed code" if total
-                                               else f"The repo's own tests in {pkg} all pass on the unfixed code") + \
-            ", so none of them catches it. A test was written for it below."
+        ans, dot, why = "Not found", "muted", (f"All {total} of the repo's own tests in {pkg} pass on main" if total else
+                                               f"The repo's own tests in {pkg} all pass on main") + ", so none catches it. A test was written for it."
     elif ex.get("status") == "OTHER FAILURES":
-        ans, tone, why = "Not found", "grey", (f"{ex.get('failed', 'Some')} of the repo's own tests in {pkg} fail, but none "
-                                               "for this issue's reason. A test was written for it below.")
+        ans, dot, why = "Not found", "muted", (f"{ex.get('failed', 'Some')} of the repo's own tests in {pkg} fail on main, but "
+                                               "none for this issue's reason. A test was written for it.")
     else:
-        ans, tone, why = "Not checked", "grey", ex.get("why") or "Runs before 8 Oct 2026 did not check the repo's own tests first."
-    rows.append(f'<li class="q"><span class="qt">Test already in the repo failing for this issue?</span>{_pill(ans, tone)}'
-                f'<span class="qa">{e(why)}</span></li>')
+        ans, dot, why = "Not checked", "muted", ex.get("why") or "Runs before 8 Oct 2026 did not check the repo's own tests first."
+    epf = read_proof(rdir / "proof" / "existing-tests.txt")
+    elog = f'<div class="gh-steps">{_actions_log(epf["ran"], epf.get("output", ""), opened=False)}</div>' if epf.get("ran") else ""
+    rows.append(_gh_row(dot, "Test already in the repo failing for this issue?", ans, why, elog))
     skipped = (r.get("ladder_plan") or {}).get("skipped") or {}
     for key, label in LEVELS:
         at = [a for a in tries if a.get("rung") == key]
         red = next((a for a in at if a.get("outcome") == "RED"), None)
+        extra = ""
         if red:
-            ans, tone = "Found", "green"
-            why = (f"Written for this issue (try {red['n']}). It fails on the unfixed code, showing the problem"
+            word, tone = after_fix(red.get("test_path", ""))
+            ans, dot = "Found", "bad"
+            why = (f"Written for this issue (try {red['n']}): fails on main, showing the problem"
                    + (", on real recorded data." if key == "integration" else "."))
-            extra = after_fix(red.get("test_path", ""))
+            extra = f'<span class="gh-after gh-st {tone}"><span class="gh-dot"></span>{e(word)}</span>'
         elif at:
-            ans, tone, extra = "Not found", "grey", ""
+            ans, dot = "Not found", "muted"
             why = f"Tried {len(at)} time{'s' * (len(at) != 1)}: " + "; ".join(_try_outcome(x)[0].lower() for x in at) + "."
         elif key in skipped:
             beside = re.match(r"no recorded data beside (.+)", skipped[key])
             why = (f"There is no recorded real data beside the code at fault ({beside.group(1)}), so there is nothing to "
                    "build one from." if beside else NOT_TRIED.get(key, "Not available for this issue."))
-            ans, tone, extra = ("Not possible here" if beside else "Not tried"), "grey", ""
+            ans, dot = ("Not possible here" if beside else "Skipped"), "muted"
         else:
-            ans, tone, extra, why = "Not needed", "grey", "", "The bug was already shown and confirmed."
-        rows.append(f'<li class="q"><span class="qt">{e(label)} failing for this issue?</span>{_pill(ans, tone)}'
-                    f'<span class="qa">{e(why)}{f" {extra}" if extra else ""}</span></li>')
-    checklist = f'<ul class="checklist">{"".join(rows)}</ul>'
+            ans, dot, why = "Not needed", "muted", "The bug was already shown and confirmed."
+        rows.append(_gh_row(dot, f"{label} failing for this issue?", ans, why, extra))
+    summary = f'<div class="gh-box"><div class="gh-box-head"><span>Checks</span></div>{"".join(rows)}</div>'
 
-    # 2. the tries, one page each
-    pages, nums, start = [], [], 0
+    # 2. every try, one job each
+    pages, nums, start = [], [], None   # opens on the first try that showed the bug (try 1 counts: index 0)
     for i, a in enumerate(tries):
         path, name = a.get("test_path") or "", Path(a.get("test_path") or "").name
         word, tone = _try_outcome(a)
-        if a.get("outcome") == "RED" and not start:
+        dot = {"red": "bad", "grey": "ok", "amber": "warn"}.get(tone, "muted")
+        word = {"Shows the bug": "Failing on main: shows the bug", "Passed: did not show the bug": "Passed: did not show the bug"}.get(word, word)
+        if a.get("outcome") == "RED" and start is None:
             start = i
         kind = plain.TEST_KIND.get(a.get("rung", ""), "test")
-        code_file = next((f for f in (rdir / "checkout" / path, rdir / "attempt-tests" / name) if path and f.exists()), None)
-        code = code_file.read_text(errors="replace") if code_file else ""
-        pf = read_proof(rdir / "proof" / f"{name}.txt") if name else {}
+        pf = {}
+        if name:
+            pf = read_proof(rdir / "proof" / f"try-{a['n']}-{name}.txt") or read_proof(rdir / "proof" / f"{name}.txt")
         ev = a.get("evidence") or ""
         lines = [l for l in ev.splitlines() if not l.startswith("writer's symptom:")]
         checks = next((l.removeprefix("writer's symptom:").strip() for l in ev.splitlines() if l.startswith("writer's symptom:")), "")
+        head = (f'<div class="gh-job-head"><span class="gh-dot {dot}"></span><h3>Try {a["n"]} · {e(kind)}</h3>'
+                f'<span class="gh-st {dot}">{e(word)}</span></div>')
+        num = (f'<button type="button" class="pg num {tone}{" on" if i == 0 else ""}" role="tab" data-go="{i}" '
+               f'aria-label="Try {a["n"]}: {e(word)}">{a["n"]}</button>')
+        if ev.startswith("writer refused"):   # never ran: say so, and why (#22288 run: refused drafts read as if they had run)
+            pages.append(f'<article class="page gh-job" aria-label="Try {a["n"]}">{head}'
+                         f'<div class="gh-annot warn"><b>Not run: the draft was refused before it ran</b>'
+                         f'<pre>{e(ev.removeprefix("writer refused:").strip()[:1000])}</pre></div>'
+                         f'<p class="gh-muted">A draft that breaks a rule the code enforces is refused and never run; it still '
+                         f'counts toward the 4 tries.</p></article>')
+            nums.append(num)
+            continue
+        code = ""
+        if not pf.get("diff"):
+            code_file = next((f for f in (rdir / "checkout" / path, rdir / "attempt-tests" / name) if path and f.exists()), None)
+            code = code_file.read_text(errors="replace") if code_file else ""
+        diff = pf.get("diff") or (diffview.new_file_diff(path, code) if code else "")
+        annot = ""
+        if lines:
+            annot = (f'<div class="gh-annot {"bad" if a.get("outcome") == "RED" else "warn" if dot == "warn" else "muted"}">'
+                     f'<b>{e(lines[0][:300])}</b>'
+                     + (f'<pre>{e(chr(10).join(lines[1:]).strip()[:2000])}</pre>' if len(lines) > 1 else "")
+                     + (f'<p><span class="gh-muted">What the test checks:</span> {e(checks)}</p>' if checks else "") + "</div>")
+        after_html = ""
+        if a.get("outcome") == "RED":
+            aw, at_ = after_fix(path)
+            after_html = f'<div class="gh-annot {at_}"><b>{e(aw)}</b></div>'
         ran = pf.get("ran", "")
         short = ("cd " + ran.split(" && cd ", 1)[1]) if " && cd " in ran else ran.rsplit(" && ", 1)[-1]
-        ran_html = (f"<code>{e(short)}</code>" + (f'<details class="ran-full"><summary>With its setup</summary><code>{e(ran)}</code></details>'
-                                                  if short != ran else ""))
-        facts = [("Ran", ran_html), ("Where", e(pf.get("where", ""))), ("Code", e(pf.get("code", ""))),
-                 ("When", e(pf.get("when", ""))), ("Exit code", e(pf.get("exit_code", ""))),
-                 ("Test fingerprint", f"<code>sha256 {e(pf.get('sha256', ''))}</code>")] if ran else []
-        refused = ev.startswith("writer refused")
-        if refused:   # never ran: say so, and why (#22288 run: refused drafts read as if they had run)
-            pages.append(
-                f'<article class="page proof-card" aria-label="Try {a["n"]}"><div class="page-head"><h3>Try {a["n"]} · {e(kind)}</h3>'
-                f'{_pill(word, tone)}</div><h4>Not run: the draft was refused before it ran</h4>'
-                f'<pre class="out">{e(ev.removeprefix("writer refused:").strip()[:1000])}</pre>'
-                f'<p class="foot">A draft that breaks a rule the code enforces is refused and never run; it still counts toward the 4 tries.</p></article>')
-            nums.append(f'<button type="button" class="pg num {tone}{" on" if i == 0 else ""}" role="tab" data-go="{i}" '
-                        f'aria-label="Try {a["n"]}: {e(word)}">{a["n"]}</button>')
-            continue
-        pages.append(
-            f'<article class="page proof-card" aria-label="Try {a["n"]}"><div class="page-head"><h3>Try {a["n"]} · {e(kind)}</h3>'
-            f'{_pill(word, tone)}</div>'
-            + (f'<p class="checks"><b>What the test checks:</b> {e(checks)}</p>' if checks else "")
-            + f'<h4>What it printed on the unfixed code</h4><pre class="out">{e(chr(10).join(lines).strip()[:3000]) or "Nothing recorded."}</pre>'
-            + (f'<h4>After the fix</h4><p>{after_fix(path)}</p>' if a.get("outcome") == "RED" else "")
-            + (f'<details><summary>The test · {e(name)}</summary><pre class="code">{e(code[:20000])}</pre></details>' if code else "")
-            + (f'<details><summary>Everything it printed</summary><pre class="out">{e(pf["output"][-20000:])}</pre></details>'
-               if pf.get("output") else "")
-            + (f'<dl class="facts">{"".join(f"<dt>{k}</dt><dd>{v}</dd>" for k, v in facts)}</dl>' if facts else
-               '<p class="foot">The exact command and full output were not kept for runs before 8 Oct 2026.</p>')
-            + "</article>")
-        nums.append(f'<button type="button" class="pg num {tone}{" on" if i == 0 else ""}" role="tab" data-go="{i}" '
-                    f'aria-label="Try {a["n"]}: {e(word)}">{a["n"]}</button>')
-    pager = (f'<div class="pager-wrap" data-pager><div class="pager-bar"><b>Every try</b><div class="pager" role="tablist" aria-label="Tries">'
+        setup = ran[: len(ran) - len(short)].rstrip(" &") if ran and short != ran else ""
+        steps = ""
+        if ran:
+            setup_lines = [f"Runner: {pf.get('where', '')}", f"Code: {pf.get('code', '')}", f"Started: {pf.get('when', '')}"]
+            if setup:
+                setup_lines += ["", *[f"$ {x.strip()}" for x in setup.split(" && ")]]
+            steps = (f'<div class="gh-steps">'
+                     f'<details class="gh-step"><summary>Set up job</summary><div class="gh-log"><table>'
+                     + "".join(f'<tr><td class="ln">{k}</td><td>{e(l)}</td></tr>' for k, l in enumerate(setup_lines, 1))
+                     + '</table></div></details>'
+                     + _actions_log(short, pf.get("output", ""))
+                     + f'<details class="gh-step"><summary>Complete job</summary><div class="gh-log"><table>'
+                     f'<tr><td class="ln">1</td><td>{e(f"Process completed with exit code {pf.get("exit_code", "")}.")}</td></tr>'
+                     f'<tr><td class="ln">2</td><td>{e(f"Test fingerprint sha256 {pf.get("sha256", "")}")}</td></tr>'
+                     f'</table></div></details></div>')
+        else:
+            steps = '<p class="gh-muted">The exact command and full output were not kept for runs before 8 Oct 2026.</p>'
+        pages.append(f'<article class="page gh-job" aria-label="Try {a["n"]}">{head}{annot}{after_html}'
+                     + (f'<h4 class="gh-h">The test</h4>{diffview.html(diff, open_files=1)}' if diff else "")
+                     + f'<h4 class="gh-h">Steps</h4>{steps}</article>')
+        nums.append(num)
+    pager = (f'<div class="pager-wrap" data-pager><div class="pager-bar"><h4 class="gh-h">Jobs</h4><div class="pager" role="tablist" aria-label="Tries">'
              f'<button type="button" class="pg prev" aria-label="Previous try">{icons.chevron(14)}</button>{"".join(nums)}'
              f'<button type="button" class="pg next" aria-label="Next try">{icons.chevron(14)}</button></div></div>'
-             f'<div class="pages" tabindex="0" data-start="{start}">{"".join(pages)}</div></div>') if pages else ""
-    return (f'<div class="proof">{checklist}{pager}<p class="foot">The code was the repository as it is, with only new test '
-            'files added. A test that fails for a different reason does not count as showing the bug.</p></div>')
+             f'<div class="pages" tabindex="0" data-start="{start or 0}">{"".join(pages)}</div></div>') if pages else ""
+    shown = next((a["n"] for a in tries if a.get("outcome") == "RED"), None)
+    base = str(prof.get("base_commit") or "")[:7]
+    title = (f'<h3 class="gh-title">Reproduce issue <span class="gh-muted">#{e(issue.get("number", ""))}</span></h3>'
+             f'<p class="gh-meta"><span class="gh-state failure">Bug shown</span> on <code class="gh-ref">main</code>'
+             + (f' at <code class="gh-ref">{e(base)}</code>' if base else "")
+             + (f' · try {shown} of {len(tries)}' if shown else "") + ' · run by DebugAssistAgent, internet off</p>')
+    return (f'<div class="proof gh-proof">{title}<h4 class="gh-h">Summary</h4>{summary}{pager}<p class="gh-muted gh-fp">The code '
+            'was the repository as it is, with only the test added. A test that fails for a different reason does not count '
+            'as showing the bug.</p></div>')
 
 
 def full_answer(raw: dict) -> str:
@@ -838,6 +964,15 @@ def _what_it_read(pack: dict, c: dict) -> str:
 
     def row(title: str, sub: str) -> str:
         return f'<li class="row"><span class="ic">{icons.list_(18)}</span><span class="t"><b>{e(title)}</b><span>{e(sub)}</span></span></li>'
+    cx = (pack.get("code") or {}).get("ctx") or {}
+    if cx.get("look_in") or cx.get("look_in_missing"):
+        rows.append(row("Your pointers for the cause", "; ".join(
+            [f"looked in first: {', '.join(cx.get('look_in') or [])}"] * bool(cx.get("look_in")) +
+            [f"not found in the code: {', '.join(cx['look_in_missing'])}"] * bool(cx.get("look_in_missing")))))
+    if cx.get("test_into"):
+        rows.append(row("Your test file", f"The unit test is added to {cx['test_into']}, as new cases at its end"))
+    elif cx.get("test_into_note"):
+        rows.append(row("Your test file", f"Not used ({cx['test_into_note']}); the test goes in a new file beside the code"))
     n = len(iss.get("comments") or [])
     rows.append(row(f"{n} comment{'s' * (n != 1)} on the issue",
                     "All of them are saved; the most useful ones go to the AI first" if n else "The issue has no comments"))
@@ -939,22 +1074,23 @@ def _engineer_details(d: dict, s: dict, rows: list[dict], live: bool) -> str:
 # origin; replay passes how far in it is (?ms=). Stops when the run is final; shows "viewer offline" if the server goes.
 # your OK from the page: only on served pages (a saved file keeps the terminal commands instead)
 _DECIDE_JS = """
-document.addEventListener("click", ev => {
-  const t = ev.target.closest(".pr-tabs [data-tab]"); if (!t) return;
-  const sheet = t.closest(".prv");
-  sheet.querySelectorAll(".pr-tabs [data-tab]").forEach(x => { const on = x === t; x.classList.toggle("on", on); x.setAttribute("aria-selected", String(on)); });
-  sheet.querySelectorAll(".pr-pane").forEach(p => { p.hidden = p.dataset.pane !== t.dataset.tab; });
-});
+const commitMessage = () => {
+  const t = document.getElementById("commit-title"), b = document.getElementById("commit-body");
+  if (!t) return "";
+  return (t.value.trim() + (b && b.value.trim() ? "\\n\\n" + b.value.trim() : "") + "\\n");
+};
 document.addEventListener("input", ev => {
-  if (ev.target.id !== "commit-msg") return;
-  const first = (ev.target.value.split("\\n")[0] || "").trim(), title = document.getElementById("pr-title");
-  if (title) title.textContent = first || "(no title)";
+  if (!["commit-title", "commit-body"].includes(ev.target.id)) return;
+  const t = document.getElementById("commit-title"), b = document.getElementById("commit-body"), title = document.getElementById("pr-title");
+  if (title) title.textContent = t.value.trim() || "(no title)";
+  const same = t.value === t.dataset.recommended && b.value === b.dataset.recommended;
   const note = document.getElementById("commit-note");
-  if (note) note.textContent = ev.target.value === ev.target.dataset.recommended ? "Recommended. Edit it: your message is what the commit will carry, saved with your approval." : "Edited by you. This is what the commit will carry.";
+  if (note) note.textContent = same ? "Recommended by DebugAssistAgent. Edit it: your message is what the commit carries, saved with your approval." : "Edited by you. This is the message the commit carries.";
 });
 document.addEventListener("click", ev => {
   if (ev.target.id !== "commit-reset") return;
-  const m = document.getElementById("commit-msg"); m.value = m.dataset.recommended; m.dispatchEvent(new Event("input", { bubbles: true }));
+  for (const id of ["commit-title", "commit-body"]) { const x = document.getElementById(id); x.value = x.dataset.recommended; }
+  document.getElementById("commit-title").dispatchEvent(new Event("input", { bubbles: true }));
 });
 const TOKEN = __TOKEN__;
 document.addEventListener("click", async ev => {
@@ -967,15 +1103,16 @@ document.addEventListener("click", async ev => {
     return;
   }
   box.querySelectorAll("[data-decide]").forEach(x => { x.disabled = true; });
-  msg.textContent = b.dataset.decide === "approve" ? "Approving…" : "Saying no…";
+  msg.textContent = b.dataset.decide === "approve" ? "Approving…" : "Closing…";
   try {
     const r = await fetch("/api/decide", { method: "POST", headers: { "X-DebugAssistAgent-Token": TOKEN, "Content-Type": "application/json" },
       body: JSON.stringify({ run_id: box.dataset.run, decision: b.dataset.decide, sha256: box.dataset.sha,
-                             commit_message: (document.getElementById("commit-msg") || {}).value || "" }) });
+                             commit_message: commitMessage() }) });
     const j = await r.json();
     if (!r.ok) { msg.textContent = j.error || "Something went wrong."; box.querySelectorAll("[data-decide]").forEach(x => { x.disabled = false; }); return; }
     msg.textContent = j.said;
-  } catch (e) { msg.textContent = "Could not reach DebugAssistAgent."; box.querySelectorAll("[data-decide]").forEach(x => { x.disabled = false; });
+  } catch (e) { msg.textContent = "Could not reach DebugAssistAgent."; box.querySelectorAll("[data-decide]").forEach(x => { x.disabled = false; }); }
+});
 """
 
 _LIVE_JS = """

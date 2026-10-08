@@ -260,3 +260,43 @@ def test_a_plain_node_fix_runs_the_files_that_passed_at_connection(node_repo):
     with pytest.raises(fixer.FixRefused, match="source only"):
         fixer.apply_edits(node_repo, [fixer.Edit("README.md", "x", "y")], NODE)
     assert "export function scanArguments" in fixer.find_definition(node_repo, "scanArguments", profile=NODE)
+
+
+def test_your_pointers_lead_the_search_and_the_unit_test_goes_into_your_file(repo, monkeypatch, tmp_path_factory):
+    """Isha 2026-10-08: optional pointers at the start: files to look in for the cause, and the test file the unit test
+    is written in (new cases at its end; nothing else in it changes; put back when they do not show the bug)."""
+    mine = "libs/core/tests/unit_tests/test_messages.py"
+    before = (repo / mine).read_text()
+    ctx = testwriter.locate(repo, "drops `args`", "merge_chunks drops `args`", PROFILE,
+                            {"look_in": ["libs/partners/openai/acme_openai/chat.py", "libs/core/nope.py", mine],
+                             "test_in": mine})
+    assert ctx.source == "libs/partners/openai/acme_openai/chat.py"                 # pointed to: searched first
+    assert ctx.look_in == ["libs/partners/openai/acme_openai/chat.py"]
+    assert ctx.look_in_missing == ["libs/core/nope.py", mine]                       # not found / not a source file
+    assert ctx.test_into == mine and ctx.example_test == mine and ctx.example_header.startswith("from acme_core.messages")
+    asked, ran = [], []
+    reply = "SYMPTOM: args is empty\n```python\ndef test_args_kept():\n    assert merge_chunks([{'args': {'a': 1}}]).args == {'a': 1}\n```"
+    monkeypatch.setattr(testwriter, "write", lambda s, step, msgs, **k: (asked.append(msgs), (SimpleNamespace(content=reply), None))[1])
+    red = ("E       AssertionError: assert {} == {'a': 1}\n"
+           "FAILED tests/unit_tests/test_messages.py::test_args_kept - AssertionError: assert {} == {'a': 1}\n1 failed, 2 passed\n")
+    result = {"code": 0, "out": "3 passed in 0.01s\n"}
+    run = lambda cmd, wd, **k: (ran.append(cmd), subprocess.CompletedProcess(cmd, result["code"], result["out"], ""))[1]  # noqa: E731
+    state = {"issue": {"number": 9, "title": "drops args", "body": "drops `args`"}, "focus": "merge_chunks drops `args`"}
+    proof = tmp_path_factory.mktemp("proof")
+    green = testwriter.attempt(state, ladder.RUNGS[0], 1, [], ctx, repo, PROFILE, run_cmd=run, proof_dir=proof)
+    assert asked[0][0][1].startswith("You add NEW pytest test cases to the END of an existing test file (" + mine)
+    assert "SETUP OF THE FILE YOU ADD TO" in asked[0][1][1]
+    assert green.outcome == ladder.GREEN and green.test_path == mine and (repo / mine).read_text() == before  # put back
+    assert ran[0] == "export CI=1 && cd libs/core && uv run --no-sync pytest -q tests/unit_tests/test_messages.py"
+    result.update(code=1, out=red)
+    a = testwriter.attempt(state, ladder.RUNGS[0], 2, [], ctx, repo, PROFILE, run_cmd=run, proof_dir=proof)
+    assert a.outcome == ladder.RED and a.test_path == mine
+    assert (repo / mine).read_text() == before.rstrip("\n") + "\n\n" + reply.split("```python\n")[1].split("```")[0]
+    got = testwriter.read_proof(proof / "try-2-test_messages.py.txt")              # each try keeps its own proof
+    assert got["diff"].startswith(f"diff --git a/{mine} b/{mine}") and "new file mode" not in got["diff"]
+    assert "+def test_args_kept():" in got["diff"] and "\n def test_merge_empty():" in got["diff"]
+    # a try that is not the judge: its cases are kept with the run, the person's file is put back
+    from debug_assist import graph
+    rdir = tmp_path_factory.mktemp("run")
+    assert graph.shelve_drafts(repo, rdir, [mine], keep=None) == [mine]
+    assert (repo / mine).read_text() == before and "def test_args_kept" in (rdir / "attempt-tests/test_messages.py").read_text()

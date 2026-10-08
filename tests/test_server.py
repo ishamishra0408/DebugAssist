@@ -74,7 +74,7 @@ def _ok_headers(httpd):
 
 def test_only_the_home_page_can_start_a_run(live, monkeypatch):
     started = []
-    monkeypatch.setattr(server, "start_run", lambda u, h, a: started.append((u, h, a)) or "ai-2-y")
+    monkeypatch.setattr(server, "start_run", lambda u, h, a, *p: started.append((u, h, a)) or "ai-2-y")
     body = json.dumps({"url": "https://github.com/vercel/ai/issues/2", "heading": "", "ai": "standard"}).encode()
     good = _ok_headers(live)
     for drop in (server.TOKEN_HEADER, "Origin", "Content-Type"):
@@ -85,7 +85,7 @@ def test_only_the_home_page_can_start_a_run(live, monkeypatch):
     assert _get(live, "/", "GET", {"Host": "evil.example"})[0] == 403
     code, out = _get(live, "/api/start", "POST", good, body)
     assert code == 200 and json.loads(out)["page"] == "/run/ai-2-y" and len(started) == 1
-    monkeypatch.setattr(server, "start_run", lambda u, h, a: (_ for _ in ()).throw(server.Refused("A run is already going (x).")))
+    monkeypatch.setattr(server, "start_run", lambda u, h, a, *p: (_ for _ in ()).throw(server.Refused("A run is already going (x).")))
     code, out = _get(live, "/api/start", "POST", good, body)
     assert code == 409 and "already going" in json.loads(out)["error"]
 
@@ -427,3 +427,36 @@ def test_the_problem_is_picked_from_the_issue_and_the_list_shows_only_when_it_ho
     plain = [{"heading": "Description", "preview": "it breaks"}]
     assert server.pick_focus("The title", plain, {"Description": "it breaks"}) == {
         "single": True, "heading": "", "preview": "The title", "from": "the title"}            # no code quoted: the title
+
+
+def test_your_pointers_are_paths_in_the_repo():
+    """Isha 2026-10-08: optional pointers at the start. Paths from the repo's top folder or GitHub file links; never
+    outside the repo; a test file only where the test goes."""
+    assert server.pointers("https://github.com/vercel/ai/blob/main/packages/ai/src/ui/chat.ts#L10-L20, ./packages/ai/src/x.ts\n"
+                           "packages/ai/src/x.ts", "`packages/ai/src/ui/chat.test.ts`") == \
+        (["packages/ai/src/ui/chat.ts", "packages/ai/src/x.ts"], "packages/ai/src/ui/chat.test.ts")
+    assert server.pointers("", "") == ([], "")
+    for look, test, why in [("../etc/passwd", "", "not a path"), ("/etc/passwd", "", "not a path"),
+                            ("src/a.test.ts", "", "is a test file"), ("", "src/chat.ts", "not a test file"),
+                            ("a.ts b.ts c.ts d.ts e.ts f.ts", "", "at most 5"), ("a.ts;rm -rf", "", "not a path")]:
+        with pytest.raises(server.Refused, match=why):
+            server.pointers(look, test)
+
+
+def test_a_run_carries_your_pointers(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "CFG", SimpleNamespace(runs_dir=tmp_path))
+    monkeypatch.setattr(server, "_ready_repo", lambda o, r: None)
+    calls = []
+
+    class Proc:
+        def __init__(self, argv, **kw):
+            calls.append(argv)
+
+        def poll(self):
+            return 0
+    monkeypatch.setattr(server.subprocess, "Popen", Proc)
+    monkeypatch.setitem(server._child, "proc", None)
+    server.start_run("https://github.com/vercel/ai/issues/1", "", "standard", "packages/ai/src/a.ts, packages/ai/src/b.ts",
+                     "packages/ai/src/a.test.ts")
+    assert "--look-in=packages/ai/src/a.ts,packages/ai/src/b.ts" in calls[0] and "--test-in=packages/ai/src/a.test.ts" in calls[0]
+    assert 'id="look-in"' in server.home_page() and "Write the unit test in" in server.home_page()

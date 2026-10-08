@@ -59,7 +59,7 @@ def test_the_page_marks_the_step_we_are_on_in_plain_words():
     paused = viewer.render(_data(), mode="live")
     assert 'class="status s-waiting"' in paused and "Waiting for your OK" in paused and 'class="node waiting"' in paused
     assert 'popovertarget="check-pr"' in paused and "Check PR" in paused and "Nothing is posted to GitHub." in paused
-    assert 'data-decide="approve"' in paused and 'data-decide="reject"' in paused and "Tap again to approve" in paused
+    assert 'data-decide="approve"' in paused and 'data-decide="reject"' in paused and "Confirm approve" in paused
     stopped = viewer.render(_data(state={**st, "outcome": {"exit": "FIX NOT VALIDATED", "why": "w"},
                                          "log": ["write_fix: STOPPED FIX NOT VALIDATED"]}, next=[], interrupt={}), mode="live")
     assert 'class="status s-stopped"' in stopped and "Stopped at step 5 of 10: Fix it" in stopped
@@ -162,6 +162,11 @@ def test_latest_activity_is_a_pop_up_and_usage_uses_standard_names():
     assert "Time and money" not in page and "Money spent" not in page
 
 
+def _sheet(page: str, id_: str) -> str:
+    """One pop-up sheet's markup: from its opening to the next sheet."""
+    return re.split(r'<div id="[\w-]+" popover', page.split(f'<div id="{id_}" popover')[1])[0]
+
+
 def test_show_the_bug_carries_its_proof(tmp_path, monkeypatch):
     """Isha 2026-10-08: first, does a test already in the repo fail for this issue; if not, the test written at each
     level (unit, integration, automation), shown failing on the unfixed code and passing after the fix; then every try
@@ -192,26 +197,32 @@ def test_show_the_bug_carries_its_proof(tmp_path, monkeypatch):
                        {"step": "reproduce", "n": 3, "rung": "integration", "outcome": "RED", "test_path": integ, "evidence": "AssertionError: same"}]}
     page = viewer.render(_data(state=st), mode="live")
     assert 'popovertarget="proof"' in page and "Check proof" in page and '<div id="proof" popover' in page
-    sheet = page.split('<div id="proof"')[1].split('<div id="acts"')[0]
+    sheet = _sheet(page, "proof")
     text = re.sub(r"<[^>]+>", " ", sheet)
-    # the checklist, in Isha's order: the repo's own tests first, then what was written at each level
-    qs = re.findall(r'class="qt">([^<]+)<', sheet)
+    # GitHub's way (Isha 2026-10-08): a workflow run, its Summary of checks in Isha's order (the repo's own tests
+    # first, then what was written at each level), then every try as a job
+    assert '<h3 class="gh-title">Reproduce issue <span class="gh-muted">#1</span></h3>' in sheet and "Bug shown</span> on" in sheet
+    qs = re.findall(r'class="gh-cname"><b>([^<]+)<', sheet)
     assert qs == ["Test already in the repo failing for this issue?", "Unit test failing for this issue?",
                   "Integration test failing for this issue?", "Automation test (end to end) failing for this issue?"]
-    assert "All 412 of the repo&#x27;s own tests in packages/p pass on the unfixed code" in sheet
-    assert re.search(r"Unit test failing.*?Found.*?Written for this issue \(try 2\).*?Passes after the fix", sheet, re.S)
-    assert re.search(r"Integration test failing.*?Found.*?on real recorded data.*?Passes after the fix", sheet, re.S)
-    assert re.search(r"Automation test.*?Not tried.*?live API keys", sheet, re.S)
-    # every try is a page, turned by number; the pager opens on the try that showed the bug
-    assert sheet.count('class="page proof-card"') == 3 and re.findall(r'data-go="(\d)"', sheet) == ["0", "1", "2"]
-    assert 'data-start="1"' in sheet and "Failed, but for another reason" in text and text.count("Shows the bug") == 2
-    assert "What the test checks:</b> emits a tool-call" in sheet and "it(&#x27;shows&#x27;" in sheet and "it(&#x27;confirms&#x27;" in sheet
-    assert "<code>pnpm test:node x</code>" in sheet and "Docker container from node:22, internet off" in sheet
+    assert "All 412 of the repo&#x27;s own tests in packages/p pass on main" in sheet
+    assert re.search(r"Unit test failing.*?Written for this issue \(try 2\).*?Successful with the change.*?Found", sheet, re.S)
+    assert re.search(r"Integration test failing.*?on real recorded data.*?Successful with the change.*?Found", sheet, re.S)
+    assert re.search(r"Automation test.*?live API keys.*?Skipped", sheet, re.S)
+    # every try is a job, turned by number; the pager opens on the try that showed the bug
+    assert sheet.count('class="page gh-job"') == 3 and re.findall(r'data-go="(\d)"', sheet) == ["0", "1", "2"]
+    assert 'data-start="1"' in sheet and "Failed, but for another reason" in text and text.count("Failing on main: shows the bug") == 2
+    assert "What the test checks:</span> emits a tool-call" in sheet
+    # the test as a change to the code, git style; the run as GitHub Actions shows it
+    assert 'class="dfile"' in sheet and "it('shows')" in sheet and "it('confirms'" in sheet and 'class="dadd"' in sheet
+    assert "<summary>Run pnpm test:node x</summary>" in sheet and "Runner: Docker container from node:22, internet off" in sheet
+    assert '<tr class="err"><td class="ln">2</td><td>AssertionError' in sheet and "Set up job" in sheet and "Complete job" in sheet
+    assert "✓" not in sheet and "&#10003;" not in sheet                      # no tick marks
     assert "Not run: the draft was refused before it ran" not in sheet       # try 1 ran: it says what it printed
     assert plain.result("reproduce", st) == "Bug shown on try 2, then confirmed on a recorded stream (try 3)"
     old = {**st, "repro": {**st["repro"], "existing_tests": None}, "fix": {}}
-    sheet = viewer.render(_data(state=old), mode="live").split('<div id="proof"')[1]
-    assert "Not checked" in sheet and "Waiting for the fix" in sheet
+    sheet = _sheet(viewer.render(_data(state=old), mode="live"), "proof")
+    assert "Not checked" in sheet and "Expected: waiting for the fix" in sheet
     no = viewer.render(_data(state={**st, "repro": {"status": "NEVER REPRODUCED"}}), mode="live")
     assert "Check proof" not in no and '<div id="proof" popover' in no   # the sheet is always there
 
@@ -258,13 +269,21 @@ def test_check_pr_binds_your_ok_to_the_text_shown_and_a_saved_file_cannot_decide
     d = _data(interrupt={"sha256": "abc123def4567890", "pr_body_path": "/x/PR.md"}, pr_patch=patch,
               commit_message="fix(ai): continue the retained text part on resume\n\nWhy.\n\nFixes #1\n")
     live = viewer.render(d, mode="live", token="tok")
-    sheet = live.split('<div id="check-pr" popover')[1].split('<div id="acts"')[0]
-    assert '<h3 class="pr-title" id="pr-title">fix(ai): continue the retained text part on resume</h3>' in sheet
-    assert all(f'data-tab="{t}"' in sheet for t in ("conv", "commits", "files")) and "Files changed <span class=\"cnt\">2</span>" in sheet
-    assert '<textarea class="commit-msg" id="commit-msg"' in sheet and "Back to the recommendation" in sheet
+    sheet = _sheet(live, "check-pr")
+    # GitHub's words: title and number, Draft, "wants to merge 1 commit into main from …", its four tabs
+    assert '<span id="pr-title">fix(ai): continue the retained text part on resume</span> <span class="gh-muted">#1</span>' in sheet
+    assert 'gh-state draft">Draft</span><b>debugassist</b> wants to merge 1 commit into <code class="gh-ref">main</code>' in sheet
+    assert [re.sub(r"<[^>]+>|\d", "", t).strip() for t in re.findall(r'role="tab"[^>]*>(.*?)</button>', sheet)] == \
+        ["Conversation", "Commits", "Checks", "Files changed"]
+    assert "Files changed <span class=\"cnt\">2</span>" in sheet
+    # the commit, GitHub's two boxes: the message and the extended description, yours to edit
+    assert 'id="commit-title" class="gh-input" value="fix(ai): continue the retained text part on resume"' in sheet
+    assert 'id="commit-body"' in sheet and ">Why.\n\nFixes #1</textarea>" in sheet and "Restore the recommendation" in sheet
     assert 'class="ddel"' in sheet and 'class="dadd"' in sheet and "+2</span>" in sheet and "−1</span>" in sheet
-    assert "abc123def456" in sheet and 'data-sha="abc123def4567890"' in sheet and "binds to exactly this text and change" in sheet
-    assert '<span>Approve</span>' in sheet and "icon" not in sheet.split('class="decide"')[1] and "<svg" not in sheet.split('class="decide"')[1]
+    assert "abc123def456" in sheet and 'data-sha="abc123def4567890"' in sheet and "exactly this text and change" in sheet
+    decide = sheet.split('class="decide gh-merge"')[1]
+    assert "<span>Approve</span>" in decide and "<span>Close pull request</span>" in decide and "No checks ran" in decide
+    assert "icon" not in decide and "<svg" not in decide and "✓" not in sheet
     assert 'fetch("/api/decide"' in live and "commit_message:" in live and live.count("fetch(") == 2
     saved = viewer.render(d)
     assert "fetch(" not in saved and "data-decide" not in saved and "uv run debug-assist approve ai-1-x" in saved
@@ -285,10 +304,10 @@ def test_a_refused_try_says_it_never_ran_and_the_command_shows_without_its_setup
           "attempts": [{"step": "reproduce", "n": 1, "rung": "unit", "outcome": "RED", "test_path": unit, "evidence": "AssertionError: x"},
                        {"step": "reproduce", "n": 2, "rung": "unit", "outcome": "ERROR", "test_path": "",
                         "evidence": "writer refused: the test asserts nothing (no expect)"}]}
-    sheet = viewer.render(_data(state=st), mode="live").split('<div id="proof"')[1].split('<div id="acts"')[0]
+    sheet = _sheet(viewer.render(_data(state=st), mode="live"), "proof")
     assert "Not run: the draft was refused before it ran" in sheet and "the test asserts nothing (no expect)" in sheet
-    assert "<code>cd packages/ai &amp;&amp; pnpm test:node src/ui/da-repro-1-unit-1.test.ts</code>" in sheet
-    assert "With its setup" in sheet and "COREPACK_HOME" in sheet                                  # folded, not gone
+    assert "<summary>Run cd packages/ai &amp;&amp; pnpm test:node src/ui/da-repro-1-unit-1.test.ts</summary>" in sheet
+    assert "Set up job" in sheet and "$ export COREPACK_HOME=/work/.corepack CI=1" in sheet          # folded, not gone
     assert "Not possible here" in sheet and "no recorded real data beside the code at fault (packages/ai/src/ui)" in sheet
 
 
@@ -303,3 +322,22 @@ def test_diffs_read_like_git():
     h = diffview.html(patch)
     assert "2 files changed" in h and "&lt;b&gt;" in h and "<b>" not in h.replace("<b>", "", 0).split("gone")[1][:5]
     assert diffview.kind_of_test("packages/x/da-repro-1-integration-3.test.ts") == "integration" and diffview.kind_of_test("x.test.ts") == "unit"
+
+
+def test_what_it_read_names_your_pointers():
+    pack = {"issue": {"comments": []}, "code": {"ranking": [], "ctx": {
+        "look_in": ["packages/ai/src/ui/chat.ts"], "look_in_missing": ["packages/ai/src/nope.ts"],
+        "test_into": "packages/ai/src/ui/chat.test.ts"}}}
+    html = viewer._what_it_read(pack, {})
+    assert "Your pointers for the cause" in html and "looked in first: packages/ai/src/ui/chat.ts" in html
+    assert "not found in the code: packages/ai/src/nope.ts" in html
+    assert "The unit test is added to packages/ai/src/ui/chat.test.ts, as new cases at its end" in html
+
+
+def test_checks_on_main_and_with_the_change():
+    st = {"repro": {"existing_tests": {"status": "NONE FAIL", "package": "packages/ai", "passed": 4252, "failed": 0},
+                    "failing_test": "p/da-repro-1-unit-1.test.ts", "ladder_plan": {"skipped": {"end_to_end": "x"}}},
+          "fix": {"status": "VALIDATED", "holdout": {"test": "p/da-holdout-1.test.ts", "status": "PASSED"}}}
+    got = [(c["name"], c["main"], c["change"]) for c in viewer.checks_of(st)]
+    assert got == [("Existing tests / packages/ai", "pass", "pass"), ("Unit test / da-repro-1-unit-1.test.ts", "fail", "pass"),
+                   ("Second test / da-holdout-1.test.ts", "fail", "pass"), ("Automation test (end to end)", "skip", "skip")]

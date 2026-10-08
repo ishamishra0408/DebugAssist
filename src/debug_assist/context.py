@@ -168,6 +168,10 @@ def _fit(items: list[str], limit: int) -> tuple[str, int]:
 
 def brief(pack: dict) -> tuple[str, list[str]]:
     cut, parts = [], []
+    ctx = (pack.get("code") or {}).get("ctx") or {}
+    if ctx.get("look_in"):  # the person's pointers come first; the evidence still decides
+        parts.append("THE PERSON RUNNING THIS POINTS TO THESE FILES FOR THE CAUSE (read them first; name the cause where "
+                     "the evidence puts it, even if elsewhere): " + ", ".join(ctx["look_in"]))
     cs = pack["issue"]["comments"]
     # comments with code or an error first (most useful for reproducing), then the rest, each in time order
     order = sorted(range(len(cs)), key=lambda i: (not ("```" in cs[i]["text"] or ERROR_LINE.search(cs[i]["text"])), i))
@@ -205,10 +209,10 @@ def brief(pack: dict) -> tuple[str, list[str]]:
 
 
 # ── the step ─────────────────────────────────────────────────────────────────────────────────────
-def collect(issue: dict, focus: str, checkout: Path, base_commit: str, profile=None) -> dict:
+def collect(issue: dict, focus: str, checkout: Path, base_commit: str, profile=None, hints: dict | None = None) -> dict:
     """Everything the later steps read. Raises testwriter.WriterRefused when no source file matches the issue."""
     owner, repo, number = issue["owner"], issue["repo"], issue["number"]
-    ctx = testwriter.locate(checkout, issue.get("body", ""), focus, profile)
+    ctx = testwriter.locate(checkout, issue.get("body", ""), focus, profile, hints)
     missing = []
 
     def safe(what, fn, empty):

@@ -44,6 +44,11 @@ class Context:
     ranking: list = field(default_factory=list)   # (file, score) for the record
     extra: str = ""                   # the brief from Gather context: discussion, linked items, shared code, history
     package_dir: str = ""             # e.g. "packages/openai-compatible", "libs/partners/openai", "." (one package)
+    # the person's optional pointers (Isha 2026-10-08): files to look in for the cause, a test file to write into
+    look_in: list = field(default_factory=list)          # pointed-to source files found in the code (searched first)
+    look_in_missing: list = field(default_factory=list)  # pointed-to files that are not source files in the code
+    test_into: str = ""               # the unit test is added to this existing test file, as new cases at its end
+    test_into_note: str = ""          # why a pointed-to test file was not used (not found, not a test file)
 
 
 # ── locate: deterministic, $0 ────────────────────────────────────────────────────────────────────
@@ -77,11 +82,15 @@ def _specificity(n_files: int) -> int:
     return 4 if n_files == 1 else 3 if n_files <= 3 else 2 if n_files <= 10 else 1 if n_files <= 40 else 0
 
 
-def locate(checkout: Path, issue_text: str, focus: str, profile=None) -> Context:
+POINTED = 10  # a file the person points to outranks any match by the issue's strings (a rare string scores 4, x2 in focus)
+
+
+def locate(checkout: Path, issue_text: str, focus: str, profile=None, hints: dict | None = None) -> Context:
     """Rank source files by the issue's exact strings, rare strings counting most and the focus's counting double.
     When the focus names a package, only that package's files compete (the first try, on #21439, let the issue's
-    OTHER problem outvote the focus). Then gather the test beside the winner, its setup, one pattern case, fixtures."""
-    checkout, lang = Path(checkout), langs.of(profile)
+    OTHER problem outvote the focus). Files the person points to count most. Then gather the test beside the winner
+    (or the person's own test file), its setup, one pattern case, fixtures."""
+    checkout, lang, hints = Path(checkout), langs.of(profile), hints or {}
     focus_anchors = anchors(focus)
     found = focus_anchors + [a for a in anchors(issue_text) if a not in focus_anchors]
     score, lines = {}, {}
@@ -119,6 +128,13 @@ def locate(checkout: Path, issue_text: str, focus: str, profile=None) -> Context
                     if path in score:
                         score[path] += 3
                         lines.setdefault(path, {})[int(num)] = 0
+    look_in, look_missing = [], []
+    for p in hints.get("look_in") or []:
+        if (checkout / p).is_file() and lang.is_source(p):
+            score[p] = score.get(p, 0) + POINTED
+            look_in.append(p)
+        else:
+            look_missing.append(p)
     if not score:
         raise WriterRefused("no source file contains any exact string from the issue")
     ranking = sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))
@@ -130,7 +146,15 @@ def locate(checkout: Path, issue_text: str, focus: str, profile=None) -> Context
             lines.setdefault(source, {})[src_text.count("\n", 0, m.start()) + 1] = 0
     snippets = _snippets(src_text, lines.get(source, {}))
 
-    example = lang.example_test(checkout, source)
+    test_into, into_note, want = "", "", (hints.get("test_in") or "").strip()
+    if want:
+        if not (checkout / want).is_file():
+            into_note = "not found in the code"
+        elif not langs.is_test_path(want):
+            into_note = "not a test file by its name"
+        else:
+            test_into = want
+    example = test_into or lang.example_test(checkout, source)
     test_text = (checkout / example).read_text()
     header = lang.header(test_text)
 
@@ -148,7 +172,8 @@ def locate(checkout: Path, issue_text: str, focus: str, profile=None) -> Context
     return Context(package=Path(pkg_dir).name if pkg_dir != "." else "", source=source, snippets=snippets,
                    example_test=str(example), example_header=header.strip(),
                    example_case=lang.pattern_case(test_text, focus), fixtures=fixtures, fixture_best=best,
-                   fixture_sample=sample, anchors=found, ranking=ranking[:5], package_dir=pkg_dir)
+                   fixture_sample=sample, anchors=found, ranking=ranking[:5], package_dir=pkg_dir,
+                   look_in=look_in, look_in_missing=look_missing, test_into=test_into, test_into_note=into_note)
 
 
 def _snippets(text: str, hit_lines: dict, pad: int = 14) -> str:
@@ -170,7 +195,21 @@ def _snippets(text: str, hit_lines: dict, pad: int = 14) -> str:
 
 
 # ── write: the only model call ───────────────────────────────────────────────────────────────────
-def system(lang: langs.Lang) -> str:
+def system(lang: langs.Lang, into: str = "") -> str:
+    if into:  # the person named the test file: new cases at its end, nothing else in it changes
+        return f"""You add NEW {lang.framework} test cases to the END of an existing test file ({into}). They reproduce ONE reported
+problem (the FOCUS) on the CURRENT, unfixed code.
+Rules:
+- Reproduce ONLY the FOCUS. The issue may describe other problems: ignore them completely.
+- The new cases must FAIL on the current code, and fail with the FOCUS symptom (assert the correct behaviour).
+- Write ONLY what is added: the file's imports, mocks and helpers (its setup, shown to you) are already there. Never
+  repeat or re-declare anything it has. If you need one more import, put it first in your block.
+{lang.rules()}
+Reply in exactly this shape:
+SYMPTOM: <one line: what the failing assertion will show on the current code>
+```{lang.fence}
+<only the new cases (and any one extra import), to be appended to the file>
+```"""
     return f"""You write ONE {lang.framework} test file that reproduces ONE reported problem (the FOCUS) on the CURRENT, unfixed code.
 Rules:
 - Reproduce ONLY the FOCUS. The issue may describe other problems: ignore them completely.
@@ -222,7 +261,10 @@ A PATTERN TEST FROM THAT FILE:
 {ctx.example_case[:3500]}{fixture}
 
 EARLIER ATTEMPTS:{past or " none"}"""
-    return [("system", system(lang or langs.JS())), ("user", user)]
+    into = getattr(ctx, "test_into", "") if rung.name == "unit" else ""
+    if into:
+        user = user.replace("SETUP OF THE TEST FILE BESIDE IT", "SETUP OF THE FILE YOU ADD TO", 1)
+    return [("system", system(lang or langs.JS(), into)), ("user", user)]
 
 
 # an unclosed block (cut off) still parses
@@ -322,7 +364,8 @@ def attempt(state: dict, rung: ladder.Rung, n: int, history: list, ctx: Context,
     """Draft (one model call, metered), validate, write beside the example test, run network-off, classify."""
     from .sandbox import run_in_sandbox
     issue, lang = state["issue"], langs.of(profile)
-    rel = lang.new_test(ctx.example_test, "repro", issue["number"], label or rung.name, n)
+    into = getattr(ctx, "test_into", "") if rung.name == "unit" else ""  # the person's own test file, when named
+    rel = into or lang.new_test(ctx.example_test, "repro", issue["number"], label or rung.name, n)
     try:
         focus = state.get("focus") or issue["title"]
         msg, _ = write(state, step, messages(issue["title"], state.get("issue_text") or issue.get("body", ""),
@@ -334,22 +377,38 @@ def attempt(state: dict, rung: ladder.Rung, n: int, history: list, ctx: Context,
         validate(content, rung, lang)
     except WriterRefused as e:
         return ladder.Attempt(rung=rung.name, n=n, outcome=ladder.ERROR, evidence=f"writer refused: {e}", test_path="")
-    (Path(checkout) / rel).write_text(content)
-    cmd = lang.test_command(ctx.package_dir or lang.package_of(rel), rel)
+    base = original(Path(checkout), into) if into else ""
+    written = (base.rstrip("\n") + "\n\n" + content) if into else content
+    (Path(checkout) / rel).write_text(written)
+    cmd = lang.test_command((lang.package_of(rel) if into else ctx.package_dir) or lang.package_of(rel), rel)
     r = (run_cmd or run_in_sandbox)(cmd, Path(checkout), network=False, timeout=300, image=profile.image)
     out = (r.stdout or "") + (r.stderr or "")
     outcome, line = ladder.classify(profile.language, r.returncode, out)
     if proof_dir:
-        write_proof(Path(proof_dir), rel, content, cmd, r.returncode, out, outcome, line, profile, Path(checkout))
+        write_proof(Path(proof_dir), rel, written, cmd, r.returncode, out, outcome, line, profile, Path(checkout),
+                    name=f"try-{n}-{Path(rel).name}" if into else None)
     detail = _detail(out)
     if outcome == ladder.RED and right_reason(state.get("focus") or issue["title"], out) is False:
         terms = ", ".join(symptom_terms(state.get("focus") or ""))
         outcome, line = ladder.ERROR, (f"RED for another reason: the failure shows none of the focus's strings "
                                        f"({terms}). A reproduction must fail with the FOCUS symptom. Got: {line}")
+    if into and outcome != ladder.RED:  # only cases that show the bug stay in the person's file
+        (Path(checkout) / rel).write_text(base)
     return ladder.Attempt(rung=rung.name, n=n, outcome=outcome,
                           evidence=(f"{line}" + (f"\n{detail}" if detail else "") +
                                     (f"\nwriter's symptom: {symptom}" if symptom else ""))[:1500],
                           test_path=rel)
+
+
+def original(checkout: Path, rel: str) -> str:
+    """A tracked file as the commit has it (a crashed try may have left cases in the working copy)."""
+    r = subprocess.run(["git", "-C", str(checkout), "show", f"HEAD:{rel}"], capture_output=True, text=True, timeout=60)
+    return r.stdout if r.returncode == 0 else (Path(checkout) / rel).read_text()
+
+
+def tracked(checkout: Path, rel: str) -> bool:
+    return subprocess.run(["git", "-C", str(checkout), "ls-files", "--error-unmatch", "--", rel],
+                          capture_output=True, timeout=60).returncode == 0
 
 
 def write_proof(proof_dir: Path, rel: str, content: str | None, cmd: str, code: int, out: str, outcome: str, line: str,
@@ -376,6 +435,14 @@ def write_proof(proof_dir: Path, rel: str, content: str | None, cmd: str, code: 
                  f"exit code   {code}\n"
                  f"verdict     {outcome}: {line}\n"
                  f"--- output ---\n{ANSI.sub('', out)[-40000:]}")
+    if content is not None:  # the test as a change to the code, git style: a new file, or the cases added to a file
+        from . import diffview
+        try:
+            diff = (diffview._git(checkout, "diff", "--no-color", "--", rel) if tracked(checkout, rel) else "") or \
+                diffview.new_file_diff(rel, content)
+        except (OSError, subprocess.SubprocessError):
+            diff = diffview.new_file_diff(rel, content)
+        f.with_suffix(".diff").write_text(diff)
     return f
 
 
@@ -400,8 +467,9 @@ def read_proof(f: Path) -> dict:
     if not Path(f).exists():
         return {}
     head, _, output = Path(f).read_text(errors="replace").partition("--- output ---\n")
-    got = {m.group(1).replace(" ", "_"): m.group(2).strip() for m in re.finditer(r"^(\w[\w ]*?)\s{2,}(.+)$", head, re.M)}
-    return {**got, "output": output}
+    got = {m.group(1).replace(" ", "_"): m.group(2).strip() for m in re.finditer(r"^(\w[\w ]*?)[ \t]{2,}(.*)$", head, re.M)}
+    d = Path(f).with_suffix(".diff")
+    return {**got, "output": output, **({"diff": d.read_text(errors="replace")} if d.exists() else {})}
 
 
 def _detail(out: str) -> str:

@@ -77,6 +77,7 @@ class RunState(TypedDict, total=False):
     turns: dict
     focus: str          # the ONE problem in the issue this run reproduces (--focus, or a section via --focus-heading)
     focus_heading: str
+    hints: dict         # the person's optional pointers: {"look_in": [files for the cause], "test_in": test file}
     context: dict       # Gather context: where the pack is, its sha256, the counts, and the brief later steps read
     advisors: Annotated[dict, lambda a, b: {**(a or {}), **(b or {})}]  # per step: what its seat said (advice only)
     attempts: Annotated[list, operator.add]  # append-only: every attempt and how it ended (also in the event log)
@@ -175,7 +176,7 @@ def gather_context(s: RunState):
     checkout = run_copy(prof, run_dir(s) / "checkout")  # this run's own unmodified code (reused as-is on resume)
     focus = s.get("focus") or s["issue"]["title"]
     try:
-        pack = context.collect(s["issue"], focus, checkout, prof.base_commit, prof)
+        pack = context.collect(s["issue"], focus, checkout, prof.base_commit, prof, s.get("hints"))
     except testwriter.WriterRefused as e:
         return {"context": {"status": "NOT FOUND", "checkout": str(checkout), "why": str(e)},
                 "outcome": stop(CONTEXT_NOT_FOUND, f"{e}; there is no code to show the bug in"),
@@ -196,7 +197,7 @@ def gather_context(s: RunState):
 def _ctx(s: RunState, checkout: Path):
     """The context every step reads: the saved pack when Gather context ran, else (older runs) a fresh locate."""
     return context.load_ctx(s) or testwriter.locate(checkout, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"],
-                                                     profiles.get(s["profile"]["repo"]))
+                                                     profiles.get(s["profile"]["repo"]), s.get("hints"))
 
 
 def focus_of(issue: dict, focus: str | None, heading: str | None) -> str:
@@ -293,7 +294,11 @@ def shelve_drafts(checkout: Path, rdir: Path, paths: list, keep: str | None) -> 
         if src.exists():
             dest = Path(rdir) / "attempt-tests" / Path(p).name
             dest.parent.mkdir(parents=True, exist_ok=True)
-            src.replace(dest)
+            if testwriter.tracked(checkout, p):  # the person's own test file: keep the cases, put the file back
+                dest.write_text(src.read_text())
+                src.write_text(testwriter.original(checkout, p))
+            else:
+                src.replace(dest)
             moved.append(p)
     return moved
 
@@ -328,6 +333,8 @@ def reproduce(s: RunState):
     confirming = next((a for a in result.attempts[result.attempts.index(red) + 1:]
                        if a.outcome == ladder.RED and a.rung == result.confirmed_by), None) if red else None
     oracle = confirming if (result.confirmed and confirming) else red
+    into = getattr(ctx, "test_into", "")  # the person named the test file: its cases judge the fix when they show the bug
+    oracle = next((a for a in result.attempts if into and a.outcome == ladder.RED and a.test_path == into), oracle)
     shelve_drafts(checkout, run_dir(s), [a.test_path for a in result.attempts], keep=oracle.test_path if oracle else None)
     out = {"repro": {"status": result.status, "rung": result.rung, "ladder_plan": plan,
                      "confirmed": result.confirmed, "confirmed_by": result.confirmed_by,
@@ -396,7 +403,8 @@ def find_cause(s: RunState):
 def write_fix(s: RunState):
     r, c = s["repro"], s["cause"]
     checkout = Path(r["checkout"])
-    dirty = [p for p in fixer._git(checkout, "diff", "--name-only").split() if p]
+    # tests stay as they are (the person's own test file may carry the cases that show the bug)
+    dirty = [p for p in fixer._git(checkout, "diff", "--name-only").split() if p and not langs.is_test_path(p)]
     fixer.revert(checkout, dirty)  # a crash mid-step can leave a half-applied attempt; start from clean source
     prof = profiles.get(s["profile"]["repo"])
     looked = [fixer.find_definition(checkout, n, profile=prof) for n in c.get("looked_up", [])]

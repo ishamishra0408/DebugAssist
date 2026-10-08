@@ -179,13 +179,45 @@ def run_going() -> bool:
     return _child["proc"] is not None and _child["proc"].poll() is None
 
 
-def start_run(link: str, heading: str, ai: str) -> str:
+_PATH = re.compile(r"[\w@+-][\w@.+-]*(?:/[\w@.+-]+)*")
+_BLOB = re.compile(r"^https://github\.com/[\w.-]+/[\w.-]+/blob/[^/]+/(.+?)(?:[#?].*)?$")
+
+
+def pointers(look_in: str, test_in: str) -> tuple[list[str], str]:
+    """The person's optional pointers (Isha 2026-10-08), checked: paths from the repo's top folder (or GitHub file
+    links), no "..", at most 5 files to look in, one test file. Whether they exist is checked in the run's own copy."""
+    from .lang import is_test_path
+
+    def clean(raw: str) -> str:
+        raw = raw.strip().strip("`'\"")
+        m = _BLOB.match(raw)
+        raw = (m.group(1) if m else raw).removeprefix("./")
+        if not raw:
+            return ""
+        if len(raw) > 200 or ".." in raw.split("/") or not _PATH.fullmatch(raw):
+            raise Refused(f"{raw[:80]} is not a path in the repo. Write it from the repo's top folder, e.g. src/app.ts.")
+        return raw
+    files = [c for c in (clean(x) for x in re.split(r"[,\s]+", look_in or "")) if c]
+    if len(files) > 5:
+        raise Refused("Point to at most 5 files for the cause.")
+    for f in files:
+        if is_test_path(f):
+            raise Refused(f"{f} is a test file. The cause is looked for in the code itself; put a test file in "
+                          "Write the unit test in.")
+    test = clean(test_in or "")
+    if test and not is_test_path(test):
+        raise Refused(f"{test} is not a test file by its name (e.g. chat.test.ts, test_chat.py).")
+    return list(dict.fromkeys(files)), test
+
+
+def start_run(link: str, heading: str, ai: str, look_in: str = "", test_in: str = "") -> str:
     with _start_lock:
-        return _start_run(link, heading, ai)
+        return _start_run(link, heading, ai, look_in, test_in)
 
 
-def _start_run(link: str, heading: str, ai: str) -> str:
+def _start_run(link: str, heading: str, ai: str, look_in: str = "", test_in: str = "") -> str:
     owner, repo, number = _issue_parts(link)
+    files, test = pointers(look_in, test_in)
     _ready_repo(owner, repo)
     if ai not in ("standard", "opus"):
         raise Refused("Pick which AI to use.")
@@ -200,7 +232,8 @@ def _start_run(link: str, heading: str, ai: str) -> str:
     folder.mkdir(parents=True, exist_ok=True)
     argv = [sys.executable, "-m", "debug_assist", "run", f"https://github.com/{owner}/{repo}/issues/{number}",
             f"--run-id={run_id}", "--no-view"] + (["--demo"] if ai == "opus" else []) + \
-           ([f"--focus-heading={heading}"] if heading else [])
+           ([f"--focus-heading={heading}"] if heading else []) + \
+           ([f"--look-in={','.join(files)}"] if files else []) + ([f"--test-in={test}"] if test else [])
     with open(folder / "console.log", "w") as log:
         _child["proc"] = subprocess.Popen(argv, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                           start_new_session=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
@@ -751,6 +784,15 @@ def home_page() -> str:
       <label><input type="radio" name="ai" value="opus">Claude Opus<small>About $0.70</small></label>
     </div>
     <p class="foot" id="aifoot">Cheaper. It often cannot fix the bug.</p></section>
+  <section class="group" aria-labelledby="h-ptr" style="margin-top:28px"><h2 id="h-ptr">Your pointers <span class="opt">Optional</span></h2>
+    <div class="sect pointers">
+      <label class="pfield"><b>Where to look for the cause</b>
+        <input id="look-in" type="text" placeholder="packages/ai/src/ui/chat.ts" autocomplete="off" spellcheck="false" autocapitalize="off">
+        <small>Files you suspect, separated by commas, from the repo's top folder (a GitHub file link works too). They are searched first and named to the AI that finds the cause; it still goes where the evidence points.</small></label>
+      <label class="pfield"><b>Write the unit test in</b>
+        <input id="test-in" type="text" placeholder="packages/ai/src/ui/chat.test.ts" autocomplete="off" spellcheck="false" autocapitalize="off">
+        <small>An existing test file. The unit test is added to it as new cases at the end; nothing else in it changes. Leave empty for a new test file beside the code.</small></label>
+    </div></section>
   <div class="start" style="margin-top:22px"><button type="button" class="btn glass prominent" id="start">{icons.play(16)}<span>Start the run</span></button></div>
 </div>
 {_label_queue()}
@@ -800,7 +842,8 @@ $("start").onclick = async () => {{
   const sec = document.querySelector('input[name="sec"]:checked'), ai = document.querySelector('input[name="ai"]:checked');
   try {{
     const r = await fetch("/api/start", {{ method: "POST", headers: {{ ...H, "Content-Type": "application/json" }},
-      body: JSON.stringify({{ url: $("link").value.trim(), heading: sec ? sec.value : "", ai: ai ? ai.value : "" }}) }});
+      body: JSON.stringify({{ url: $("link").value.trim(), heading: sec ? sec.value : "", ai: ai ? ai.value : "",
+                             look_in: $("look-in").value, test_in: $("test-in").value }}) }});
     const j = await r.json();
     if (!r.ok) {{ $("start").disabled = false; return fail(j.error || "Something went wrong."); }}
     location.href = j.page;
@@ -994,7 +1037,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/connect":
                 repo = start_connect(str(body.get("url", "")), again=bool(body.get("again")))
                 return self._json(200, {"repo": repo, "page": f"/connect?repo={repo}"})
-            rid = start_run(str(body.get("url", "")), str(body.get("heading", "")), str(body.get("ai", "")))
+            rid = start_run(str(body.get("url", "")), str(body.get("heading", "")), str(body.get("ai", "")),
+                            str(body.get("look_in", "")), str(body.get("test_in", "")))
             return self._json(200, {"run_id": rid, "page": f"/run/{rid}"})
         except Refused as r:
             return self._json(409 if "already going" in str(r) or "being connected" in str(r) else 400, {"error": str(r)})
