@@ -208,7 +208,8 @@ def _write_and_run_test(s: RunState, rung: ladder.Rung, n: int, history: list, c
     evidence; the sandbox runs it with the network off; classify() and the right-reason check decide."""
     drafts = run_dir(s) / "writer"
     drafts.mkdir(exist_ok=True)
-    return testwriter.attempt(s, rung, n, history, ctx, checkout, profiles.get(s["profile"]["repo"]), drafts=drafts)
+    return testwriter.attempt(s, rung, n, history, ctx, checkout, profiles.get(s["profile"]["repo"]), drafts=drafts,
+                              proof_dir=run_dir(s) / "proof")
 
 
 def _record_attempt(s: RunState, a: ladder.Attempt) -> ladder.Attempt:

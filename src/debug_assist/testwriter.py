@@ -22,6 +22,7 @@ from . import ladder, lang as langs
 from .models import write
 
 MAX_SNIPPET_LINES = 220
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class WriterRefused(ValueError):
@@ -316,7 +317,8 @@ def validate(content: str, rung: ladder.Rung, lang: langs.Lang | None = None) ->
 
 # ── one attempt ──────────────────────────────────────────────────────────────────────────────────
 def attempt(state: dict, rung: ladder.Rung, n: int, history: list, ctx: Context, checkout: Path, profile,
-            run_cmd=None, drafts: Path | None = None, step: str = "reproduce", label: str = "") -> ladder.Attempt:
+            run_cmd=None, drafts: Path | None = None, step: str = "reproduce", label: str = "",
+            proof_dir: Path | None = None) -> ladder.Attempt:
     """Draft (one model call, metered), validate, write beside the example test, run network-off, classify."""
     from .sandbox import run_in_sandbox
     issue, lang = state["issue"], langs.of(profile)
@@ -337,6 +339,8 @@ def attempt(state: dict, rung: ladder.Rung, n: int, history: list, ctx: Context,
     r = (run_cmd or run_in_sandbox)(cmd, Path(checkout), network=False, timeout=300, image=profile.image)
     out = (r.stdout or "") + (r.stderr or "")
     outcome, line = ladder.classify(profile.language, r.returncode, out)
+    if proof_dir:
+        write_proof(Path(proof_dir), rel, content, cmd, r.returncode, out, outcome, line, profile, Path(checkout))
     detail = _detail(out)
     if outcome == ladder.RED and right_reason(state.get("focus") or issue["title"], out) is False:
         terms = ", ".join(symptom_terms(state.get("focus") or ""))
@@ -346,6 +350,42 @@ def attempt(state: dict, rung: ladder.Rung, n: int, history: list, ctx: Context,
                           evidence=(f"{line}" + (f"\n{detail}" if detail else "") +
                                     (f"\nwriter's symptom: {symptom}" if symptom else ""))[:1500],
                           test_path=rel)
+
+
+def write_proof(proof_dir: Path, rel: str, content: str, cmd: str, code: int, out: str, outcome: str, line: str,
+                profile, checkout: Path) -> Path:
+    """The proof that a test fails (or passes) on the unfixed code, as plain text anyone can check: the test's
+    fingerprint, the code it ran against, the exact command, where and when it ran, the exit code and the whole
+    output. runs/<id>/proof/<test file name>.txt (Isha 2026-10-08: "attach proof that the bug reproduces")."""
+    import hashlib
+    from datetime import datetime, timezone
+    from .config import CFG
+    if CFG.sandbox_backend == "e2b":
+        from .sandbox_e2b import template_for
+        where = f"E2B sandbox from template {template_for(checkout)}"
+    else:
+        where = f"Docker container from {profile.image}"
+    proof_dir.mkdir(parents=True, exist_ok=True)
+    f = proof_dir / f"{Path(rel).name}.txt"
+    f.write_text(f"test file   {rel}\n"
+                 f"sha256      {hashlib.sha256(content.encode()).hexdigest()}\n"
+                 f"code        {profile.repo} at {(profile.base_commit or '')[:12]}: source unchanged, only new test files\n"
+                 f"ran         {cmd}\n"
+                 f"where       {where}, internet off\n"
+                 f"when        {datetime.now(timezone.utc).isoformat(timespec='seconds')}\n"
+                 f"exit code   {code}\n"
+                 f"verdict     {outcome}: {line}\n"
+                 f"--- output ---\n{ANSI.sub('', out)[-40000:]}")
+    return f
+
+
+def read_proof(f: Path) -> dict:
+    """The proof file back as {field: value, "output": ...}; {} when there is none (runs before 2026-10-08)."""
+    if not Path(f).exists():
+        return {}
+    head, _, output = Path(f).read_text(errors="replace").partition("--- output ---\n")
+    got = {m.group(1).replace(" ", "_"): m.group(2).strip() for m in re.finditer(r"^(\w[\w ]*?)\s{2,}(.+)$", head, re.M)}
+    return {**got, "output": output}
 
 
 def _detail(out: str) -> str:

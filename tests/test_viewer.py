@@ -160,3 +160,38 @@ def test_latest_activity_is_a_pop_up_and_usage_uses_standard_names():
                  "Last event"):
         assert word in page, word
     assert "Time and money" not in page and "Money spent" not in page
+
+
+def test_show_the_bug_carries_its_proof(tmp_path, monkeypatch):
+    """Isha 2026-10-08: "attach proof that the bug reproduces". The tests that failed for the problem's reason, what
+    they printed, the tests themselves, and (runs from now on) the exact command, where, the code and the exit code."""
+    from types import SimpleNamespace
+
+    from debug_assist import plain, testwriter
+    monkeypatch.setattr(viewer, "_runs_dir", lambda: tmp_path)
+    rd = tmp_path / "ai-1-x"
+    (rd / "checkout/packages/p/src").mkdir(parents=True)
+    (rd / "checkout/packages/p/src/da-repro-1-integration-3.test.ts").write_text("it('confirms', () => expect(parts).toEqual([]))")
+    (rd / "attempt-tests").mkdir()
+    (rd / "attempt-tests/da-repro-1-unit-2.test.ts").write_text("it('shows', () => expect(parts).toEqual([]))")
+    prof = SimpleNamespace(repo="vercel/ai", base_commit="e7f55a481fe2c3", image="node:22")
+    testwriter.write_proof(rd / "proof", "packages/p/src/da-repro-1-unit-2.test.ts", "it('shows')", "pnpm test:node x",
+                           1, "FAIL x\nAssertionError: expected [ { type: 'tool-call' } ] to strictly equal []", "RED", "x",
+                           prof, rd / "checkout")
+    st = {**_data()["state"],
+          "repro": {"status": "REPRODUCED", "confirmed": True, "failing_test": "packages/p/src/da-repro-1-unit-2.test.ts",
+                    "evidence": "AssertionError: expected [ { type: 'tool-call' } ] to strictly equal []\nwriter's symptom: emits a tool-call",
+                    "oracle_test": "packages/p/src/da-repro-1-integration-3.test.ts", "oracle_evidence": "AssertionError: same"},
+          "attempts": [{"step": "reproduce", "n": 1, "rung": "unit", "outcome": "ERROR", "test_path": "packages/p/src/da-repro-1-unit-1.test.ts"},
+                       {"step": "reproduce", "n": 2, "rung": "unit", "outcome": "RED", "test_path": "packages/p/src/da-repro-1-unit-2.test.ts"},
+                       {"step": "reproduce", "n": 3, "rung": "integration", "outcome": "RED", "test_path": "packages/p/src/da-repro-1-integration-3.test.ts"}]}
+    page = viewer.render(_data(state=st), mode="live")
+    assert 'popovertarget="proof"' in page and "See the proof" in page and '<div id="proof" popover' in page
+    assert "Try 2 · quick test" in page and "Try 3 · recorded-stream test · confirmed it on real recorded data" in page
+    assert "What the test checks:</b> emits a tool-call" in page and "type: &#x27;tool-call&#x27;" in page
+    assert "it(&#x27;shows&#x27;" in page and "it(&#x27;confirms&#x27;" in page            # both tests, shelved or kept
+    assert "<code>pnpm test:node x</code>" in page and "Docker container from node:22, internet off" in page
+    assert "vercel/ai at e7f55a481fe2" in page and "were not kept for runs before" in page  # try 3 has no proof file
+    assert plain.result("reproduce", st) == "Bug shown on try 2, then confirmed on a recorded stream (try 3)"
+    no = viewer.render(_data(state={**st, "repro": {"status": "NEVER REPRODUCED"}}), mode="live")
+    assert "See the proof" not in no

@@ -343,12 +343,16 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
 </header>"""
 
     # ── the steps, one row each: what it gave, or what is happening in it ──
+    proof_html = _proof(s, rid)
     step_rows_html = []
     for i, (r, st) in enumerate(zip(rows, states)):
         chips, cnt = inside(r["key"], d["events"])
         if st == "done":
             sub = plain.result(r["key"], s) or (chips[-1] if chips else "Done")
             trail = e(plain.duration(secs[r["key"]])) if secs.get(r["key"]) is not None else ""
+            if r["key"] == "reproduce" and proof_html:
+                trail = (f'<button type="button" class="tbtn proof-btn" popovertarget="proof">{icons.check(14)}'
+                         f'<span>See the proof</span></button>') + trail
         elif st == "running":
             sub = " · ".join(chips[-2:] + ([cnt] if cnt else [])) or "Starting this step"
             trail = _since(d, d.get("since"), is_replay)
@@ -500,6 +504,10 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
 {_k("final", f'<i hidden data-final="{int(final)}"></i>')}
 {eng}
 </main>
+{f"""<div id="proof" popover class="pop sheet glass" aria-label="Proof the bug happens">
+  <div class="pop-head"><b>Proof the bug happens</b><button type="button" class="tbtn" popovertarget="proof" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>
+  {_k("proof", proof_html)}
+</div>""" if proof_html else ""}
 <div id="acts" popover class="pop glass" aria-label="Latest activity">
   <div class="pop-head"><b>Latest activity</b><button type="button" class="tbtn" popovertarget="acts" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>
   {_k("log", f'<ul class="rows acts-list">{acts or "<li class=row><span></span><span class=t><span>Nothing yet</span></span></li>"}</ul>')}
@@ -531,6 +539,51 @@ document.addEventListener("click", ev => {{
 }});
 {_LIVE_JS.replace("__MODE__", mode) if served else ''}
 </script></body></html>"""
+
+
+def _proof(s: dict, rid: str) -> str:
+    """Proof the bug happens: each test that failed on the unfixed code for the problem's reason (the first, and the
+    one that confirmed it on recorded data), with what it printed, the test itself, and how and where it ran
+    (testwriter.write_proof). Empty until the bug has been shown."""
+    from .testwriter import read_proof
+    r = s.get("repro") or {}
+    if r.get("status") != "REPRODUCED" or not r.get("failing_test"):
+        return ""
+    rdir = _runs_dir() / rid
+    tries = {a.get("test_path"): a for a in s.get("attempts") or [] if a.get("step", "reproduce") == "reproduce"}
+    shown = [(r["failing_test"], r.get("evidence") or "", "first")]
+    if r.get("oracle_test") and r["oracle_test"] != r["failing_test"]:
+        shown.append((r["oracle_test"], r.get("oracle_evidence") or "", "confirm"))
+    cards = []
+    for path, evidence, role in shown:
+        a = tries.get(path) or {}
+        kind = plain.TEST_KIND.get(a.get("rung", ""), "test")
+        title = (f"Try {a['n']} · {kind}" if a.get("n") else kind.capitalize()) + \
+            (" · confirmed it on real recorded data" if role == "confirm" else "")
+        name = Path(path).name
+        code_file = next((f for f in (rdir / "checkout" / path, rdir / "attempt-tests" / name) if f.exists()), None)
+        code = code_file.read_text(errors="replace") if code_file else ""
+        pf = read_proof(rdir / "proof" / f"{name}.txt")
+        lines = [l for l in evidence.splitlines() if not l.startswith("writer's symptom:")]
+        checks = next((l.removeprefix("writer's symptom:").strip() for l in evidence.splitlines()
+                       if l.startswith("writer's symptom:")), "")
+        facts = [("Ran", f"<code>{e(pf['ran'])}</code>"), ("Where", e(pf.get("where", ""))), ("Code", e(pf.get("code", ""))),
+                 ("When", e(pf.get("when", ""))), ("Exit code", e(pf.get("exit_code", ""))),
+                 ("Test fingerprint", f"<code>sha256 {e(pf.get('sha256', ''))}</code>")] if pf.get("ran") else []
+        cards.append(
+            f'<article class="proof-card"><h3>{e(title)}</h3>'
+            f'<p class="verdict"><span class="dot"></span>Failed on the unfixed code, showing the problem</p>'
+            + (f'<p class="checks"><b>What the test checks:</b> {e(checks)}</p>' if checks else "")
+            + f'<h4>What it printed</h4><pre class="out">{e(chr(10).join(lines).strip()[:3000])}</pre>'
+            + (f'<details><summary>The test it wrote · {e(name)}</summary><pre class="code">{e(code[:20000])}</pre></details>' if code else "")
+            + (f'<details><summary>Everything it printed</summary><pre class="out">{e(pf["output"][-20000:])}</pre></details>'
+               if pf.get("output") else "")
+            + (f'<dl class="facts">{"".join(f"<dt>{k}</dt><dd>{v}</dd>" for k, v in facts)}</dl>' if facts else
+               '<p class="foot">The exact command and full output were not kept for runs before 8 Oct 2026.</p>')
+            + "</article>")
+    return ('<div class="proof">' + "".join(cards) +
+            '<p class="foot">The code was the repository as it is, with only these new test files added. A test that fails '
+            'for a different reason is not counted as showing the bug.</p></div>')
 
 
 def _advisors(s: dict) -> str:

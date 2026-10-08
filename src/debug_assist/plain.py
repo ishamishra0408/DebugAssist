@@ -119,8 +119,12 @@ def result(key: str, s: dict) -> str | None:
                  f"{c['changes']} recent changes"]
         return "Read " + ", ".join(p for p in parts if p)
     if key == "reproduce" and (r := s.get("repro") or {}).get("status") == "REPRODUCED":
-        return (f"Bug shown on try {r.get('attempts_used') or 1}"
-                + (", then confirmed on a recorded stream" if r.get("confirmed") else ""))
+        # the try that showed it, not the number of tries (2026-10-08: "try 3" when try 2 showed it and 3 confirmed it)
+        n_of = {a.get("test_path"): a.get("n") for a in s.get("attempts") or []}
+        shown, confirmed = n_of.get(r.get("failing_test")), n_of.get(r.get("oracle_test"))
+        return (f"Bug shown on try {shown or r.get('attempts_used') or 1}"
+                + (f", then confirmed on a recorded stream (try {confirmed})" if r.get("confirmed") and confirmed and confirmed != shown
+                   else ", then confirmed on a recorded stream" if r.get("confirmed") else ""))
     if key == "find_cause" and (c := s.get("cause") or {}).get("file"):
         a, b = (c.get("lines") or [None, None])[:2]
         return f"In {Path(c['file']).name}" + (f", lines {a}–{b}" if a else "")
