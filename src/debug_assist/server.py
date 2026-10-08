@@ -381,6 +381,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.server.last = time.monotonic()
+        if getattr(self.server, "locked", ""):  # a public address without its sign-in set: say why, serve nothing else
+            if self.path == "/health":
+                return self._send(200, HEALTH.decode(), "text/plain")
+            return self._send(503, f"{plain.NAME} is locked. {self.server.locked}", "text/plain; charset=utf-8")
         if not self._host_ok():
             return self._send(403, "forbidden", "text/plain")
         u = urlparse(self.path)
@@ -449,6 +453,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # sign in, or start a run
         self.server.last = time.monotonic()
+        if getattr(self.server, "locked", ""):
+            return self._send(503, f"{plain.NAME} is locked. {self.server.locked}", "text/plain; charset=utf-8")
         if urlparse(self.path).path == "/login":
             if not self._host_ok() or (self.headers.get("Origin") and not self._origin_ok()):
                 return self._send(403, "forbidden", "text/plain")
@@ -479,10 +485,23 @@ def make(port: int = PORT, host: str = "127.0.0.1") -> ThreadingHTTPServer:
     return httpd
 
 
+def locked_reason(host: str) -> str:
+    """Why a public address must stay locked, in plain words; empty when it may open."""
+    if host in ("127.0.0.1", "localhost"):
+        return ""
+    if len(_password()) < 12:
+        return "APP_PASSWORD is missing or shorter than 12 characters. Set it in Render ▸ Environment, then redeploy."
+    if not _public_host():
+        return "The public address is unknown. Set PUBLIC_HOST in Render ▸ Environment, then redeploy."
+    return ""
+
+
 def serve(port: int = PORT, idle_s: int = IDLE_S, host: str = "127.0.0.1") -> None:
-    if host not in ("127.0.0.1", "localhost") and (len(_password()) < 12 or not _public_host()):
-        sys.exit("refusing to listen publicly: set APP_PASSWORD (12+ characters) and PUBLIC_HOST first")
+    why = locked_reason(host)
+    print(f"{plain.NAME}: starting on {host}:{port}; public address {_public_host() or '(none)'}; "
+          + (f"LOCKED: {why}" if why else ("sign-in required" if _password() else "no sign-in (this Mac only)")), flush=True)
     httpd = make(port, host)
+    httpd.locked = why
 
     def watchdog():
         while True:

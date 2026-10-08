@@ -19,6 +19,8 @@ services:
         value: "3.12.7"
       - key: UV_PYTHON              # and uv likewise: any 3.12 here
         value: "3.12"
+      - key: PYTHONUNBUFFERED       # every log line reaches Render's log at once
+        value: "1"
       - key: SANDBOX_BACKEND
         value: e2b
       - key: RUN_FILES_IN_DB        # the free plan's disk is wiped on restart: run files live in MongoDB

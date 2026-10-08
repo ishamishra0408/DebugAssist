@@ -172,7 +172,19 @@ def test_sessions_expire_and_wrong_passwords_slow_down(live, monkeypatch):
     assert codes[:5] == [401] * 5 and codes[5] == 429
 
 
-def test_it_will_not_listen_publicly_without_a_password(monkeypatch):
+def test_a_public_address_without_its_password_stays_locked_and_says_why(monkeypatch, tmp_path):
     monkeypatch.delenv("APP_PASSWORD", raising=False)
-    with pytest.raises(SystemExit, match="APP_PASSWORD"):
-        server.serve(0, 0, "0.0.0.0")
+    monkeypatch.setenv("RENDER_EXTERNAL_HOSTNAME", "debugassistagent.onrender.com")
+    assert "APP_PASSWORD" in server.locked_reason("0.0.0.0") and server.locked_reason("127.0.0.1") == ""
+    httpd = server.make(0)
+    httpd.locked = server.locked_reason("0.0.0.0")
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        assert _get(httpd, "/health")[0] == 200                       # Render sees it alive, so the deploy finishes
+        code, text = _get(httpd, "/")
+        assert code == 503 and "is locked" in text and "APP_PASSWORD" in text
+        assert _get(httpd, "/api/start", "POST", {"Content-Type": "application/json"}, b"{}")[0] == 503
+    finally:
+        httpd.shutdown()
+    monkeypatch.setenv("APP_PASSWORD", "correct horse battery")
+    assert server.locked_reason("0.0.0.0") == ""                      # Render's own hostname counts as the address

@@ -31,7 +31,7 @@ def main():
             sys.exit(f"--extend needs a clean, installed base: {fact}")
     elif b.exists():
         if if_missing:
-            print(f"base present: {check_base(prof)[1]}")
+            print(f"base present: {check_base(prof)[1]}", flush=True)
             return
         sys.exit(f"{b} already exists: {check_base(prof)[1]}")
     else:
@@ -48,7 +48,7 @@ def main():
         print(f"{phase}: exit {r.returncode} (network {'ON' if net else 'off'})")
         if r.returncode != 0:
             sys.exit((r.stdout + r.stderr)[-2000:])
-    print(check_base(prof))
+    print(check_base(prof), flush=True)
 
 
 if __name__ == "__main__":
