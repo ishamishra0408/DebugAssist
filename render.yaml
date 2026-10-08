@@ -1,0 +1,49 @@
+# DebugAssistAgent on Render (Blueprint). Render reads this file from the repo: New ▸ Blueprint ▸ this repo.
+# Every key is "sync: false": Render asks for its value in the dashboard; no secret is ever in this file or the repo.
+# What runs where: pages and runs here; tests in E2B (network off, no keys inside); Laya on the Mac through a tunnel;
+# state in MongoDB Atlas; embeddings in Voyage; traces in Phoenix Cloud. See deploy/DEPLOY.md.
+services:
+  - type: web
+    name: debugassistagent
+    runtime: python
+    plan: free
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    startCommand: >-
+      uv run python scripts/prepare_base.py vercel/ai --source-only --if-missing &&
+      uv run debug-assist serve --host=0.0.0.0 --port=$PORT
+    healthCheckPath: /health
+    envVars:
+      - key: UV_PYTHON              # .python-version pins the Mac's build; Linux takes any 3.12
+        value: "3.12"
+      - key: SANDBOX_BACKEND
+        value: e2b
+      - key: RUN_FILES_IN_DB        # the free plan's disk is wiped on restart: run files live in MongoDB
+        value: "1"
+      - key: EMBED_PROVIDER
+        value: voyage
+      - key: VIEWER_IDLE_S          # Render decides when the service sleeps
+        value: "0"
+      - key: E2B_TEMPLATE
+        value: debugassist-vercel-ai-e7f55a4
+      - key: PUBLIC_HOST            # e.g. debugassistagent.onrender.com (shown after the first deploy)
+        sync: false
+      - key: APP_PASSWORD           # 12+ characters; the sign-in for this public address
+        sync: false
+      - key: MONGODB_URI            # MongoDB Atlas connection string
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: GITHUB_TOKEN_READONLY  # fine-grained, read-only
+        sync: false
+      - key: E2B_API_KEY
+        sync: false
+      - key: VOYAGE_API_KEY
+        sync: false
+      - key: PHOENIX_COLLECTOR_ENDPOINT
+        sync: false
+      - key: PHOENIX_API_KEY
+        sync: false
+      - key: LAYA_URL               # the tunnel's https address to the Mac's Laya API
+        sync: false
+      - key: LAYA_TOKEN             # the same secret the Mac's laya-serve was started with
+        sync: false

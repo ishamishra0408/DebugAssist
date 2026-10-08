@@ -18,7 +18,9 @@ class Config:
     ollama_url: str = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
     gen_model_dev: str = os.getenv("GEN_MODEL_DEV", "qwen/qwen3-coder-next")
     gen_model_demo: str = os.getenv("GEN_MODEL_DEMO", "anthropic/claude-opus-5.5")
-    embed_model: str = os.getenv("EMBED_MODEL", "qwen3-embedding:0.6b")
+    embed_provider: str = os.getenv("EMBED_PROVIDER", "ollama").strip().lower()   # "ollama" here, "voyage" hosted
+    embed_model: str = os.getenv("EMBED_MODEL", "voyage-3.5" if os.getenv("EMBED_PROVIDER", "").lower() == "voyage"
+                                 else "qwen3-embedding:0.6b")
     laya_checkpoint: str = os.getenv("LAYA_CHECKPOINT", "aac6fef/laya-mlx")  # general decisions (guard class, checks)
     # Fine-tuned on Colab 2026-10-06 for triage only (DECISIONS: option B). Test: is_defect 174 → 215 of 232.
     laya_triage_checkpoint: str = os.getenv("LAYA_TRIAGE_CHECKPOINT", str(ROOT / "models" / "laya-triage-mlx"))

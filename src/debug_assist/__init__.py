@@ -142,8 +142,9 @@ def main() -> None:
         laya_serve(int(opts.get("port", 8790)))
         return
     if cmd == "serve":
-        from .server import PORT, serve
-        serve(int(opts.get("port", PORT)))
+        import os
+        from .server import IDLE_S, PORT, serve
+        serve(int(opts.get("port", PORT)), int(os.environ.get("VIEWER_IDLE_S", IDLE_S)), opts.get("host", "127.0.0.1"))
         return
     if cmd == "view":
         from .config import CFG
@@ -192,6 +193,9 @@ def main() -> None:
         if cmd == "preflight" or not ok:
             sys.exit(0 if ok else 1)
 
+    from . import artifacts
+    if artifacts.enabled() and cmd in {"resume", "approve", "reject", "status"}:
+        artifacts.restore_run(run_id)  # a host whose disk was wiped: the PR text and code copies come back first
     if cmd == "approve":
         from .guardrails import fingerprint
         snap, intr = _pause(app, cfg)

@@ -55,3 +55,25 @@ def test_it_refuses_to_start_without_a_long_secret(monkeypatch):
     monkeypatch.setenv("LAYA_TOKEN", "short")
     with pytest.raises(SystemExit, match="LAYA_TOKEN"):
         laya_server.serve(0)
+
+
+def test_voyage_embeddings_keep_the_index_shape(monkeypatch):
+    import io
+    sent = {}
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_open(req, timeout=None):
+        sent.update(url=req.full_url, body=json.loads(req.data), auth=req.headers.get("Authorization"))
+        return Resp(json.dumps({"data": [{"embedding": [0.1] * 1024, "index": 0}]}).encode())
+    monkeypatch.setenv("VOYAGE_API_KEY", "vk-test")
+    monkeypatch.setattr(urllib.request, "urlopen", fake_open)
+    vec = models.VoyageEmbeddings("voyage-3.5").embed_query("a condition")
+    assert len(vec) == 1024 and sent["url"] == "https://api.voyageai.com/v1/embeddings"
+    assert sent["body"] == {"model": "voyage-3.5", "input": ["a condition"], "output_dimension": 1024}
+    assert sent["auth"] == "Bearer vk-test"

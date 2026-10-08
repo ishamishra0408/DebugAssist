@@ -54,6 +54,10 @@ def gather(run_id: str, at: datetime | None = None) -> dict:
     from types import SimpleNamespace
     from . import events, meter
     from .store import db
+    from . import artifacts
+    from .config import CFG as _cfg
+    if artifacts.enabled() and not (_cfg.runs_dir / run_id / "PR.md").exists():
+        artifacts.restore_run(run_id)  # cheap when nothing is missing; after a restart it brings the files back
     app, cfg = _app(), {"configurable": {"thread_id": run_id}}
     snap = app.get_state(cfg) if at is None else pick(list(app.get_state_history(cfg)), at)
     snap = snap or SimpleNamespace(values={}, next=(), tasks=(), created_at=None, metadata={})

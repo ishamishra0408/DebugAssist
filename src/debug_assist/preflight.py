@@ -101,6 +101,18 @@ def check_vector_index(expected_dims: int | None) -> Check:
     return Check("Vector index", "PASS", f"queryable, {n} conditions, {dims} dims")
 
 
+def check_voyage() -> tuple[Check, int | None]:
+    import os
+    if not os.environ.get("VOYAGE_API_KEY"):
+        return Check("Embeddings", "FAIL", "VOYAGE_API_KEY not set", "add it to the host's environment yourself"), None
+    try:
+        from .models import embedder
+        dims = len(embedder().embed_query("preflight"))
+    except Exception as e:
+        return Check("Embeddings", "FAIL", f"Voyage did not answer ({type(e).__name__})", "check the key"), None
+    return Check("Embeddings", "PASS", f"Voyage {CFG.embed_model} answers, {dims} dims"), dims
+
+
 def check_ollama() -> tuple[Check, int | None]:
     code, tags, _ = _http(f"{CFG.ollama_url}/api/tags")
     if code != 200:
@@ -184,6 +196,18 @@ def check_github(owner: str, repo: str) -> Check:
     return Check("GitHub token", "PASS", f"fine-grained, read OK, {left} calls left")
 
 
+def check_phoenix_cloud(trace: bool) -> Check:
+    """Hosted runs trace to Phoenix Cloud: PHOENIX_COLLECTOR_ENDPOINT + PHOENIX_API_KEY (register() reads both)."""
+    import os
+    if not os.environ.get("PHOENIX_API_KEY"):
+        return (Check("Phoenix", "WARN", "no key, but run started with --no-trace (recorded as trace OFF)") if not trace else
+                Check("Phoenix", "FAIL", "PHOENIX_API_KEY not set: this run would be untraced", "add it, or pass --no-trace"))
+    code, _, _ = _http(CFG.phoenix_endpoint.rstrip("/"), timeout=6)
+    if code is None:
+        return Check("Phoenix", "FAIL" if trace else "WARN", f"{CFG.phoenix_endpoint} not reachable", "check the endpoint")
+    return Check("Phoenix", "PASS", "Phoenix Cloud reachable (key set)")
+
+
 def check_phoenix(trace: bool, boot_wait_s: int = 20) -> Check:
     """Phoenix takes ~10 s to boot after `docker compose up -d`. If its container is running but not answering yet,
     wait up to boot_wait_s before deciding, rather than refusing a service that is visibly starting."""
@@ -243,13 +267,14 @@ def run_preflight(issue_url: str, demo: bool = False, trace: bool = True) -> lis
         checks.append(Check("Repo profile", "FAIL", str(e), "add the repo to profiles.py"))
     checks.append(check_e2b() if CFG.sandbox_backend == "e2b" else check_docker(image))
     checks.append(check_mongo())
-    oll, dims = check_ollama()
+    oll, dims = check_voyage() if CFG.embed_provider == "voyage" else check_ollama()
     checks.append(check_vector_index(dims))
     checks.append(oll)
     checks.append(check_laya())
     checks.append(check_openrouter(demo))
     checks.append(check_github(owner, repo))
-    checks.append(check_phoenix(trace))
+    checks.append(check_phoenix_cloud(trace) if not CFG.phoenix_endpoint.startswith(("http://127.", "http://localhost"))
+                  else check_phoenix(trace))
     checks.append(check_advisors())
     return checks
 

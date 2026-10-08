@@ -47,8 +47,29 @@ def _remote_decide(state_text: str, questions: dict, which: str) -> dict:
         return json.load(r)["answers"]
 
 
+class VoyageEmbeddings:
+    """Voyage AI (hosted runs). 1024 dimensions, the same as Qwen3-Embedding here, so the vector index keeps its shape.
+    The key is read from VOYAGE_API_KEY at call time and sent only to api.voyageai.com."""
+    URL = "https://api.voyageai.com/v1/embeddings"
+
+    def __init__(self, model: str, dims: int = 1024):
+        self.model, self.dims = model, dims
+
+    def embed_query(self, text: str) -> list[float]:
+        import json
+        import os
+        import urllib.request
+        req = urllib.request.Request(self.URL, method="POST", data=json.dumps(
+            {"model": self.model, "input": [text], "output_dimension": self.dims}).encode(),
+            headers={"Authorization": f"Bearer {os.environ.get('VOYAGE_API_KEY', '')}", "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.load(r)["data"][0]["embedding"]
+
+
 @lru_cache(maxsize=1)
 def embedder():
+    if CFG.embed_provider == "voyage":
+        return VoyageEmbeddings(CFG.embed_model)
     from langchain_ollama import OllamaEmbeddings
 
     return OllamaEmbeddings(model=CFG.embed_model, base_url=CFG.ollama_url)

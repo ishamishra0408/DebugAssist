@@ -40,5 +40,8 @@ def run_copy(profile, dest: Path) -> Path:
     if dest.exists():
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["cp", "-cR", str(base_path(profile)), str(dest)], check=True, timeout=600)
+    import sys
+    # macOS: an APFS clone (instant, shares disk). Linux hosts: a copy-on-write copy where the filesystem allows it
+    flags = ["-cR"] if sys.platform == "darwin" else ["-a", "--reflink=auto"]
+    subprocess.run(["cp", *flags, str(base_path(profile)), str(dest)], check=True, timeout=600)
     return dest

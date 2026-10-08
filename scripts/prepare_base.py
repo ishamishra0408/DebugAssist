@@ -2,6 +2,8 @@
 
   uv run python scripts/prepare_base.py vercel/ai            # a new base
   uv run python scripts/prepare_base.py vercel/ai --extend   # install + build what the profile added since
+  uv run python scripts/prepare_base.py vercel/ai --source-only --if-missing   # hosted (E2B): the code only; installs
+                                                                               # and builds live in the E2B template
 
 Clones exactly the profile's base_commit (shallow), installs with the network ON, then builds with it OFF, all in
 the repo's sandbox. Refuses to touch an existing base (delete it yourself if you mean to rebuild it), except
@@ -17,8 +19,8 @@ from debug_assist.sandbox import run_in_sandbox
 
 def main():
     args = sys.argv[1:]
-    extend = "--extend" in args
-    args = [a for a in args if a != "--extend"]
+    extend, source_only, if_missing = "--extend" in args, "--source-only" in args, "--if-missing" in args
+    args = [a for a in args if not a.startswith("--")]
     if len(args) != 1 or args[0] not in PROFILES:
         sys.exit(__doc__)
     prof = PROFILES[args[0]]
@@ -28,6 +30,9 @@ def main():
         if not ok:
             sys.exit(f"--extend needs a clean, installed base: {fact}")
     elif b.exists():
+        if if_missing:
+            print(f"base present: {check_base(prof)[1]}")
+            return
         sys.exit(f"{b} already exists: {check_base(prof)[1]}")
     else:
         b.mkdir(parents=True)
@@ -36,7 +41,7 @@ def main():
                     ["git", "checkout", "-q", "FETCH_HEAD"]):
             subprocess.run(cmd, cwd=b, check=True)
         (b / ".git" / "info" / "exclude").write_text(".corepack/\n.pnpm-store/\n.bin/\n.da-logs/\n")
-    for phase, cmd, net in (("install", prof.install_cmd, True), ("build", prof.build_cmd, False)):
+    for phase, cmd, net in ([] if source_only else (("install", prof.install_cmd, True), ("build", prof.build_cmd, False))):
         if not cmd:
             continue
         r = run_in_sandbox(prof.env + cmd.format(filters=prof.filters), b, network=net, timeout=1800, image=prof.image)

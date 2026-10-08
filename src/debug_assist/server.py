@@ -35,6 +35,52 @@ HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t#]*$", re.M)
 HEALTH = b"debug-assist viewer"
 TOKEN = secrets.token_urlsafe(24)  # new every time the server starts; only this server's pages carry it
 TOKEN_HEADER = "X-DebugAssistAgent-Token"
+SESSION_S = 12 * 3600
+_failed_logins: dict = {}   # client address → recent failed attempts (a public address gets 5 a minute)
+
+
+def _public_host() -> str:
+    """The hosted address (e.g. debugassist.onrender.com), set where it is deployed. Empty on the Mac."""
+    import os
+    return os.environ.get("PUBLIC_HOST", "").strip().lower()
+
+
+def _password() -> str:
+    import os
+    return os.environ.get("APP_PASSWORD", "")
+
+
+def _session_key() -> bytes:
+    import hashlib
+    return hashlib.sha256(b"da-session:" + _password().encode()).digest()
+
+
+def make_session(now: float | None = None) -> str:
+    import hmac
+    exp = str(int((time.time() if now is None else now) + SESSION_S))
+    return exp + "." + hmac.new(_session_key(), exp.encode(), "sha256").hexdigest()
+
+
+def session_ok(value: str, now: float | None = None) -> bool:
+    import hmac
+    exp, _, sig = (value or "").partition(".")
+    if not exp.isdigit() or int(exp) < (time.time() if now is None else now):
+        return False
+    return hmac.compare_digest(sig, hmac.new(_session_key(), exp.encode(), "sha256").hexdigest())
+
+
+def login_page(error: str = "") -> str:
+    from . import icons
+    e = viewer.e
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign in · {plain.NAME}</title><meta name="color-scheme" content="dark light"><link rel="stylesheet" href="/static/app.css">
+</head><body><div class="ambient s-idle" aria-hidden="true"></div>
+<main style="max-width:440px;width:100%"><header class="hero"><p class="eyebrow">{icons.mark(20)} {plain.NAME}</p><h1>Sign in</h1>
+<p class="lede">This address can start runs that spend money, so it is locked.</p></header>
+<form method="post" action="/login" class="group"><div class="sect"><div class="field">
+<input name="password" type="password" autocomplete="current-password" placeholder="Password" aria-label="Password" required autofocus>
+<button type="submit" class="btn glass prominent">Sign in</button></div></div>
+<p class="err" role="alert">{e(error)}</p></form></main></body></html>"""
 _plans: dict = {}
 STATIC_FILES = {"app.css": "text/css; charset=utf-8", "topo.js": "text/javascript; charset=utf-8",
                 "glass.js": "text/javascript; charset=utf-8", "chart.js": "text/javascript; charset=utf-8"}
@@ -46,6 +92,10 @@ def url(run_id: str | None = None, port: int = PORT) -> str:
 
 def _runs() -> list[str]:
     d = CFG.runs_dir
+    from . import artifacts
+    for rid in artifacts.run_ids():  # a host whose disk was wiped: the runs saved in MongoDB still list
+        if RUN_ID.match(rid):
+            (d / rid).mkdir(parents=True, exist_ok=True)
     if not d.is_dir():
         return []
     def started(n: str) -> str:  # the run id ends with its start time; other folders sort by when they changed
@@ -290,9 +340,12 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def _send(self, code: int, body: str, ctype: str = "text/html; charset=utf-8", location: str | None = None):
+    def _send(self, code: int, body: str, ctype: str = "text/html; charset=utf-8", location: str | None = None,
+              cookie: str | None = None):
         b = body.encode()
         self.send_response(code)
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
         self.send_header("Content-Type", ctype)
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Frame-Options", "DENY")
@@ -307,7 +360,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def _host_ok(self) -> bool:  # a page from another site can't reach this server under its own name
         port = self.server.server_address[1]
-        return self.headers.get("Host") in (f"127.0.0.1:{port}", f"localhost:{port}")
+        ok = {f"127.0.0.1:{port}", f"localhost:{port}"} | ({_public_host()} if _public_host() else set())
+        return (self.headers.get("Host") or "").lower() in ok
+
+    def _origin_ok(self) -> bool:
+        port = self.server.server_address[1]
+        ok = {f"http://127.0.0.1:{port}", f"http://localhost:{port}"} | ({f"https://{_public_host()}"} if _public_host() else set())
+        return self.headers.get("Origin") in ok
+
+    def _signed_in(self) -> bool:
+        """No password set (the Mac): always. A hosted address: only with a valid session cookie."""
+        if not _password():
+            return True
+        from http.cookies import SimpleCookie
+        c = SimpleCookie(self.headers.get("Cookie") or "")
+        return "da_session" in c and session_ok(c["da_session"].value)
 
     def _token_ok(self) -> bool:
         return secrets.compare_digest(self.headers.get(TOKEN_HEADER) or "", TOKEN)
@@ -319,10 +386,16 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         parts, q = [p for p in u.path.split("/") if p], parse_qs(u.query)
         try:
-            if not parts:
-                return self._send(200, home_page())
             if parts == ["health"]:
                 return self._send(200, HEALTH.decode(), "text/plain")
+            if parts == ["login"]:
+                return self._send(200, login_page())
+            if parts == ["static", "app.css"]:
+                return self._send(200, (viewer.STATIC / "app.css").read_text(), STATIC_FILES["app.css"])
+            if not self._signed_in():
+                return self._send(302, "", "text/plain", location="/login")
+            if not parts:
+                return self._send(200, home_page())
             if parts == ["how"]:
                 return self._send(200, how_page())
             if len(parts) == 2 and parts[0] == "static" and parts[1] in STATIC_FILES:
@@ -358,11 +431,29 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as ex:  # never a traceback (with paths) in the page
             return self._send(500, f"viewer error: {type(ex).__name__}", "text/plain")
 
-    def do_POST(self):  # one thing only: start a run
+    def _login(self):
+        from urllib.parse import parse_qs as qs
+        who = (self.headers.get("X-Forwarded-For") or self.client_address[0]).split(",")[0].strip()
+        now = time.time()
+        recent = [t for t in _failed_logins.get(who, []) if now - t < 60]
+        if len(recent) >= 5:
+            return self._send(429, login_page("Too many tries. Wait a minute."))
+        n = min(int(self.headers.get("Content-Length") or 0), 4096)
+        given = (qs(self.rfile.read(n).decode(errors="replace")).get("password") or [""])[0]
+        if not _password() or not secrets.compare_digest(given, _password()):
+            _failed_logins[who] = recent + [now]
+            return self._send(401, login_page("That password is not right."))
+        secure = "; Secure" if (self.headers.get("X-Forwarded-Proto") == "https" or _public_host()) else ""
+        return self._send(302, "", "text/plain", location="/",
+                          cookie=f"da_session={make_session()}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_S}{secure}")
+
+    def do_POST(self):  # sign in, or start a run
         self.server.last = time.monotonic()
-        port = self.server.server_address[1]
-        if (not self._host_ok() or not self._token_ok()
-                or self.headers.get("Origin") not in (f"http://127.0.0.1:{port}", f"http://localhost:{port}")
+        if urlparse(self.path).path == "/login":
+            if not self._host_ok() or (self.headers.get("Origin") and not self._origin_ok()):
+                return self._send(403, "forbidden", "text/plain")
+            return self._login()
+        if (not self._host_ok() or not self._token_ok() or not self._origin_ok() or not self._signed_in()
                 or not (self.headers.get("Content-Type") or "").startswith("application/json")):
             return self._json(403, {"error": "Not allowed. Start runs from the DebugAssistAgent home page."})
         if urlparse(self.path).path != "/api/start":
@@ -382,14 +473,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(500, {"error": f"Could not start the run ({type(ex).__name__})."})
 
 
-def make(port: int = PORT) -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+def make(port: int = PORT, host: str = "127.0.0.1") -> ThreadingHTTPServer:
+    httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.last = time.monotonic()
     return httpd
 
 
-def serve(port: int = PORT, idle_s: int = IDLE_S) -> None:
-    httpd = make(port)
+def serve(port: int = PORT, idle_s: int = IDLE_S, host: str = "127.0.0.1") -> None:
+    if host not in ("127.0.0.1", "localhost") and (len(_password()) < 12 or not _public_host()):
+        sys.exit("refusing to listen publicly: set APP_PASSWORD (12+ characters) and PUBLIC_HOST first")
+    httpd = make(port, host)
 
     def watchdog():
         while True:
@@ -397,8 +490,9 @@ def serve(port: int = PORT, idle_s: int = IDLE_S) -> None:
             if time.monotonic() - httpd.last > idle_s:
                 httpd.shutdown()
                 return
-    threading.Thread(target=watchdog, daemon=True).start()
-    print(f"{plain.NAME}: {url(port=port)} (stops after {idle_s // 60} min without a request)", flush=True)
+    if idle_s:  # hosted (idle 0): the platform decides when it sleeps
+        threading.Thread(target=watchdog, daemon=True).start()
+    print(f"{plain.NAME}: http://{host}:{port}/" + (f" (stops after {idle_s // 60} min without a request)" if idle_s else ""), flush=True)
     httpd.serve_forever()
 
 

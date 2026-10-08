@@ -86,6 +86,9 @@ def step(fn):
     def bound(s: RunState):
         import time
         from langgraph.errors import GraphInterrupt
+        from . import artifacts
+        if artifacts.enabled():  # a host whose disk was wiped: put the run's files and code copies back first
+            artifacts.restore_run(s["run_id"])
         with events.bind(s["run_id"], fn.__name__):
             t0 = time.monotonic()
             try:
@@ -96,6 +99,9 @@ def step(fn):
             except Exception as ex:
                 events.log("step", seconds=round(time.monotonic() - t0, 2), ended=f"error: {type(ex).__name__}")
                 raise
+            finally:
+                if artifacts.enabled():  # whatever happened, what the step wrote survives a restart
+                    artifacts.save_run(s["run_id"])
             # every second of wall time is attributed to a step (de-advisor review 2026-10-07: model + sandbox time
             # explained only 58-67% of ⏱; fetch, Laya, copying the checkout and git made up the rest, unlogged)
             events.log("step", seconds=round(time.monotonic() - t0, 2), ended=(out or {}).get("outcome", {}).get("exit", "ok"))

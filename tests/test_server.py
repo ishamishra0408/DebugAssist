@@ -129,3 +129,50 @@ def test_a_run_starts_like_the_terminal_starts_it_and_only_one_at_a_time(tmp_pat
     monkeypatch.setitem(server._child, "proc", None)
     with pytest.raises(server.Refused, match="not in the issue"):
         server.start_run("https://github.com/vercel/ai/issues/21439", "Made up", "standard")
+
+
+def test_a_hosted_address_needs_the_password(live, monkeypatch):
+    monkeypatch.setenv("APP_PASSWORD", "correct horse battery")
+    monkeypatch.setenv("PUBLIC_HOST", "debugassist.onrender.com")
+    monkeypatch.setattr(server, "_status_of", lambda rid: ("vercel/ai #1", "Done."))
+    host = {"Host": "debugassist.onrender.com"}
+    req = urllib.request.Request(f"http://127.0.0.1:{live.server_address[1]}/", headers=host)
+    opener = urllib.request.build_opener(type("NoRedirect", (urllib.request.HTTPRedirectHandler,), {"redirect_request": lambda *a: None}))
+    try:
+        opener.open(req)
+    except urllib.error.HTTPError as e:
+        assert e.code == 302 and e.headers["Location"] == "/login"
+    assert _get(live, "/health", "GET", host)[0] == 200                              # Render's health check stays open
+    assert _get(live, "/", "GET", {"Host": "evil.example"})[0] == 403
+    body = b"password=nope"
+    code, page = _get(live, "/login", "POST", {**host, "Content-Type": "application/x-www-form-urlencoded"}, body)
+    assert code == 401 and "That password is not right." in page
+    req = urllib.request.Request(f"http://127.0.0.1:{live.server_address[1]}/login", method="POST",
+                                 data=b"password=correct+horse+battery",
+                                 headers={**host, "Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        opener.open(req)
+    except urllib.error.HTTPError as e:
+        assert e.code == 302
+        cookie = e.headers["Set-Cookie"]
+    assert "HttpOnly" in cookie and "SameSite=Strict" in cookie and "Secure" in cookie
+    session = cookie.split(";")[0]
+    assert "Start a run" in _get(live, "/", "GET", {**host, "Cookie": session})[1]
+    tampered = session[:-1] + ("a" if session[-1] != "a" else "b")
+    for bad in (tampered, "da_session=9999999999.forged", ""):                       # each one lands on sign-in
+        page = _get(live, "/", "GET", {**host, "Cookie": bad})[1]
+        assert "Sign in" in page and "Start a run" not in page
+
+
+def test_sessions_expire_and_wrong_passwords_slow_down(live, monkeypatch):
+    monkeypatch.setenv("APP_PASSWORD", "correct horse battery")
+    assert server.session_ok(server.make_session()) and not server.session_ok(server.make_session(now=0))
+    server._failed_logins.clear()
+    codes = [_get(live, "/login", "POST", {"Content-Type": "application/x-www-form-urlencoded"}, b"password=x")[0] for _ in range(6)]
+    assert codes[:5] == [401] * 5 and codes[5] == 429
+
+
+def test_it_will_not_listen_publicly_without_a_password(monkeypatch):
+    monkeypatch.delenv("APP_PASSWORD", raising=False)
+    with pytest.raises(SystemExit, match="APP_PASSWORD"):
+        server.serve(0, 0, "0.0.0.0")
