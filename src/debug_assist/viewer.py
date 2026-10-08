@@ -80,6 +80,11 @@ def gather(run_id: str, at: datetime | None = None) -> dict:
             commit_msg = commit_message(snap.values or {})
         except Exception:
             commit_msg = ""
+    rd = _cfg.runs_dir / run_id
+    if not intr and at is None and (snap.values or {}).get("approval") and (rd / "PR.md").exists():
+        pr_text = (rd / "PR.md").read_text()   # decided: the pull request as you approved or closed it, read-only
+        pr_patch = (rd / "pr.patch").read_text() if (rd / "pr.patch").exists() else pr_patch
+        commit_msg = (rd / "commit-message.txt").read_text() if (rd / "commit-message.txt").exists() else commit_msg
     calls = list(db()["calls"].find({"run_id": run_id}, {"_id": 0}).sort("at", 1))
     evs, mtr = events.for_run(run_id), meter.snapshot(run_id) or {}
     from .config import CFG
@@ -354,6 +359,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
 
     # ── the steps, one row each: what it gave, or what is happening in it ──
     proof_html = _proof(s, rid)
+    pr_btn = '<button type="button" class="tbtn proof-btn" popovertarget="check-pr"><span>Check PR</span></button>'
     step_rows_html = []
     for i, (r, st) in enumerate(zip(rows, states)):
         chips, cnt = inside(r["key"], d["events"])
@@ -362,11 +368,15 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
             trail = e(plain.duration(secs[r["key"]])) if secs.get(r["key"]) is not None else ""
             if r["key"] == "reproduce" and proof_html:
                 trail = '<button type="button" class="tbtn proof-btn" popovertarget="proof"><span>Check proof</span></button>' + trail
+            if r["key"] == "approval" and d["pr_text"]:
+                trail = pr_btn + trail
         elif st == "running":
             sub = " · ".join(chips[-2:] + ([cnt] if cnt else [])) or "Starting this step"
             trail = _since(d, d.get("since"), is_replay)
         elif st == "waiting":
-            sub, trail = "Read the pull request text, then approve or say no in your terminal", ""
+            sub = ("Check the pull request, then approve it or close it" if served and not is_replay else
+                   "Check the pull request, then approve or say no in your terminal")
+            trail = pr_btn if d["pr_text"] else ""
         elif st == "stopped":
             sub, trail = plain.exit_text(outcome.get("exit")).removeprefix("Stopped. ") if outcome else "Stopped here", "Stopped"
         elif st == "skipped":
@@ -424,7 +434,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
             "working": ("Nothing to do right now", "This page updates by itself.", ""),
             "interrupted": ("Interrupted", f"Nothing has happened for {quiet}. Continue it from your terminal.", _copy(resume, "Copy resume command", True)),
             "crashed": ("Crashed", "Continue it from your terminal.", _copy(resume, "Copy resume command", True)),
-            "waiting": ("Your OK is needed", "Check the pull request, then approve it or say no. Nothing is posted to GitHub.",
+            "waiting": ("Your OK is needed", "Check the pull request, then approve it or close it. Nothing is posted to GitHub.",
                         '<button type="button" class="btn glass prominent" popovertarget="check-pr"><span>Check PR</span></button>'),
             "stopped": ("Stopped", plain.exit_text(outcome.get("exit")).removeprefix("Stopped. "),
                         _link("/", "New run", icons.plus(16), True) if served else ""),
@@ -462,10 +472,6 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
     results = '<div class="results">'
     if story:
         results += '<section class="group"><h2>Why the bug slipped through</h2><div class="sect"><div class="md story" id="story"></div></div></section>'
-    if d["pr_text"]:
-        lock = ("" if d["pr_matches"] is not False else
-                '<p class="foot" style="color:var(--red)">This file was changed after it was locked. Approval will be refused.</p>')
-        results += f'<section class="group"><h2>The pull request text</h2><div class="sect"><div class="md" id="pr"></div></div>{lock}</section>'
     results += "</div>"
 
     read = _what_it_read(d.get("pack") or {}, s.get("context") or {})
@@ -514,7 +520,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
   <div class="gh-top"><button type="button" class="gh-close" popovertarget="proof" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>
   <div class="gh-body">{_k("proof", proof_html or '<div class="proof gh-proof"><p class="gh-muted">Not shown yet.</p></div>')}</div>
 </div>
-{_check_pr(d, rid, served and not is_replay, approve, reject) if phase == "waiting" and not is_replay else ""}
+{_check_pr(d, rid, served and not is_replay, approve, reject, waiting=phase == "waiting" and not is_replay) if d["pr_text"] else ""}
 <div id="acts" popover class="pop glass" aria-label="Latest activity">
   <div class="pop-head"><b>Latest activity</b><button type="button" class="tbtn" popovertarget="acts" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>
   {_k("log", f'<ul class="rows acts-list">{acts or "<li class=row><span></span><span class=t><span>Nothing yet</span></span></li>"}</ul>')}
@@ -660,7 +666,7 @@ def _actions_log(cmd: str, output: str, opened: bool = True) -> str:
             f'<div class="gh-log">{more}<table>{rows}</table></div></details>')
 
 
-def _check_pr(d: dict, rid: str, can_decide: bool, approve_cmd: str, reject_cmd: str) -> str:
+def _check_pr(d: dict, rid: str, can_decide: bool, approve_cmd: str, reject_cmd: str, waiting: bool = True) -> str:
     """The pull request as GitHub shows it, in GitHub's words and colours (Isha 2026-10-08): title, Draft, "wants to
     merge 1 commit into main from …", then Conversation, Commits (the commit message and extended description, yours to
     edit), Checks (the tests, on main and with the change) and Files changed (git style); at the bottom, Approve or Close
@@ -682,7 +688,17 @@ def _check_pr(d: dict, rid: str, can_decide: bool, approve_cmd: str, reject_cmd:
     verdict = ("Some checks were not successful" if n["fail"] else "Some checks haven't completed yet" if n["wait"] else
                "All checks have passed" if n["pass"] else "No checks ran")   # GitHub's merge box, in its words
     head = f'debugassist/fix-{issue.get("number", "")}'
-    decide = (f'<div class="decide gh-merge" data-run="{e(rid)}" data-sha="{e(sha)}">'
+    said = (st.get("approval") or {}).get("status", "")
+    badge = ('<span class="gh-state draft">Draft</span>' if waiting or not said else
+             '<span class="gh-state closed">Closed</span>' if said == "REJECTED" else '<span class="gh-state open">Approved</span>')
+    lock = ('<div class="gh-annot bad"><b>This text was changed after it was locked. Approval will be refused.</b></div>'
+            if d.get("pr_matches") is False and waiting else "")
+    done = (f'<div class="gh-merge"><div class="gh-merge-lines"><b>{"You closed this pull request" if said == "REJECTED" else "You approved this pull request"}</b>'
+            f'<span class="gh-muted">{e(counts)}</span><span class="gh-muted">'
+            + ("Nothing was posted to GitHub." if said == "REJECTED" else
+               "Nothing was posted to GitHub. publish.sh in the run's folder lists the git steps for you to run.")
+            + '</span></div></div>')
+    decide = done if not waiting else (f'<div class="decide gh-merge" data-run="{e(rid)}" data-sha="{e(sha)}">'
               f'<div class="gh-merge-lines"><b>{verdict}</b><span class="gh-muted">{e(counts)}</span>'
               f'<span class="gh-muted">This pull request is a draft. Approving records your approval for exactly this text and '
               f'change; nothing is posted to GitHub.</span></div>'
@@ -705,7 +721,7 @@ def _check_pr(d: dict, rid: str, can_decide: bool, approve_cmd: str, reject_cmd:
             f'<div class="gh-top"><button type="button" class="gh-close" popovertarget="check-pr" popovertargetaction="hide" '
             f'aria-label="Close">{icons.cross(16)}</button>'
             f'<h3 class="gh-title"><span id="pr-title">{e(title)}</span> <span class="gh-muted">#{e(issue.get("number", ""))}</span></h3>'
-            f'<p class="gh-meta"><span class="gh-state draft">Draft</span><b>{who}</b> wants to merge 1 commit into '
+            f'<p class="gh-meta">{badge}<b>{who}</b> wants to merge 1 commit into '
             f'<code class="gh-ref">main</code> from <code class="gh-ref">{e(head)}</code>'
             f'<span class="gh-diffstat"><span class="plus">+{add}</span> <span class="minus">−{rem}</span></span></p>'
             f'<nav class="gh-tabs" role="tablist">'
@@ -714,12 +730,13 @@ def _check_pr(d: dict, rid: str, can_decide: bool, approve_cmd: str, reject_cmd:
             f'<button type="button" role="tab" data-tab="checks" aria-selected="false">Checks <span class="cnt">{len(rows)}</span></button>'
             f'<button type="button" role="tab" data-tab="files" aria-selected="false">Files changed <span class="cnt">{len(files)}</span></button></nav></div>'
             f'<div class="prv gh-body">'
-            f'<div class="pr-pane" data-pane="conv"><div class="gh-comment"><div class="gh-comment-head"><b>{who}</b> opened this '
+            f'<div class="pr-pane" data-pane="conv">{lock}<div class="gh-comment"><div class="gh-comment-head"><b>{who}</b> opened this '
             f'pull request</div><div class="md gh-md" id="pr-sheet"></div></div></div>'
             f'<div class="pr-pane" data-pane="commits" hidden>{commits}</div>'
             f'<div class="pr-pane" data-pane="checks" hidden>{_gh_checks(rows)}</div>'
             f'<div class="pr-pane" data-pane="files" hidden>{diffview.html(d.get("pr_patch") or "")}</div>'
-            f'{decide}<p class="gh-muted gh-fp">Fingerprint sha256 <code>{e(sha[:12])}</code></p></div></div>')
+            f'{decide}' + (f'<p class="gh-muted gh-fp">Fingerprint sha256 <code>{e(sha[:12])}</code></p>' if sha else "")
+            + '</div></div>')
 
 
 def _gh_row(dot: str, name: str, word: str, detail: str, extra: str = "") -> str:

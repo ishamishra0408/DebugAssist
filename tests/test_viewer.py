@@ -341,3 +341,19 @@ def test_checks_on_main_and_with_the_change():
     got = [(c["name"], c["main"], c["change"]) for c in viewer.checks_of(st)]
     assert got == [("Existing tests / packages/ai", "pass", "pass"), ("Unit test / da-repro-1-unit-1.test.ts", "fail", "pass"),
                    ("Second test / da-holdout-1.test.ts", "fail", "pass"), ("Automation test (end to end)", "skip", "skip")]
+
+
+def test_the_pull_request_opens_from_your_ok_row_not_spread_on_the_page():
+    """Isha 2026-10-08: the pull request text as a sheet that opens from Your OK, as Check proof opens from Show the
+    bug; not the full text on the page. Once decided, the same sheet reads Approved or Closed, with no buttons."""
+    page = viewer.render(_data(), mode="live", token="t")
+    rows = page.split("<h2>Steps</h2>")[1].split("</section>")[0]
+    your_ok = [r for r in rows.split('<li class="row') if "<b>Your OK</b>" in r][0]
+    assert 'popovertarget="check-pr"><span>Check PR</span>' in your_ok and "approve it or close it" in your_ok
+    assert "The pull request text" not in page and 'id="pr"' not in page and '<div id="check-pr" popover' in page
+    for status, word in (("APPROVED", "Approved"), ("REJECTED", "Closed")):
+        st = {**_data()["state"], "approval": {"status": status}, "outcome": {"exit": "READY FOR YOU TO PUBLISH" if status == "APPROVED" else "REJECTED"}}
+        done = viewer.render(_data(state=st, interrupt={}, next=[]), mode="live", token="t")
+        sheet = _sheet(done, "check-pr")
+        assert f'gh-state {"open" if word == "Approved" else "closed"}">{word}</span>' in sheet and "data-decide" not in sheet
+        assert "Nothing was posted to GitHub." in sheet

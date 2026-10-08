@@ -545,6 +545,7 @@ ul.log li { white-space: pre-wrap; word-break: break-word; }
 .gh-meta b { color: var(--gh-fg); font-weight: 600; }
 .gh-state { display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 2em; color: #fff; font-weight: 500; }
 .gh-state.draft { background: var(--gh-draft); } .gh-state.failure { background: var(--gh-bad-em); }
+.gh-state.open { background: var(--gh-ok-em); } .gh-state.closed { background: var(--gh-bad-em); }
 .gh-ref { padding: 2px 6px; border-radius: 6px; background: var(--gh-ref-bg); color: var(--gh-accent-fg); font-size: 12px; }
 .gh .plus { color: var(--gh-ok); } .gh .minus { color: var(--gh-bad); }
 .gh-diffstat { margin-left: auto; font-size: 12px; }
