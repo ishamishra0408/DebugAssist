@@ -73,14 +73,22 @@ def test_gather_finds_where_the_line_was_written_and_never_shows_names(monkeypat
     assert {"author1", "reviewer1", "reporter1"} <= ev["_names"] and "_names" not in ev["written"]["pr"]
 
 
-GOOD = """## Critical junctures
-| Stage | When | Change |
-|---|---|---|
-| written | 2026-04-17 | #14565 extracted the tracker |
-## Conditions that only together let it ship
+GOOD = """### What broke?
+A tool call cut off mid-stream was reported as complete.
+### When did the faulty code arrive, and what was that change for?
+#14565 on 2026-04-17 moved the tracker into shared code so every provider could use it.
+### What did it assume that was not true?
+That a stream always ends with a finish reason.
+### Why didn't the tests catch it?
+The tests fed whole streams only; none cut a stream mid tool call.
+### Why didn't review or the release catch it?
+One review, no comments on stream endings, and the change came with tests for whole streams only.
+### How long was it out before it was reported, and why so long?
+Not known: the release that first shipped it is not in the changelog read.
+### Which conditions, together, let it ship?
 C1 — flush had no input for a broken stream.
 C2 — no test cut a stream mid tool call.
-## Where the analysis stopped
+### What couldn't be found out?
 - renames not followed
 CONDITION: the finalizer could not tell a finished stream from a broken one"""
 
@@ -96,6 +104,19 @@ def test_the_story_check_refuses_names_inventions_and_thin_stories():
         story.check(GOOD.replace("C2 —", "Also,"), ev, set())
     with pytest.raises(story.StoryRefused, match="CONDITION"):
         story.check(GOOD.rsplit("CONDITION", 1)[0], ev, set())
+
+
+def test_the_story_answers_every_template_question_in_order():
+    ev = {"issue": {"number": 21439}, "written": {"pr": {"number": 14565}}, "shaped": []}
+    assert all(f"### {q}" in story.SYSTEM for q, _ in story.QUESTIONS)          # the prompt asks exactly these
+    assert [q for q, _ in story.answers(GOOD)] == [q for q, _ in story.QUESTIONS]
+    with pytest.raises(story.StoryRefused, match="not answered under its own heading: Why didn't the tests catch it"):
+        story.check(GOOD.replace("### Why didn't the tests catch it?\n", ""), ev, set())
+    with pytest.raises(story.StoryRefused, match="no answer under: What broke"):
+        story.check(GOOD.replace("A tool call cut off mid-stream was reported as complete.\n", ""), ev, set())
+    swapped = GOOD.replace("### What broke?", "### TMP").replace("### What did it assume that was not true?", "### What broke?")
+    with pytest.raises(story.StoryRefused, match="order"):
+        story.check(swapped.replace("### TMP", "### What did it assume that was not true?"), ev, set())
 
 
 def test_tell_retries_once_with_the_refusal_then_gives_up(monkeypatch, tmp_path):

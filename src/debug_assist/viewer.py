@@ -275,6 +275,10 @@ def _k(key: str, markup: str) -> str:
     return f'{markup[:i]} data-k="{key}" data-h="{h}"{markup[i:]}'
 
 
+def _k_fmt(n: int) -> str:
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
 def _since(d: dict, iso: str | None, replay: bool, suffix: str = "") -> str:
     """A running clock. Live: the browser counts it (same machine), so the page's pieces don't change every second.
     Replay: the server's recorded moment."""
@@ -363,12 +367,12 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
     # ── latest activity ──
     label = {k: lab for k, lab, _ in plain.STEPS}
     acts = "".join(f'<li class="row"><span class="when">{e(x["at"][11:19])}</span><span class="t"><span>{e(plain.activity(x))}</span>'
-                   f'<small>{e(label.get(x.get("step"), x.get("step") or ""))}</small></span></li>' for x in reversed(d["events"][-5:]))
+                   f'<small>{e(label.get(x.get("step"), x.get("step") or ""))}</small></span></li>' for x in reversed(d["events"][-12:]))
 
-    # ── time and money ──
+    # ── usage and cost (Isha 2026-10-08: the words run dashboards use) ──
     clock = s.get("fix_clock") or {}
     if clock.get("validated"):
-        proven, note = plain.duration(clock["seconds"]), "Proven by 2 tests"
+        proven, note = plain.duration(clock["seconds"]), "Verified by 2 tests"
     elif clock.get("judges") == 1:
         proven, note = "Not proven", "Only 1 test passed"
     elif clock.get("seconds") is not None:
@@ -381,10 +385,13 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
         proven, note = "Not started", ""
     spent, cap = m.get("spent_usd", 0) or 0, m.get("cap_usd", 0) or 0
     last_at = d["events"][-1]["at"] if d["events"] else None
-    tiles = [("Time to a proven fix", proven, note),
-             ("Money spent", f"${spent:.4f}" if 0 < spent < 0.1 else f"${spent:.2f}", f"Limit ${cap:.2f}" if cap else ""),
-             ("Test machine time", f"{m.get('sandbox_used_s', 0) or 0} s", f"Limit {int(m.get('sandbox_cap_s') or 1800) // 60} min"),
-             ("Last activity", _since(d, last_at, is_replay, " ago") if last_at else "Nothing yet", "")]
+    calls = [x for x in d["events"] if x.get("kind") == "model_call"]
+    tok_in, tok_out = (sum(int(x.get(k) or 0) for x in calls) for k in ("input_tokens", "output_tokens"))
+    tiles = [("Time to fix", proven, note),
+             ("LLM cost", f"${spent:.4f}" if 0 < spent < 0.1 else f"${spent:.2f}", f"Budget ${cap:.2f}" if cap else ""),
+             ("Tokens", f"{_k_fmt(tok_in)} in · {_k_fmt(tok_out)} out", f"{len(calls)} model call{'s' * (len(calls) != 1)}"),
+             ("Compute time", f"{m.get('sandbox_used_s', 0) or 0} s", f"Quota {int(m.get('sandbox_cap_s') or 1800) // 60} min"),
+             ("Last event", _since(d, last_at, is_replay, " ago") if last_at else "None yet", "")]
     tiles_html = "".join(_k(f"stat-{i}", f'<div class="tile"><span>{e(a)}</span><b>{b}</b>{f"<small>{e(c)}</small>" if c else ""}</div>')
                          for i, (a, b, c) in enumerate(tiles))
 
@@ -444,7 +451,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
     story = (s.get("second_story") or {}).get("text", "")
     results = '<div class="results">'
     if story:
-        results += '<section class="group"><h2>Why the bug slipped through</h2><div class="sect"><div class="md" id="story"></div></div></section>'
+        results += '<section class="group"><h2>Why the bug slipped through</h2><div class="sect"><div class="md story" id="story"></div></div></section>'
     if d["pr_text"]:
         lock = ("" if d["pr_matches"] is not False else
                 '<p class="foot" style="color:var(--red)">This file was changed after it was locked. Approval will be refused.</p>')
@@ -456,12 +463,14 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
     eng = _engineer_details(d, s, rows, live)
     md = json.dumps({"story": story, "pr": d["pr_text"]}).replace("</", "<\\/")
     css = f'<link rel="stylesheet" href="/static/app.css">' if served else f"<style>{(STATIC / 'app.css').read_text()}</style>"
-    topo = ('<script src="/static/topo.js" defer></script><script src="/static/glass.js" defer></script>'
-            '<script src="/static/chart.js"></script>' if served else
-            "".join(f"<script>{(STATIC / f).read_text()}</script>" for f in ("topo.js", "glass.js", "chart.js")))
+    topo = ('<script src="/static/topo.js" defer></script><script src="/static/glass.js" defer></script>' if served else
+            "".join(f"<script>{(STATIC / f).read_text()}</script>" for f in ("topo.js", "glass.js")))
+    badge = _k("acount", f'<span class="badge">{min(len(d["events"]), 99)}</span>')
+    activity_btn = (f'<div class="tgroup glass"><button type="button" class="tbtn" popovertarget="acts" aria-label="Latest activity">'
+                    f'{icons.activity(16)}<span class="lbl">Activity</span>{badge}</button></div>')
     nav = (f'<nav class="toolbar" aria-label="DebugAssistAgent">'
            f'<div class="tgroup glass"><a class="brand" href="{"/" if served else "#"}">{icons.mark()}<span>{plain.NAME}</span></a></div>'
-           + (f'<div class="tgroup glass"><a class="tbtn" href="/#runs" aria-label="Runs">{icons.list_(16)}<span class="lbl">Runs</span></a>'
+           + activity_btn + (f'<div class="tgroup glass"><a class="tbtn" href="/#runs" aria-label="Runs">{icons.list_(16)}<span class="lbl">Runs</span></a>'
                f'<a class="tbtn" href="/" aria-label="New run">{icons.plus(16)}<span class="lbl">New run</span></a></div>'
               + (f'<div class="tgroup glass"><a class="tbtn" href="/run/{e(rid)}" aria-label="Live view">{icons.list_(16)}<span class="lbl">Live view</span></a></div>' if is_replay else
                  f'<div class="tgroup glass"><a class="tbtn" href="/replay/{e(rid)}" aria-label="Replay">{icons.play(16)}<span class="lbl">Replay</span></a></div>' if s else "")
@@ -483,16 +492,18 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
 {_k("dock", dock)}
 {_k("notice", notice)}
 <section class="group"><h2>Steps</h2><div class="sect"><ul class="rows">{"".join(step_rows_html)}</ul></div></section>
-{_k("chart", f'<section class="group"><h2>How this run moved</h2>{chart.section(d)}</section>')}
 {_k("read", read)}
 {_k("advisors", adv)}
 {_k("results", results)}
-<section class="group"><h2>Latest activity</h2><div class="sect">{_k("log", f'<ul class="rows acts-list">{acts or "<li class=row><span></span><span class=t><span>Nothing yet</span></span></li>"}</ul>')}</div></section>
-<section class="group"><h2>Time and money</h2><div class="sect"><div class="tiles">{tiles_html}</div></div></section>
+<section class="group"><h2>Usage and cost</h2><div class="sect"><div class="tiles">{tiles_html}</div></div></section>
 {_k("context", context)}
 {_k("final", f'<i hidden data-final="{int(final)}"></i>')}
 {eng}
 </main>
+<div id="acts" popover class="pop glass" aria-label="Latest activity">
+  <div class="pop-head"><b>Latest activity</b><button type="button" class="tbtn" popovertarget="acts" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>
+  {_k("log", f'<ul class="rows acts-list">{acts or "<li class=row><span></span><span class=t><span>Nothing yet</span></span></li>"}</ul>')}
+</div>
 {_k("md", f'<script type="application/json" id="md">{md}</script>')}
 {topo}
 <script>

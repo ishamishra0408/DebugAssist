@@ -6,7 +6,9 @@ Code gathers the evidence, read-only from GitHub, starting from the lines the va
              reviews and review comments, and whether it changed any test
   released   the CHANGELOG heading that first lists the PR (from the run's own checkout)
   reported   the issue: when, and what its labels say (e.g. the repo's own bot could not reproduce it)
-The model writes the story from that evidence alone, and code checks it:
+The model answers QUESTIONS (Isha 2026-10-08: "create some template questions it should definitely answer"), one
+short answer each, from that evidence alone, and code checks it:
+  - every question is there, in order, and answered (or says what is not known and what would tell us)
   - no names: the model never sees a login, @handles in PR text are blanked, and the result is checked against every
     author, reviewer and the reporter (guardrails.assert_no_names)
   - at least two conditions, and the one named CONDITION for the corpus
@@ -107,8 +109,9 @@ def pr_for(owner: str, repo: str, sha: str) -> dict | None:
 
 
 def release_of(checkout: Path, pkg_dir: str, number: int, sha: str) -> str | None:
-    log = Path(checkout) / "packages" / pkg_dir / "CHANGELOG.md"
-    if not log.exists():
+    """pkg_dir: the package folder ("packages/ai", "libs/core", "."). Its CHANGELOG.md, else the repo's."""
+    log = next((f for f in (Path(checkout) / pkg_dir / "CHANGELOG.md", Path(checkout) / "CHANGELOG.md") if f.exists()), None)
+    if log is None:
         return None
     heading, found = None, None
     for line in log.read_text(errors="ignore").splitlines():
@@ -119,7 +122,7 @@ def release_of(checkout: Path, pkg_dir: str, number: int, sha: str) -> str | Non
     return found
 
 
-def gather(issue: dict, checkout: Path, cause_file: str, fix_patch: str) -> dict:
+def gather(issue: dict, checkout: Path, cause_file: str, fix_patch: str, profile=None) -> dict:
     owner, repo, path = issue["owner"], issue["repo"], cause_file
     sig = signature_lines(fix_patch)
     needle = sig[0] if sig else ""
@@ -158,7 +161,8 @@ def gather(issue: dict, checkout: Path, cause_file: str, fix_patch: str) -> dict
     shaping = [h for h in reversed(newer[:TOUCHING_CAP]) if touched(owner, repo, h["sha"], needle, path)]
     if len(newer) > TOUCHING_CAP:
         ev["stops"].append(f"only the newest {TOUCHING_CAP} of {len(newer)} later commits were read for changes to the line")
-    pkg_dir = path.split("/")[1]
+    from .lang import of
+    pkg_dir = of(profile).package_of(path)
     for i, c in enumerate([origin] + shaping):
         pr = pr_for(owner, repo, c["sha"]) if i < PR_CAP else None
         entry = {"role": "written" if i == 0 else "changed the line", "commit": c["sha"][:10], "sha": c["sha"],
@@ -177,18 +181,29 @@ def gather(issue: dict, checkout: Path, cause_file: str, fix_patch: str) -> dict
     return ev
 
 
-SYSTEM = """You write the SECOND STORY of a bug: how it came to ship, told through conditions, never people.
+# The questions this step must always answer, in this order. Edit the wording here; the prompt and the check follow.
+QUESTIONS = [
+    ("What broke?", "One sentence: what a user of the code saw go wrong."),
+    ("When did the faulty code arrive, and what was that change for?",
+     "The change that wrote the line (its #number and date) and the purpose its description gives."),
+    ("What did it assume that was not true?", "The assumption in the code that the bug proves wrong."),
+    ("Why didn't the tests catch it?", "What the tests covered then, and the case they did not try."),
+    ("Why didn't review or the release catch it?",
+     "What review saw (reviews, comments, whether tests changed) and the release it shipped in."),
+    ("How long was it out before it was reported, and why so long?", "From release to the issue, and what kept it quiet."),
+    ("Which conditions, together, let it ship?",
+     'At least two, each on its own line starting "C1 —", "C2 —", each saying what would have caught the bug had '
+     "that condition been absent."),
+    ("What couldn't be found out?", "Each place the evidence stopped, and what would tell us more."),
+]
+
+SYSTEM = f"""You write the SECOND STORY of a bug: how it came to ship, told through conditions, never people.
 Use ONLY the evidence given. Do not invent PRs, dates, versions or reviews. Never name or describe a person.
-Write for a reader who never saw the evidence: do not mention its field names (written, shaped, stops, …).
-Write markdown with exactly these sections:
-## Critical junctures
-A table: | Stage | When | Change | What was known then | What the tests covered |  (stages: written, changed,
-released, reported; use the PR descriptions for "what was known")
-## Conditions that only together let it ship
-At least two conditions, each starting "C1 —", "C2 —", …, each saying why it was necessary (what would have caught
-the bug had it been absent). Then one line saying which together let it ship and which let it stay unreported.
-## Where the analysis stopped
-Bullets: each stopping point given, and what it would take to go further.
+Write for a reader who never saw the evidence: plain words, no field names (written, shaped, stops, ...).
+Answer each question below under its own heading, exactly as written, in this order. Each answer is one to three short
+sentences (bullets only for conditions and stopping points). When the evidence does not say, write
+"Not known:" and what would tell us. No tables, no other headings.
+{chr(10).join(f"### {q}{chr(10)}({hint})" for q, hint in QUESTIONS)}
 Then a final line:  CONDITION: <one sentence naming the condition that let this class of bug ship, in plain words>"""
 
 
@@ -207,11 +222,27 @@ EVIDENCE (read-only GitHub and the repo's changelog; the line traced is `{ev['li
     return [("system", SYSTEM), ("user", user)]
 
 
+def answers(story: str) -> list[tuple[str, str]]:
+    """(question, answer) for every ### heading, in order."""
+    parts = re.split(r"(?m)^#{2,3}\s+(.+?)\s*$", story)
+    return [(parts[i].strip(), parts[i + 1].strip()) for i in range(1, len(parts) - 1, 2)]
+
+
 def check(story: str, ev: dict, names: set) -> str:
     """Return the named condition, or raise StoryRefused / GuardrailViolation."""
     hits = find_names(story, sorted(n for n in names if n))
     if hits:
         raise GuardrailViolation(f"the story names people: {hits}")
+    got = answers(re.sub(r"^\s*CONDITION:.*$", "", story, flags=re.M))
+    asked = [q for q, _ in QUESTIONS]
+    missing = [q for q in asked if q not in [g for g, _ in got]]
+    if missing:
+        raise StoryRefused(f"a question is not answered under its own heading: {missing[0]}")
+    if [g for g, _ in got if g in asked] != asked:
+        raise StoryRefused("the questions are not in the order given")
+    empty = [q for q, a in got if q in asked and not a]
+    if empty:
+        raise StoryRefused(f"no answer under: {empty[0]}")
     if len(re.findall(r"(?m)^\s*(?:[-*|]\s*)?\**C\d+\b", story)) < 2:
         raise StoryRefused("fewer than two conditions (C1 —, C2 —)")
     allowed = {ev["issue"]["number"]} | {e["pr"]["number"] for e in [ev.get("written") or {}] + ev["shaped"] if e.get("pr")}
@@ -226,7 +257,12 @@ def check(story: str, ev: dict, names: set) -> str:
 
 
 def tell(state: dict, checkout: Path, cause: dict, fix_patch: str) -> dict:
-    ev = gather(state["issue"], checkout, cause["file"], fix_patch)
+    from . import profiles
+    try:
+        prof = profiles.get(((state.get("profile") or {}).get("repo")) or "")
+    except Exception:
+        prof = None
+    ev = gather(state["issue"], checkout, cause["file"], fix_patch, prof)
     names = set(ev["_names"])
     refusal = ""
     for _ in range(2):  # the why_it_shipped turn cap is 2

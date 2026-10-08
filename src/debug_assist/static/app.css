@@ -316,3 +316,24 @@ ul.log { list-style: none; margin: 8px 0 0; padding: 12px 14px; border-radius: 1
   font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--label-2); overflow-x: auto; }
 ul.log li { white-space: pre-wrap; word-break: break-word; }
 .row .btn.again { padding: 6px 12px; font-size: 14px; min-height: 0; }
+
+/* latest activity: a pop-up from the toolbar, closed by default (HIG: popovers sit on the glass layer, content on a solid surface) */
+.pop[popover] { position: fixed; inset: 64px 16px auto auto; margin: 0; width: min(440px, calc(100vw - 32px));
+  max-height: min(70vh, 620px); overflow: auto; padding: 8px; border: 0; border-radius: 22px; color: var(--label);
+  background: color-mix(in srgb, var(--surface) 90%, transparent); }   /* a pop-up must stay readable over any page */
+.pop[popover]::backdrop { background: rgba(0, 0, 0, .18); }
+.pop .pop-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 4px 8px 12px; font-size: 15px; }
+.pop .rows { background: var(--surface); border-radius: 16px; box-shadow: inset 0 0 0 1px var(--hair); }
+.tbtn .badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--blue); color: #fff;
+  font-size: 11px; font-weight: 600; display: inline-grid; place-items: center; }
+@media (max-width: 700px) { .pop[popover] { inset: 60px 16px auto 16px; width: auto; } }
+@media (prefers-reduced-motion: no-preference) {
+  .pop:popover-open { animation: pop-in .22s cubic-bezier(.3, .7, .4, 1.2); }
+  @keyframes pop-in { from { opacity: 0; transform: translateY(-6px) scale(.98); } }
+}
+
+/* why the bug slipped through: one question, one short answer */
+.md.story h3 { font-size: 15px; font-weight: 600; color: var(--label-2); margin: 18px 0 4px; padding-top: 14px;
+  border-top: 1px solid var(--hair); }
+.md.story h3:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+.md.story p { margin: 0 0 6px; }

@@ -43,6 +43,11 @@ def list_(size: int = 18) -> str:
     return _svg('<path d="M9 7h10M9 12h10M9 17h10"/><circle cx="5" cy="7" r=".6"/><circle cx="5" cy="12" r=".6"/><circle cx="5" cy="17" r=".6"/>', size)
 
 
+def activity(size: int = 18) -> str:
+    """A pulse line: what the run did lately."""
+    return _svg('<path d="M3 12h4l2.5-6 5 12 2.5-6h4"/>', size)
+
+
 def link(size: int = 18) -> str:
     """Two chain links: connect a repo."""
     return _svg('<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>', size)

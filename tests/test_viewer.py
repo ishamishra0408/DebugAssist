@@ -71,7 +71,7 @@ def test_glass_is_kept_to_controls_and_navigation():
     page = viewer.render(_data(), mode="live")
     glassy = re.findall(r'<(\w+)[^>]*class="([^"]*\bglass\b[^"]*)"', page)
     assert glassy and all(tag in ("div", "aside", "button", "a") for tag, _ in glassy)
-    assert all(any(k in c for k in ("tgroup", "dock", "btn", "seg")) for _, c in glassy)
+    assert all(any(k in c for k in ("tgroup", "dock", "btn", "seg", "pop")) for _, c in glassy)
     assert 'class="sect' in page and "glass" not in re.search(r'class="sect[^"]*"', page).group(0)
 
 
@@ -118,7 +118,7 @@ def test_a_run_that_has_not_started_yet_renders_as_getting_ready():
 def test_a_stopped_run_says_no_fix_and_small_spend_shows():
     st = {**_data()["state"], "fix_clock": {"started_at": "x"}, "outcome": {"exit": "NEVER REPRODUCED", "why": "w"}}
     page = viewer.render(_data(state=st, next=[], interrupt={}, meter={"spent_usd": 0.00431, "cap_usd": 0.5}), mode="live")
-    assert "<b>No fix</b>" in page and "<b>$0.0043</b><small>Limit $0.50</small>" in page
+    assert "<b>No fix</b>" in page and "<b>$0.0043</b><small>Budget $0.50</small>" in page
     assert "It could not make the bug happen, so it did not try to fix it." in page
 
 
@@ -145,4 +145,18 @@ def test_the_state_chart_walks_this_run_and_stops_where_it_stopped():
     svg = chart.svg()
     assert all(f'id="cn-{s}"' in svg for s, _ in chart.STATES) and all(f'id="ce-stop-{s}"' in svg for s in chart.STOPS)
     page = viewer.render(_data(state=st, interrupt={}, next=[]), mode="live")
-    assert "How this run moved" in page and 'data-k="chart"' in page
+    assert "How this run moved" not in page and 'data-k="chart"' not in page        # the chart lives on How it works
+
+
+def test_latest_activity_is_a_pop_up_and_usage_uses_standard_names():
+    evs = [{"at": "2026-10-08T10:00:0%dZ" % i, "step": "reproduce", "kind": "model_call", "input_tokens": 1500,
+            "output_tokens": 200} for i in range(3)]
+    page = viewer.render(_data(events=evs, interrupt={}, next=["reproduce"]), mode="live")
+    assert 'popovertarget="acts"' in page and '<div id="acts" popover class="pop glass"' in page
+    body = page.split("<main>")[1].split("</main>")[0]
+    assert "Latest activity" not in body and 'data-k="log"' not in body           # not a section on the page any more
+    assert re.search(r'class="badge"[^>]*>3<', page)
+    for word in ("Usage and cost", "Time to fix", "LLM cost", "Tokens", "4.5k in · 600 out", "3 model calls", "Compute time",
+                 "Last event"):
+        assert word in page, word
+    assert "Time and money" not in page and "Money spent" not in page
