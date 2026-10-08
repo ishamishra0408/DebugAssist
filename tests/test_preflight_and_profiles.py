@@ -65,3 +65,30 @@ def test_vercel_sandbox_fails_fast_instead_of_hanging():
     env = profile_for("vercel", "ai").env
     assert "pnpm_config_verify_deps_before_run=error" in env
     assert "COREPACK_HOME=/work/" in env  # fresh container per command: caches must live in the mounted checkout
+
+
+def test_phoenix_cloud_check_tests_the_address_and_key_together(monkeypatch):
+    import dataclasses
+    import io
+    import urllib.error
+    import urllib.request
+    from debug_assist import preflight
+    monkeypatch.setattr(preflight, "CFG", dataclasses.replace(preflight.CFG, phoenix_endpoint="https://app.phoenix.arize.com/s/space"))
+    monkeypatch.setenv("PHOENIX_API_KEY", "k")
+    seen = {}
+
+    def answer(code):
+        def fake(req, timeout=None):
+            seen.update(url=req.full_url, auth=req.headers.get("Authorization"))
+            if code >= 400:
+                raise urllib.error.HTTPError(req.full_url, code, "x", {}, io.BytesIO())
+            return type("R", (io.BytesIO,), {"status": code, "__enter__": lambda s: s, "__exit__": lambda *a: False})()
+        return fake
+    monkeypatch.setattr(urllib.request, "urlopen", answer(200))
+    assert preflight.check_phoenix_cloud(True).status == "PASS"
+    assert seen == {"url": "https://app.phoenix.arize.com/s/space/v1/traces", "auth": "Bearer k"}
+    monkeypatch.setattr(urllib.request, "urlopen", answer(401))
+    c = preflight.check_phoenix_cloud(True)
+    assert c.status == "FAIL" and "refuses the key" in c.fact
+    monkeypatch.setattr(urllib.request, "urlopen", answer(404))
+    assert "not a traces address" in preflight.check_phoenix_cloud(True).fact

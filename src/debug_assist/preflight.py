@@ -196,16 +196,40 @@ def check_github(owner: str, repo: str) -> Check:
     return Check("GitHub token", "PASS", f"fine-grained, read OK, {left} calls left")
 
 
+def phoenix_traces_url(endpoint: str) -> str:
+    """Where traces go: the endpoint with /v1/traces added, as phoenix.otel does."""
+    base = endpoint.rstrip("/")
+    return base if base.endswith("/v1/traces") else base + "/v1/traces"
+
+
 def check_phoenix_cloud(trace: bool) -> Check:
-    """Hosted runs trace to Phoenix Cloud: PHOENIX_COLLECTOR_ENDPOINT + PHOENIX_API_KEY (register() reads both)."""
+    """Hosted runs trace to Phoenix Cloud. Sends one empty trace with the key: tests the address and the key together
+    (fixed 2026-10-08: the first version asked the address for JSON and read its web page as 'not reachable')."""
     import os
-    if not os.environ.get("PHOENIX_API_KEY"):
+    import urllib.error
+    key = os.environ.get("PHOENIX_API_KEY", "")
+    if not key:
         return (Check("Phoenix", "WARN", "no key, but run started with --no-trace (recorded as trace OFF)") if not trace else
                 Check("Phoenix", "FAIL", "PHOENIX_API_KEY not set: this run would be untraced", "add it, or pass --no-trace"))
-    code, _, _ = _http(CFG.phoenix_endpoint.rstrip("/"), timeout=6)
-    if code is None:
-        return Check("Phoenix", "FAIL" if trace else "WARN", f"{CFG.phoenix_endpoint} not reachable", "check the endpoint")
-    return Check("Phoenix", "PASS", "Phoenix Cloud reachable (key set)")
+    url = phoenix_traces_url(CFG.phoenix_endpoint)
+    req = urllib.request.Request(url, data=b"", method="POST", headers={
+        "Content-Type": "application/x-protobuf", "authorization": f"Bearer {key}"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            code = r.status
+    except urllib.error.HTTPError as e:
+        code = e.code
+    except Exception as e:
+        return Check("Phoenix", "FAIL" if trace else "WARN", f"{url} not reachable ({type(e).__name__})", "check the address")
+    if code in (401, 403):
+        return Check("Phoenix", "FAIL" if trace else "WARN", "the address answers but refuses the key",
+                     "make a new System Key in Phoenix Cloud ▸ Settings and set PHOENIX_API_KEY")
+    if code == 404:
+        return Check("Phoenix", "FAIL" if trace else "WARN", f"{url} is not a traces address",
+                     "copy the Hostname from Phoenix Cloud ▸ Settings into PHOENIX_COLLECTOR_ENDPOINT")
+    if code >= 400:
+        return Check("Phoenix", "FAIL" if trace else "WARN", f"Phoenix Cloud answered HTTP {code}", "try again in a minute")
+    return Check("Phoenix", "PASS", "Phoenix Cloud accepts traces with this key")
 
 
 def check_phoenix(trace: bool, boot_wait_s: int = 20) -> Check:
