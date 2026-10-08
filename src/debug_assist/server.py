@@ -187,6 +187,21 @@ def _start_run(link: str, heading: str, ai: str) -> str:
 _connector: dict = {"proc": None, "repo": None}
 
 
+def _database_problem() -> str:
+    """'' when MongoDB answers; otherwise why, in plain words. A connection saves every step there (and the page
+    reads them from there), so it must not start without it (2026-10-08: it crashed unseen, the page stayed blank)."""
+    from .config import CFG as cfg
+    try:
+        from .store import client
+        client(1500).admin.command("ping")
+        return ""
+    except Exception:
+        local = any(h in (cfg.mongodb_uri or "") for h in ("127.0.0.1", "localhost"))
+        return ("The database is not reachable, so the connection could not be saved. " +
+                ("On this Mac the database runs in Docker Desktop: open Docker Desktop, wait a minute, then try again."
+                 if local else "Check MONGODB_URI in the host's settings."))
+
+
 def start_connect(link: str, again: bool = False) -> str:
     """again: connect a repo that is already connected, at its latest code (a new test sandbox; the old setup keeps
     working until the new one is saved)."""
@@ -197,12 +212,15 @@ def start_connect(link: str, again: bool = False) -> str:
     except ValueError as ex:
         raise Refused(str(ex))
     if repo in PROFILES and PROFILES[repo].base_commit:
-        raise Refused(f"{repo} was set up by hand; it is not connected again from here.")
+        raise Refused(f"{repo} is already set up. Paste one of its issues on the home page.")
     if repo in ready() and not again:
         raise Refused(f"{repo} is already connected. Paste one of its issues on the home page.")
     proc = _connector["proc"]
     if proc is not None and proc.poll() is None:
         raise Refused(f"{_connector['repo']} is being connected. Wait for it to finish, then connect another.")
+    problem = _database_problem()
+    if problem:
+        raise Refused(problem)
     folder = CFG.runs_dir / "_connect"
     folder.mkdir(parents=True, exist_ok=True)
     with open(folder / f"{repo.replace('/', '-')}.log", "w") as log:
@@ -317,13 +335,44 @@ def how_page() -> str:
 </body></html>"""
 
 
+def _connect_started(repo: str) -> str:
+    """Before the connection has saved its first step: starting, or it ended without saving one (the reason is the last
+    line it printed)."""
+    proc = _connector["proc"]
+    if not repo or _connector["repo"] != repo or proc is None:
+        return '<section hidden></section>'
+    e = viewer.e
+    if proc.poll() is None:
+        body = (f'<section class="group"><h2>Connecting {e(repo)}</h2><p class="status s-live"><span class="dot"></span>'
+                '<span>Starting.</span></p></section>')
+    else:
+        log = CFG.runs_dir / "_connect" / f"{repo.replace('/', '-')}.log"
+        lines = [x for x in (log.read_text(errors="replace").splitlines() if log.exists() else []) if x.strip()]
+        why = lines[-1][:300] if lines else "it stopped before saving anything"
+        body = (f'<section class="group" data-final="1"><h2>Connecting {e(repo)}</h2><p class="status s-stopped">'
+                f'<span class="dot"></span><span>Could not connect {e(repo)}. {e(why)}</span></p></section>')
+    return viewer._k("progress", body)
+
+
 CONNECT_STATE = {"done": ("done", "Done"), "running": ("running", "Working"), "waiting": ("pending", "Not started"),
                  "failed": ("stopped", "Stopped")}
 
 
 def _connected_rows() -> str:
     from . import icons, profiles
+    from .connect import recent
     e, rows = viewer.e, []
+    tried = {d["_id"]: d for d in recent()}
+    for repo, d in tried.items():  # under way, or tried and not connected: shown first, with where it stands
+        if d.get("status") == "connected" or repo in profiles.ready():
+            continue
+        if d.get("status") == "running":
+            now = next((x["label"] for x in d.get("steps", []) if x.get("status") == "running"), "Starting")
+            cls, ic, sub = "running", icons.spinner(), f"Connecting now: {now}"
+        else:
+            cls, ic, sub = "stopped", icons.cross(), f"Not connected. {d.get('why', '')}"
+        rows.append(f'<li><a class="row {cls}" href="/connect?repo={e(repo)}"><span class="ic">{ic}</span><span class="t">'
+                    f'<b>{e(repo)}</b><span>{e(sub)}</span></span><span class="tr">{icons.chevron()}</span></a></li>')
     for repo in profiles.ready():
         try:
             p = profiles.get(repo)
@@ -332,6 +381,8 @@ def _connected_rows() -> str:
         passed = sum(r == "pass" for _, r in p.baseline)
         sub = (f"Connected {p.connected_at[:10]} · {p.language} · {p.manager} · {passed} of {len(p.baseline)} test suites pass"
                if p.source == "connected" else f"Set up by hand · {p.language} · {p.manager}")
+        if (tried.get(repo) or {}).get("status") == "running":
+            sub += " · connecting again now"
         again = (f'<button type="button" class="btn glass again" data-repo="{e(repo)}">Connect again</button>'
                  if p.source == "connected" else "")
         rows.append(f'<li class="row done"><span class="ic">{icons.check()}</span><span class="t"><b>{e(repo)}</b>'
@@ -346,7 +397,7 @@ def _connect_progress(repo: str) -> str:
     e = viewer.e
     doc = status(repo) if repo else None
     if not doc:
-        return '<section hidden></section>'
+        return _connect_started(repo)
     rows = []
     for s in doc.get("steps") or [{"key": k, "label": label, "status": "waiting"} for k, label in STEPS]:
         cls, word = CONNECT_STATE.get(s.get("status"), ("pending", s.get("status", "")))

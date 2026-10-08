@@ -182,6 +182,11 @@ def detect(root: Path, primary: str = "") -> dict:
     js, py = detect_js(root), detect_py(root)
     pick = (py if primary.lower() == "python" else js) if js and py else js or py
     if not pick:
+        deeper = sorted(str(f.parent.relative_to(root)) for f in root.glob("**/package.json")
+                        if not _skipped(f.relative_to(root).as_posix()))[:8]
+        if deeper:
+            raise ValueError("there is no package.json at the top of the repo, so there is no one way to install and test "
+                             f"it (found one in: {', '.join(deeper)})")
         raise ValueError("no package.json, pyproject.toml or setup.py: not a JavaScript, TypeScript or Python repo")
     if js and py:
         pick["evidence"].insert(0, f"both JavaScript and Python found; GitHub says {primary or 'nothing'}, so {pick['language']}")
@@ -383,6 +388,16 @@ def prove_tests(p: RepoProfile, root: Path, packages: list[str], log) -> list[tu
     return out
 
 
+def recent(limit: int = 12) -> list[dict]:
+    """The latest connections tried, newest first (the Connect page lists the ones not connected yet)."""
+    from .config import CFG
+    from .store import client
+    try:
+        return list(client(1500)[CFG.db_name]["connects"].find().sort("started_at", -1).limit(limit))
+    except Exception:
+        return []
+
+
 def status(repo: str) -> dict | None:
     from .config import CFG
     from .store import client
@@ -398,7 +413,11 @@ def run_cli(text: str) -> int:
     except ValueError as ex:
         print(ex)
         return 2
-    print(f"connecting {repo} (progress: the Connect a repo page, or MongoDB connects/{repo})")
-    res = connect(repo)
+    print(f"connecting {repo} (progress: the Connect a repo page, or MongoDB connects/{repo})", flush=True)
+    try:
+        res = connect(repo)
+    except Exception as ex:  # nothing could be saved (the database is down): one plain line, the page shows it
+        print(f"Nothing was saved: {type(ex).__name__}: {str(ex)[:200]}", flush=True)
+        return 1
     print(json.dumps({k: v for k, v in res.items() if k != "profile"}))
     return 0 if res["status"] == "connected" else 1

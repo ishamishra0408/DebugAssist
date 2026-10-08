@@ -217,6 +217,11 @@ def test_a_repo_is_connected_like_the_terminal_connects_it_and_only_one_at_a_tim
     monkeypatch.setattr(server.subprocess, "Popen", Proc)
     monkeypatch.setitem(server._connector, "proc", None)
     monkeypatch.setitem(server._connector, "repo", None)
+    monkeypatch.setattr(server, "_database_problem", lambda: "The database is not reachable, so the connection could not be saved.")
+    with pytest.raises(server.Refused, match="database is not reachable"):       # never a silent crash (2026-10-08)
+        server.start_connect("https://github.com/acme/widgets")
+    assert not calls
+    monkeypatch.setattr(server, "_database_problem", lambda: "")
     assert server.start_connect("https://github.com/acme/widgets.git") == "acme/widgets"
     assert calls[0][2:] == ["debug_assist", "connect", "https://github.com/acme/widgets"]
     assert (tmp_path / "_connect" / "acme-widgets.log").exists() and not server.RUN_ID.match("_connect")  # not a run
@@ -227,7 +232,7 @@ def test_a_repo_is_connected_like_the_terminal_connects_it_and_only_one_at_a_tim
         server.start_connect("https://github.com/acme/done")
     assert server.start_connect("https://github.com/acme/done", again=True) == "acme/done"   # its latest code
     monkeypatch.setitem(server._connector, "proc", None)
-    with pytest.raises(server.Refused, match="set up by hand"):
+    with pytest.raises(server.Refused, match="already set up"):
         server.start_connect("https://github.com/vercel/ai", again=True)
     with pytest.raises(server.Refused, match="not a GitHub repository"):
         server.start_connect("https://gitlab.com/acme/widgets")
@@ -254,3 +259,16 @@ def test_the_connect_page_shows_each_step_live_and_only_the_page_can_start_it(li
     assert _get(live, "/api/connect", "POST", {"Content-Type": "application/json"}, body)[0] == 403 and not started
     code, out = _get(live, "/api/connect", "POST", _ok_headers(live), body)
     assert code == 200 and json.loads(out)["page"] == "/connect?repo=acme/widgets" and started
+
+
+def test_a_connection_that_ends_before_saving_says_why(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "CFG", SimpleNamespace(runs_dir=tmp_path))
+    (tmp_path / "_connect").mkdir()
+    (tmp_path / "_connect" / "acme-w.log").write_text("connecting acme/w\nNothing was saved: ServerSelectionTimeoutError: refused\n")
+    monkeypatch.setitem(server._connector, "repo", "acme/w")
+    monkeypatch.setitem(server._connector, "proc", SimpleNamespace(poll=lambda: None))
+    monkeypatch.setattr("debug_assist.connect.status", lambda repo: None)
+    assert "Starting." in server._connect_progress("acme/w")
+    monkeypatch.setitem(server._connector, "proc", SimpleNamespace(poll=lambda: 1))
+    out = server._connect_progress("acme/w")
+    assert 'data-final="1"' in out and "Could not connect acme/w. Nothing was saved: ServerSelectionTimeoutError" in out

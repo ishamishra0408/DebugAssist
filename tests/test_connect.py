@@ -198,3 +198,10 @@ def test_prove_runs_the_biggest_suites_offline_and_ends_the_sandbox(fake_world, 
     assert out == [("libs/core", "pass"), ("libs/partners/openai", "fail")]           # most test files first
     assert calls[0][0].endswith("cd libs/core && uv run --no-sync pytest -q ") and not any(n for _, n in calls)
     assert closed == [fake_world["root"]]
+
+
+def test_a_repo_without_one_top_level_setup_says_what_it_found(tmp_path):
+    write(tmp_path, {"plugins/guard/package.json": {"name": "g"}, "render/package.json": {"name": "r"},
+                     "tests/guard.test.mjs": "", ".nvmrc": "20\n"})
+    with pytest.raises(ValueError, match=r"no package.json at the top of the repo.*found one in: plugins/guard, render"):
+        C.detect(tmp_path)
