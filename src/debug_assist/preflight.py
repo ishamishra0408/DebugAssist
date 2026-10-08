@@ -277,8 +277,16 @@ def check_advisors() -> Check:
     if st == "BLOCKED":
         return Check("Advisors", "FAIL", why,
                      "review the Advisors MCP server first, then set ADVISORS_REVIEWED=yes in .env (or remove ADVISORS_MCP)")
-    return Check("Advisors", "WARN", "set and reviewed, but the call is not written yet; reviews will be skipped",
-                 "write advisors._call against the server's tool names")
+    from .advisors import AdvisorError, mcp_call
+    try:
+        tools = [t.get("name") for t in mcp_call("tools/list", {}, timeout=60).get("tools") or []]
+    except (AdvisorError, OSError) as e:
+        return Check("Advisors", "WARN", f"on, but the server did not answer: {e}"[:200],
+                     "advice is optional: the run goes on without it. Check ADVISORS_MCP and ADVISORS_KEY")
+    if "advise" not in tools:
+        return Check("Advisors", "WARN", f"the server answered but has no advise tool ({len(tools)} tools)",
+                     "check ADVISORS_MCP points at the Domain Expertise MCP server")
+    return Check("Advisors", "PASS", f"connected: the advise tool answers ({len(tools)} tools on the server)")
 
 
 def run_preflight(issue_url: str, demo: bool = False, trace: bool = True) -> list[Check]:

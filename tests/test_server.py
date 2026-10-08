@@ -296,21 +296,30 @@ def test_with_the_database_off_pages_answer_at_once_and_say_so(tmp_path, monkeyp
 
 
 def test_the_connect_page_has_a_card_per_advisor_and_the_steps_to_connect_them(monkeypatch):
-    """Isha 2026-10-08: show the option to connect the advisors. One card per seat, and the steps ticked as far as they
-    have got. The page never switches them on: the server is reviewed first, then two settings are set by hand."""
+    """Isha 2026-10-08: show the option to connect the advisors. One card per seat, and the four steps each ticked on
+    its own facts. The page never switches them on, and never claims more than is true."""
     import dataclasses
     from debug_assist import advisors
     monkeypatch.setattr("debug_assist.profiles.ready", lambda: [])
     monkeypatch.setitem(server._connector, "repo", None)
-    page = server.connect_page()
-    cards = page.split('id="advisors"')[1]
-    assert cards.count('class="adv-card"') == len(advisors.REVIEWS) and "allspaw" in cards and "qe-ic-advisor" in cards
-    assert "After step 6, Why it slipped" in cards and "After step 7, Guard similar bugs" in cards
-    assert "Not connected. Waiting for the advisors&#x27; server." in cards and cards.count('class="row done"') == 0
-    assert "ADVISORS_REVIEWED" in cards and "<button" not in cards and "<form" not in cards     # nothing to press here
-    monkeypatch.setattr(advisors, "CFG", dataclasses.replace(advisors.CFG, advisors_mcp="https://advisors.example/mcp", advisors_reviewed=False))
-    cards = server.connect_page().split('id="advisors"')[1]
-    assert "has not been reviewed" in cards and "Waiting for review" in cards and cards.count('class="row done"') == 1
-    monkeypatch.setattr(advisors, "CFG", dataclasses.replace(advisors.CFG, advisors_mcp="https://advisors.example/mcp", advisors_reviewed=True))
-    cards = server.connect_page().split('id="advisors"')[1]
-    assert "the question call is not written yet" in cards and cards.count('class="row done"') == 3   # never claims more
+    monkeypatch.delenv("ADVISORS_KEY", raising=False)
+
+    def cards(mcp="", reviewed=False, key=None):
+        cfg = dataclasses.replace(advisors.CFG, advisors_mcp=mcp, advisors_reviewed=reviewed)
+        monkeypatch.setattr(advisors, "CFG", cfg)
+        monkeypatch.setattr("debug_assist.config.CFG", cfg)
+        if key:
+            monkeypatch.setenv("ADVISORS_KEY", key)
+        return server.connect_page().split('id="advisors"')[1]
+    c = cards()
+    assert c.count('class="adv-card"') == len(advisors.REVIEWS) and "allspaw" in c and "qe-ic-advisor" in c
+    assert "After step 6, Why it slipped" in c and "After step 7, Guard similar bugs" in c
+    assert "Not connected." in c and c.count('class="row done"') == 1 and 'class="row next"' in c   # only the call is done
+    assert "ADVISORS_REVIEWED" in c and "<button" not in c and "<form" not in c                       # nothing to press
+    c = cards(mcp="https://advisors.example/mcp/")
+    assert "has not been marked reviewed" in c and "Waiting for review" in c and c.count('class="row done"') == 2
+    c = cards(mcp="https://advisors.example/mcp/", reviewed=True)
+    assert "no key is set, so the server will refuse" in c and "No key yet" in c and c.count('class="row done"') == 3
+    c = cards(mcp="https://advisors.example/mcp/", reviewed=True, key="k")
+    assert "Connected. Both review points ask" in c and c.count('class="row done"') == 4 and ">On<" in c
+    assert "k3y" not in c and "Set.</span>" in c                                                         # the key is never shown

@@ -12,6 +12,7 @@
   uv run debug-assist serve [--port=8777]                           the run viewer on localhost, live (run/resume open it)
   uv run debug-assist laya-serve [--port=8790]                      Laya for hosted runs (needs LAYA_TOKEN; put a tunnel in front)
   uv run debug-assist connect <repo-url>                            connect a repo: work out its setup, build its test sandbox, prove its tests
+  uv run debug-assist advisors-check                                ask both advisors one fixed sample each (needs them switched on)
 
 --focus=TEXT            the one problem in the issue to reproduce (default: the issue's title)
 --focus-heading=HEADING the same, taken from the issue's section under that markdown heading
@@ -25,7 +26,7 @@ import sys
 from contextlib import ExitStack
 from datetime import datetime
 
-COMMANDS = {"preflight", "run", "resume", "approve", "reject", "status", "events", "cleanup", "view", "serve", "laya-serve", "connect"}
+COMMANDS = {"preflight", "run", "resume", "approve", "reject", "status", "events", "cleanup", "view", "serve", "laya-serve", "connect", "advisors-check"}
 
 
 def _tracing():
@@ -125,7 +126,7 @@ def _open_viewer(run_id: str, port: int) -> None:
 def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     flags = {a for a in sys.argv[1:] if a.startswith("--")}
-    if not args or args[0] not in COMMANDS or (len(args) < 2 and args[0] not in ("cleanup", "serve", "laya-serve")):
+    if not args or args[0] not in COMMANDS or (len(args) < 2 and args[0] not in ("cleanup", "serve", "laya-serve", "advisors-check")):
         print(__doc__)
         sys.exit(2)
     cmd, arg = args[0], (args[1] if len(args) > 1 else "")
@@ -138,6 +139,15 @@ def main() -> None:
     if cmd == "cleanup":
         _cleanup(yes="--yes" in flags)
         return
+    if cmd == "advisors-check":
+        from .advisors import check_both, status
+        st, why = status()
+        if st != "ON":
+            sys.exit(f"advisors are {st}: {why}")
+        results = check_both()
+        for seat, state, said in results:
+            print(f"{seat}: {state}\n  {said}")
+        sys.exit(0 if all(r[1] == "ANSWERED" for r in results) else 1)
     if cmd == "connect":
         from .connect import run_cli
         sys.exit(run_cli(arg))

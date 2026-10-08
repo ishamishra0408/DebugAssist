@@ -419,35 +419,50 @@ def _connect_progress(repo: str) -> str:
 
 
 def _advisor_cards() -> str:
-    """One card per advisor seat (advisors.REVIEWS): which step it reviews, what it asks, whether it is on; then the
-    steps to connect them, ticked as far as they have got (Isha 2026-10-08). Nothing here switches them on: the
-    server is reviewed first, then the two settings are set where DebugAssistAgent runs."""
+    """One card per advisor seat (advisors.REVIEWS): which step it reviews, what it checks, whether it is on; then the
+    steps to connect them, each ticked on its own facts (Isha 2026-10-08). Nothing here switches them on: the server
+    is reviewed first, then three settings are set by hand where DebugAssistAgent runs. The page never claims more than
+    is true: no key means the server will refuse, and it says so."""
+    import os
+
     from . import advisors, icons
+    from .config import CFG as cfg
     e = viewer.e
     st, _ = advisors.status()
+    has_key = bool(os.environ.get("ADVISORS_KEY", "").strip())
+    live = st == "ON" and advisors.CALL_WRITTEN and has_key
     label = {k: lab for k, lab, _ in plain.STEPS}
     num = {k: i + 1 for i, (k, _, _) in enumerate(plain.STEPS)}
-    pill = {"OFF": ("Off", "grey"), "BLOCKED": ("Waiting for review", "amber"),
-            "ON": ("On", "green") if advisors.CALL_WRITTEN else ("Set, not asking yet", "amber")}[st]
+    pill = (("On", "green") if live else ("No key yet", "amber") if st == "ON" else
+            ("Waiting for review", "amber") if st == "BLOCKED" else ("Off", "grey"))
     cards = "".join(
         f'<article class="adv-card"><div class="adv-top"><span class="adv-mark" aria-hidden="true">{e(r["seat"][:2].upper())}</span>'
         f'<div><b>{e(r["seat"])}</b><span>Reviews {e(r["what"])}</span></div><span class="pill {pill[1]}">{e(pill[0])}</span></div>'
-        f'<dl><dt>When</dt><dd>After step {num[step]}, {e(label[step])}</dd><dt>Asks</dt><dd>{e(r["question"])}</dd></dl></article>'
+        f'<dl><dt>When</dt><dd>After step {num[step]}, {e(label[step])}</dd><dt>Checks</dt><dd>{e(r["question"])}</dd></dl></article>'
         for step, r in advisors.REVIEWS.items())
-    done = {"OFF": 0, "BLOCKED": 1, "ON": 3 if not advisors.CALL_WRITTEN else 4}[st]
-    steps = [("Get the advisors' server address", "From the advisors' team. It has not arrived yet." if done == 0 else "Received."),
-             ("Review the server", "Check which tools it offers and what it can read, before anything connects to it."),
-             ("Switch it on where DebugAssistAgent runs",
-              "Set ADVISORS_MCP to the address and ADVISORS_REVIEWED to yes (on Render: Environment). Never in chat."),
-             ("Write the question call", "Written against the reviewed server's tools; then each answer is saved with the run.")]
+    steps = [("Server address", bool(cfg.advisors_mcp),
+              f"Set: {cfg.advisors_mcp}" if cfg.advisors_mcp else
+              "ADVISORS_MCP = https://domain-expertise-mcp.onrender.com/mcp/ (from the advisors' team)"),
+             ("Review the server", bool(cfg.advisors_reviewed),
+              "Reviewed, and marked so." if cfg.advisors_reviewed else
+              "Reviewed on 8 Oct 2026 (its lock, what it keeps, what it answers). Set ADVISORS_REVIEWED = yes to accept it."),
+             ("Add the key", has_key, "Set." if has_key else
+              "ADVISORS_KEY = the key the advisors' team sends you (Render: Environment). Never in chat."),
+             ("The question call", advisors.CALL_WRITTEN,
+              "Written: each review point asks the server's advise tool; answers are saved with the run." if advisors.CALL_WRITTEN
+              else "Written against the reviewed server's tools.")]
+    first = next((i for i, (_, ok, _) in enumerate(steps) if not ok), None)
     rows = "".join(
-        f'<li class="row {"done" if i < done else "next" if i == done else "pending"}"><span class="ic">{icons.check() if i < done else f"<span class=num>{i + 1}</span>"}'
-        f'</span><span class="t"><b>{e(t)}</b><span>{e(d)}</span></span></li>' for i, (t, d) in enumerate(steps))
-    state = {"OFF": "Not connected. Waiting for the advisors' server.",
-             "BLOCKED": "An address is set, but the server has not been reviewed, so the advisors stay off.",
-             "ON": "Connected." if advisors.CALL_WRITTEN else "Switched on, but the question call is not written yet, so nobody is asked."}[st]
+        f'<li class="row {"done" if ok else "next" if i == first else "pending"}"><span class="ic">'
+        f'{icons.check() if ok else f"<span class=num>{i + 1}</span>"}</span><span class="t"><b>{e(t)}</b><span>{e(d)}</span></span></li>'
+        for i, (t, ok, d) in enumerate(steps))
+    state = ("Connected. Both review points ask the advisors during each run." if live else
+             "Switched on, but no key is set, so the server will refuse." if st == "ON" and advisors.CALL_WRITTEN else
+             "Switched on, but the question call is not written yet, so nobody is asked." if st == "ON" else
+             "An address is set, but the server has not been marked reviewed, so the advisors stay off." if st == "BLOCKED" else
+             "Not connected. Three settings switch them on: the steps below.")
     return (f'<section class="group" id="advisors" aria-labelledby="h-adv"><h2 id="h-adv">Advisors</h2>'
-            f'<p class="status {"s-done" if st == "ON" and advisors.CALL_WRITTEN else "s-waiting" if st == "BLOCKED" else "s-idle"}">'
+            f'<p class="status {"s-done" if live else "s-waiting" if st in ("BLOCKED", "ON") else "s-idle"}">'
             f'<span class="dot"></span><span>{e(state)}</span></p>'
             f'<div class="adv-cards">{cards}</div>'
             f'<h3 class="sub-h">How to connect them</h3><div class="sect"><ul class="rows">{rows}</ul></div>'

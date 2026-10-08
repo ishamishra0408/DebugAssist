@@ -442,7 +442,10 @@ def why_it_shipped(s: RunState):
     prs = [e["pr"]["number"] for e in [ev.get("written") or {}] + ev["shaped"] if e.get("pr")]
     return {"second_story": {"status": "WRITTEN", "text": told["text"], "evidence": ev,
                              "names_checked": told["names_checked"]},
-            "advisors": {"why_it_shipped": advisors.review(s, "why_it_shipped", told["text"])},
+            # allspaw files the question as the fix's summary and the evidence as the incident: the report is scanned
+            "advisors": {"why_it_shipped": advisors.review(
+                s, "why_it_shipped", told["text"],
+                question=f"The fix: {(s.get('cause') or {}).get('plan') or (s.get('cause') or {}).get('why') or 'see the report'}")},
             "condition": {"text": told["condition"], "sha256": freeze["sha256"], "frozen_at": freeze["frozen_at"]},
             "log": [f"why_it_shipped: story from {len(prs)} PR(s) ({', '.join('#' + str(n) for n in prs)}); "
                     f"no names ({told['names_checked']} checked); condition frozen {freeze['sha256'][:12]}"]}
@@ -479,7 +482,11 @@ def lasting_guard(s: RunState):
     text = (f"{g['covers'].rstrip('. ')}. A parametrised test (`{Path(g['repo_path']).name}`) that fails on the old code, so it would "
             f"have caught this bug. On the fixed code {len(g['on_fixed']['passed'])} of "
             f"{len(g['on_fixed']['passed']) + len(open_cases)} cases pass.")
-    return {"advisors": {"lasting_guard": advisors.review(s, "lasting_guard", f"{text}\n\nCovers: {g['covers']}")},
+    # qe-ic-advisor files the question as the attempt and the evidence as the bug; it reads both for guard wording
+    guard_said = (f"The guard is a test that runs by itself with the package's tests: the test fails whenever "
+                  f"{g['covers'].rstrip('. ')}.")
+    return {"advisors": {"lasting_guard": advisors.review(
+                s, "lasting_guard", f"The bug: {s.get('focus') or s['issue']['title']}\n\n{text}", question=guard_said)},
             "guard": {"status": g["status"], "text": text, "covers": g["covers"], "path": g["path"],
                       "repo_path": g["repo_path"], "on_fixed": g["on_fixed"], "open_cases": open_cases,
                       "broken_cases": g.get("broken_cases", []) + g["on_fixed"].get("broken", []),
