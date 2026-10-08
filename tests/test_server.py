@@ -313,7 +313,9 @@ def test_the_connect_page_has_a_card_per_advisor_and_the_steps_to_connect_them(m
         return server.connect_page().split('id="advisors"')[1]
     c = cards()
     assert c.count('class="adv-card"') == len(advisors.REVIEWS) and "allspaw" in c and "qe-ic-advisor" in c
-    assert "After step 6, Why it slipped" in c and "After step 7, Guard similar bugs" in c
+    assert "Step 6 · Why it slipped" in c and "Step 7 · Guard similar bugs" in c
+    assert 'canvas class="sigil" data-seat="allspaw" data-palette="ember"' in c and 'data-palette="moss"' in c   # each its own scene
+    assert "Incident review" in c and "Conditions, not culprits." in c and "Quality gate" in c and "Ship or stop." in c
     assert "Not connected." in c and c.count('class="row done"') == 1 and 'class="row next"' in c   # only the call is done
     assert "ADVISORS_REVIEWED" in c and "<button" not in c and "<form" not in c                       # nothing to press
     c = cards(mcp="https://advisors.example/mcp/")
@@ -355,3 +357,12 @@ def test_each_advisor_can_be_asked_by_hand_with_empty_boxes_and_a_hint(live, mon
     assert code == 400 and "fill in both boxes" in json.loads(out)["error"].lower()
     code, out = _get(live, "/api/advisors-ask", "POST", _ok_headers(live), json.dumps({"seat": "nobody", "question": "q", "evidence": "e"}).encode())
     assert code == 400 and "no such advisor" in json.loads(out)["error"].lower()
+
+
+def test_the_advisor_scenes_are_served_and_degrade_quietly():
+    js = (viewer.STATIC / "advisors.js").read_text()
+    assert server.STATIC_FILES["advisors.js"].startswith("text/javascript")
+    assert "prefers-reduced-motion" in js and "IntersectionObserver" in js and "no-gl" in js      # still, paused, fallback
+    assert 'addEventListener("advisor-state"' in js and "window.gsap" in js                       # works without GSAP too
+    page = server.connect_page()
+    assert "/static/advisors.js" in page and "gsap/3.12.5/gsap.min.js" in page

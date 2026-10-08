@@ -39,11 +39,14 @@ REVIEWS = {
 }
 
 # Asking a seat by hand (the Connect page): what its two boxes are, as the server's template reads them
+# role and motto: the advisors' own roster (domain-expertise-mcp seats.json, 21a85cd); palette: their scene's colours
 ASK = {
-    "allspaw": {"q": "The fix, in one line", "q_hint": "e.g. The finalizer now emits only tool calls whose input finished",
+    "allspaw": {"role": "Incident review", "motto": "Conditions, not culprits.", "palette": "ember",
+                "q": "The fix, in one line", "q_hint": "e.g. The finalizer now emits only tool calls whose input finished",
                 "e": "Text to check for blame", "e_hint": "Paste the report on why the bug slipped through, or any write-up of an incident",
                 "useful": "Most useful after step 6, Why it slipped: paste the report it wrote. It flags every sentence that blames a person."},
-    "qe-ic-advisor": {"q": "What the guard is", "q_hint": "e.g. A test that fails whenever a stream ends before a tool call is complete",
+    "qe-ic-advisor": {"role": "Quality gate", "motto": "Ship or stop.", "palette": "moss",
+                      "q": "What the guard is", "q_hint": "e.g. A test that fails whenever a stream ends before a tool call is complete",
                       "e": "The bug", "e_hint": "One or two lines: what went wrong",
                       "useful": "Most useful after step 7, Guard similar bugs: describe the guard it wrote. It says whether the guard runs by itself or needs someone to remember it."},
 }

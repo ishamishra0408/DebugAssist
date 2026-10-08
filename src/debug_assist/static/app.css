@@ -389,13 +389,21 @@ ul.log li { white-space: pre-wrap; word-break: break-word; }
 
 /* advisors: one card per seat */
 .adv-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; }
-.adv-card { background: var(--surface); border-radius: var(--r-group); box-shadow: inset 0 0 0 1px var(--hair); padding: 16px 18px; min-width: 0; }
-.adv-top { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 12px; align-items: center; }
-.adv-top b { display: block; font-size: 17px; } .adv-top div span { display: block; font-size: 14px; color: var(--label-2); }
-.adv-mark { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; font-weight: 700; font-size: 14px;
-  background: var(--surface-2); color: var(--label-2); letter-spacing: .02em; }
-.adv-card dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 14px 0 0; font-size: 14px; }
-.adv-card dt { color: var(--label-2); } .adv-card dd { margin: 0; }
+.adv-card { background: var(--surface); border-radius: var(--r-group); box-shadow: inset 0 0 0 1px var(--hair); min-width: 0;
+  overflow: hidden; transform-style: preserve-3d; will-change: transform; }
+/* the advisor's living scene, with its name set into it */
+.adv-banner { position: relative; height: 148px; isolation: isolate; }
+.adv-banner canvas.sigil { position: absolute; inset: 0; width: 100%; height: 100%; display: block; z-index: -1; }
+.adv-banner canvas.sigil.no-gl { background: radial-gradient(120% 90% at 70% 10%, color-mix(in srgb, var(--blue) 35%, transparent), transparent 70%); }
+.adv-banner .pill { position: absolute; top: 14px; right: 14px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.adv-id { position: absolute; left: 20px; bottom: 14px; display: grid; gap: 2px; }
+.adv-role { font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--label-2); }
+.adv-name { font-size: 30px; line-height: 1.05; font-weight: 700; letter-spacing: -.035em; color: var(--label); }
+.adv-body { padding: 4px 20px 18px; }
+.adv-motto { margin: 10px 0 14px; font-size: 19px; line-height: 1.3; letter-spacing: -.02em; font-weight: 500; color: var(--label); }
+.adv-facts { display: grid; gap: 10px; margin: 0; font-size: 14px; }
+.adv-facts div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 12px; }
+.adv-facts dt { color: var(--label-2); } .adv-facts dd { margin: 0; color: var(--label); }
 .sub-h { margin: 22px 18px 8px; font-size: 15px; font-weight: 600; color: var(--label-2); }
 .s-idle .dot, .dot.s-idle { background: #8e8e93; }
 .row.next .ic { background: color-mix(in srgb, var(--blue) 22%, transparent); color: var(--blue); }
@@ -408,7 +416,7 @@ ul.log li { white-space: pre-wrap; word-break: break-word; }
 .adv-ask .hint { margin: 0; font-size: 13px; color: var(--label-2); }
 .adv-ask label { display: grid; gap: 6px; font-size: 13px; color: var(--label-2); }
 .adv-ask input, .adv-ask textarea { width: 100%; box-sizing: border-box; border: 0; border-radius: var(--r-inner); padding: 10px 12px;
-  background: var(--surface-2); color: var(--label); font: 15px/1.4 inherit; resize: vertical; }
+  background: var(--surface-2); color: var(--label); font-family: inherit; font-size: 15px; line-height: 1.4; resize: vertical; }
 .adv-ask input::placeholder, .adv-ask textarea::placeholder { color: var(--label-3); }
 .adv-ask input:focus-visible, .adv-ask textarea:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
 .adv-go { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }

@@ -84,7 +84,8 @@ def login_page(error: str = "") -> str:
 <p class="err" role="alert">{e(error)}</p></form></main></body></html>"""
 _plans: dict = {}
 STATIC_FILES = {"app.css": "text/css; charset=utf-8", "topo.js": "text/javascript; charset=utf-8",
-                "glass.js": "text/javascript; charset=utf-8", "chart.js": "text/javascript; charset=utf-8"}
+                "glass.js": "text/javascript; charset=utf-8", "chart.js": "text/javascript; charset=utf-8",
+                "advisors.js": "text/javascript; charset=utf-8"}
 
 
 def url(run_id: str | None = None, port: int = PORT) -> str:
@@ -443,12 +444,17 @@ def _advisor_cards() -> str:
                 f'<div class="adv-go"><button type="button" class="btn glass prominent">Ask {e(seat)}</button>'
                 f'<span class="adv-note">Takes up to a minute if their server is asleep.</span></div>'
                 f'<div class="adv-answer" hidden></div></div>')
-    cards = "".join(
-        f'<article class="adv-card"><div class="adv-top"><span class="adv-mark" aria-hidden="true">{e(r["seat"][:2].upper())}</span>'
-        f'<div><b>{e(r["seat"])}</b><span>Reviews {e(r["what"])}</span></div><span class="pill {pill[1]}">{e(pill[0])}</span></div>'
-        f'<dl><dt>When</dt><dd>After step {num[step]}, {e(label[step])}</dd><dt>Checks</dt><dd>{e(r["question"])}</dd></dl>'
-        + (ask_box(r["seat"]) if live and r["seat"] in advisors.ASK else "") + '</article>'
-        for step, r in advisors.REVIEWS.items())
+    def card(step: str, r: dict) -> str:
+        who = advisors.ASK.get(r["seat"], {})
+        return (f'<article class="adv-card" data-seat="{e(r["seat"])}">'
+                f'<div class="adv-banner"><canvas class="sigil" data-seat="{e(r["seat"])}" data-palette="{e(who.get("palette", "tide"))}" aria-hidden="true"></canvas>'
+                f'<span class="pill {pill[1]}">{e(pill[0])}</span>'
+                f'<div class="adv-id"><span class="adv-role">{e(who.get("role", "Advisor"))}</span><b class="adv-name">{e(r["seat"])}</b></div></div>'
+                f'<div class="adv-body"><p class="adv-motto">\u201c{e(who.get("motto", ""))}\u201d</p>'
+                f'<dl class="adv-facts"><div><dt>Reviews</dt><dd>Step {num[step]} · {e(label[step])}</dd></div>'
+                f'<div><dt>Checks</dt><dd>{e(r["question"])}</dd></div></dl>'
+                + (ask_box(r["seat"]) if live and r["seat"] in advisors.ASK else "") + '</div></article>')
+    cards = "".join(card(step, r) for step, r in advisors.REVIEWS.items())
     steps = [("Server address", bool(cfg.advisors_mcp),
               f"Set: {cfg.advisors_mcp}" if cfg.advisors_mcp else
               "ADVISORS_MCP = https://domain-expertise-mcp.onrender.com/mcp/ (from the advisors' team)"),
@@ -509,6 +515,8 @@ def connect_page(repo: str = "") -> str:
 {_advisor_cards()}
 </main>
 <script src="/static/topo.js" defer></script><script src="/static/glass.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" defer></script>
+<script src="/static/advisors.js" defer></script>
 <script>
 const H = {{ "{TOKEN_HEADER}": {json.dumps(TOKEN)}, "Content-Type": "application/json" }};
 const $ = id => document.getElementById(id);
@@ -528,13 +536,15 @@ document.addEventListener("click", async ev => {{
   const box = b.closest(".adv-ask"), out = box.querySelector(".adv-answer");
   const show = (ok, title, text) => {{ out.hidden = false; out.className = "adv-answer " + (ok ? "ok" : "bad"); out.textContent = "";
     const t = document.createElement("b"); t.textContent = title; const p = document.createElement("p"); p.textContent = text; out.append(t, p); }};
-  b.disabled = true; show(true, "Asking…", "Waiting for the advisors' server.");
+  const say = state => document.dispatchEvent(new CustomEvent("advisor-state", {{ detail: {{ seat: box.dataset.seat, state }} }}));
+  b.disabled = true; say("asking"); show(true, "Asking…", "Waiting for the advisors' server.");
   try {{
     const r = await fetch("/api/advisors-ask", {{ method: "POST", headers: H, body: JSON.stringify({{
       seat: box.dataset.seat, question: box.querySelector("[name=q]").value, evidence: box.querySelector("[name=e]").value }}) }});
     const j = await r.json();
-    if (r.ok) show(true, box.dataset.seat + " said", j.said); else show(false, "Not asked", j.error || "Something went wrong.");
-  }} catch (ex) {{ show(false, "Not asked", "Could not reach {plain.NAME}."); }}
+    if (r.ok) {{ show(true, box.dataset.seat + " said", j.said); say("answered"); }}
+    else {{ show(false, "Not asked", j.error || "Something went wrong."); say("failed"); }}
+  }} catch (ex) {{ show(false, "Not asked", "Could not reach {plain.NAME}."); say("failed"); }}
   finally {{ b.disabled = false; }}
 }});
 document.querySelectorAll("button.again").forEach(b => b.onclick = () => connect("https://github.com/" + b.dataset.repo, true, b));
