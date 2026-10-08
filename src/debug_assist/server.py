@@ -22,6 +22,7 @@ import threading
 import time
 import urllib.request
 from datetime import datetime
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -126,6 +127,27 @@ def _ready_repo(owner: str, repo: str):
     return profiles.get(f"{owner}/{repo}")
 
 
+# headings that are parts of one report (an issue template), and words that mark a second, separate problem
+PART = re.compile(r"description|summary|reproduc|steps|expected|actual|current|behaviou?r|what happened|environment|"
+                  r"version|system|setup|code|example|logs?|error|stack|trace|screenshot|context|notes?|related|"
+                  r"proposed|possible|solution|fix|workaround|impact|details|output|bug", re.I)
+ANOTHER = re.compile(r"\b(second(ary)?|another|also|other|separate|additional (bug|issue|problem)|"
+                     r"(bug|issue|problem)\s*#?\s*[2-9]|follow[- ]up)\b", re.I)
+
+
+def pick_focus(title: str, sections: list[dict], texts: dict) -> dict:
+    """Which one problem to prove, picked from the issue's own headings (Isha 2026-10-08: don't ask when the issue
+    holds one problem). single: every heading is part of one report. The pick: the first section that describes the
+    problem and quotes code (its backticks are what the test's failure must show), else the title."""
+    single = not any(ANOTHER.search(s["heading"]) or not PART.search(s["heading"]) for s in sections)
+    describes = [s for s in sections if re.search(r"description|actual|current|what happened|summary|behaviou?r|bug|error",
+                                                   s["heading"], re.I) and not re.search(r"reproduc|steps|expected", s["heading"], re.I)]
+    coded = [s for s in describes if "`" in texts.get(s["heading"], "") and not texts[s["heading"]].lstrip().startswith("```")]
+    best = (coded or [None])[0]
+    return {"single": single, "heading": best["heading"] if best else "",
+            "preview": best["preview"] if best else title, "from": f"the {best['heading']} section" if best else "the title"}
+
+
 def read_issue(link: str) -> dict:
     """What the home page shows after "Check": the issue and the sections it could fix."""
     from .github_read import get_issue
@@ -136,13 +158,15 @@ def read_issue(link: str) -> dict:
     except Exception as ex:
         raise Refused(f"Could not read the issue from GitHub ({type(ex).__name__}). Check the link and try again.")
     body = issue.get("body") or ""
-    sections = []
+    sections, texts = [], {}
     for h in dict.fromkeys(HEADING.findall(body)):  # each heading once, in order
         m = re.search(rf"^#+\s*{re.escape(h)}\s*#*\s*$\n(.*?)(?=^#+\s|\Z)", body, re.M | re.S)
         text = re.sub(r"\s+", " ", m.group(1)).strip() if m else ""
         if text:
             sections.append({"heading": h, "preview": text[:180]})
+            texts[h] = m.group(1)
     return {"owner": owner, "repo": repo, "number": number, "title": issue["title"], "state": issue["state"],
+            "auto": pick_focus(issue["title"], sections, texts),
             "sections": sections}
 
 
@@ -182,6 +206,42 @@ def _start_run(link: str, heading: str, ai: str) -> str:
                                           start_new_session=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
     _child["run_id"] = run_id
     return run_id
+
+
+# ── your OK, from the page (Isha 2026-10-08): the same command as the terminal, bound to the text shown ──────────
+_decider: dict = {"proc": None, "run_id": None}
+
+
+def decide(run_id: str, decision: str, sha: str) -> str:
+    """Approve or say no to a run waiting for your OK. Refused unless the run is waiting, and the text on disk is the
+    text you were shown (its sha256, sent by the page). Runs `debug-assist approve|reject <run-id>` in the background."""
+    from .guardrails import fingerprint
+    if decision not in ("approve", "reject"):
+        raise Refused("Choose approve or say no.")
+    if not RUN_ID.match(run_id) or not (CFG.runs_dir / run_id).is_dir():
+        raise Refused("No such run.")
+    proc = _decider["proc"]
+    if proc is not None and proc.poll() is None:
+        raise Refused("Your last answer is still being saved. Wait a few seconds.")
+    snap = viewer._app().get_state({"configurable": {"thread_id": run_id}})
+    intr = next((i.value for t in (snap.tasks or []) for i in (t.interrupts or [])), None)
+    if not intr:
+        raise Refused("This run is not waiting for your OK.")
+    if sha != intr.get("sha256"):
+        raise Refused("The pull request text changed since this page was opened. Reload it and read it again.")
+    from . import artifacts
+    if artifacts.enabled():
+        artifacts.restore_run(run_id)
+    pr = Path(intr["pr_body_path"])
+    if not pr.exists() or fingerprint(pr.read_text()) != sha:
+        raise Refused("The pull request text on disk is not the text you were shown. Nothing was approved.")
+    with open(CFG.runs_dir / run_id / "console-decision.log", "w") as log:
+        _decider["proc"] = subprocess.Popen([sys.executable, "-m", "debug_assist", decision, run_id, "--no-view"], cwd=ROOT,
+                                            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                            start_new_session=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
+    _decider["run_id"] = run_id
+    return ("Approved. Saving it now; this page updates in a few seconds." if decision == "approve"
+            else "You said no. Ending the run; this page updates in a few seconds.")
 
 
 # ── connect a repo: one at a time, started the same way the terminal starts it ───────────────────────────────────
@@ -674,6 +734,8 @@ def home_page() -> str:
 </section>
 <div id="more" hidden>
   <section class="group" aria-labelledby="h-sec"><h2 id="h-sec">Which problem should it fix?</h2>
+    <div class="sect auto-pick" id="auto" hidden><p><b>It will prove:</b> <span id="auto-text"></span></p>
+      <p class="foot"><span id="auto-from"></span> · <button type="button" class="linkbtn" id="auto-change">Change</button></p></div>
     <div class="sect" id="sections" role="radiogroup" aria-labelledby="h-sec"></div></section>
   <section class="group" aria-labelledby="h-ai" style="margin-top:28px"><h2 id="h-ai">Which AI?</h2>
     <div class="seg glass" role="radiogroup" aria-labelledby="h-ai">
@@ -695,6 +757,7 @@ const fail = msg => {{ $("err").textContent = msg; }};
 const FOOT = {{ standard: "Cheaper. It often cannot fix the bug.", opus: "Stronger. About $0.70 a run, taken from your AI budget." }};
 document.querySelectorAll('input[name="ai"]').forEach(r => r.addEventListener("change", () => {{ $("aifoot").textContent = FOOT[r.value]; }}));
 $("link").addEventListener("keydown", ev => {{ if (ev.key === "Enter") $("check").click(); }});
+$("auto-change").onclick = () => {{ $("auto").hidden = true; $("sections").hidden = false; }};
 $("check").onclick = async () => {{
   fail(""); $("more").hidden = true; $("card").hidden = true; $("check").disabled = true;
   try {{
@@ -714,8 +777,12 @@ $("check").onclick = async () => {{
       const tick = document.createElement("span"); tick.className = "tick"; tick.innerHTML = {json.dumps(icons.check())};
       l.append(i, t, tick); box.appendChild(l);
     }};
-    add("", "The problem in the title", j.title, true);
-    j.sections.forEach(x => add(x.heading, x.heading, x.preview, false));
+    const pickH = (j.auto || {{}}).heading || "";
+    add("", "The problem in the title", j.title, pickH === "");
+    j.sections.forEach(x => add(x.heading, x.heading, x.preview, x.heading === pickH));
+    const one = j.auto && j.auto.single;          // one problem: say what it will prove; the list stays one tap away
+    $("auto").hidden = !one; box.hidden = !!one;
+    if (one) {{ $("auto-text").textContent = j.auto.preview; $("auto-from").textContent = "Picked from " + j.auto.from; }}
     $("more").hidden = false;
   }} catch (ex) {{ fail("Could not reach {plain.NAME}. Is it still running?"); }}
   finally {{ $("check").disabled = false; }}
@@ -828,7 +895,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(503, "The database is off, so this run can't be read. On this Mac it runs in "
                                            "Docker Desktop: open it, wait a minute, then reload.", "text/plain; charset=utf-8")
                 if parts[0] == "run":
-                    return self._send(200, viewer.render(viewer.gather(rid), mode="live"))
+                    return self._send(200, viewer.render(viewer.gather(rid), mode="live", token=TOKEN))
                 speed = min(60.0, max(1.0, float((q.get("speed") or ["8"])[0])))
                 plan = _plans.get((rid, speed)) or _plans.setdefault((rid, speed), viewer.replay_plan(rid, speed))
                 if not plan:
@@ -892,13 +959,16 @@ class Handler(BaseHTTPRequestHandler):
                 or not (self.headers.get("Content-Type") or "").startswith("application/json")):
             return self._json(403, {"error": "Not allowed. Start runs from the DebugAssistAgent home page."})
         path = urlparse(self.path).path
-        if path not in ("/api/start", "/api/connect", "/api/advisors-ask"):
+        if path not in ("/api/start", "/api/connect", "/api/advisors-ask", "/api/decide"):
             return self._json(404, {"error": "not found"})
         n = int(self.headers.get("Content-Length") or 0)
         if n > 4096:
             return self._json(413, {"error": "too large"})
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
+            if path == "/api/decide":
+                said = decide(str(body.get("run_id", "")), str(body.get("decision", "")), str(body.get("sha256", "")))
+                return self._json(200, {"said": said})
             if path == "/api/advisors-ask":
                 from .advisors import AdvisorError, ask, status
                 if status()[0] != "ON":

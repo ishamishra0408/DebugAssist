@@ -51,7 +51,8 @@ def _repro_state(tmp_path, monkeypatch):
     monkeypatch.setattr(graph, "_existing_tests", lambda *a: {"status": "NONE FAIL", "passed": 12, "failed": 0})
     monkeypatch.setattr(graph, "CFG", dataclasses.replace(graph.CFG, runs_dir=tmp_path))
     monkeypatch.setattr(graph, "run_copy", lambda prof, dest: dest)
-    monkeypatch.setattr(graph.testwriter, "locate", lambda *a: SimpleNamespace(source="packages/x/src/y.ts"))
+    monkeypatch.setattr(graph.testwriter, "locate", lambda *a: SimpleNamespace(
+        source="packages/x/src/y.ts", fixtures=["packages/x/src/__fixtures__/a.chunks.txt"]))  # recorded data beside it
     return {"run_id": "r1", "issue": {"number": 1, "title": "t", "body": "b"},
             "profile": {"repo": "vercel/ai", "image": "img", "language": "typescript", "recorded_fixtures": True},
             "triage": {"has_repro_p": 0.9}}
@@ -258,3 +259,16 @@ def test_the_repos_own_tests_run_first_and_each_repro_test_runs_again_after_the_
     assert (tmp_path / "ai-1-x/proof/after-fix-da-repro-1-unit-2.test.ts.txt").exists()
     assert testwriter.counts("====== 2 failed, 40 passed in 3.1s ======") == {"passed": 40, "failed": 2}
     assert testwriter.counts("# pass 7\n# fail 0") == {"passed": 7, "failed": 0} and testwriter.counts("nothing") == {}
+
+
+def test_no_recorded_data_beside_the_code_means_no_recorded_data_rung(scratch_db, tmp_path, monkeypatch):
+    """#22288 run: vercel/ai has recordings for its providers, none beside its chat code; three tries were spent
+    looking for them. The rung is planned per issue now."""
+    s = _repro_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(graph.testwriter, "locate", lambda *a: SimpleNamespace(source="packages/ai/src/ui/chat.ts", fixtures=[]))
+    made = []
+    monkeypatch.setattr(graph, "_write_and_run_test", lambda s, r, n, h, ctx, co: (
+        made.append(r.name), ladder.Attempt(rung=r.name, n=n, outcome=ladder.RED, evidence="AssertionError", test_path="t"))[1])
+    out = graph.reproduce(s)
+    assert made == ["unit"] and out["repro"]["status"] == ladder.REPRODUCED
+    assert out["repro"]["ladder_plan"]["skipped"]["integration"] == "no recorded data beside packages/ai/src/ui"

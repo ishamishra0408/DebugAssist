@@ -281,10 +281,11 @@ def summarize(seat: str, result: dict) -> str:
             lines.append("Its fix verdict reads FAIL only because this route sends it no verdict to check; it is not a "
                          "judgment of the fix.")
     elif seat == "defect-triage":
+        pct = lambda x: f"{float(x):.0%}" if isinstance(x, (int, float)) else "?"  # noqa: E731
         if state == "DEFECT":
-            lines.append(f"Verdict: a real defect (likelihood {mr.get('is_defect')}, sure {mr.get('confidence')}).")
+            lines.append(f"Verdict: a real defect ({pct(mr.get('is_defect'))} likely, triage {pct(mr.get('confidence'))} sure).")
         elif state == "NOT_A_DEFECT":
-            lines.append(f"Verdict: not a defect (likelihood {mr.get('is_defect')}, sure {mr.get('confidence')}).")
+            lines.append(f"Verdict: not a defect (only {pct(mr.get('is_defect'))} likely, triage {pct(mr.get('confidence'))} sure).")
         elif state == "NEEDS_PERSON":
             who = mr.get("answerer") or "the reporter or a maintainer"
             lines.append(f"Verdict: a person decides. The missing fact to ask {who}: {mr.get('question', 'not given')}")

@@ -307,7 +307,7 @@ def _runs_dir() -> Path:
     return CFG.runs_dir
 
 
-def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
+def render(d: dict, mode: str = "file", replay: dict | None = None, token: str = "") -> str:
     """mode "file": a static page (reloads itself while live). "live" / "replay": served by server.py, which the page
     asks every 2 s (replay: 0.7 s) and swaps in only the pieces that changed. The page can't approve anything."""
     s, m, rid = d["state"], d["meter"], d["run_id"]
@@ -415,8 +415,8 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
             "working": ("Nothing to do right now", "This page updates by itself.", ""),
             "interrupted": ("Interrupted", f"Nothing has happened for {quiet}. Continue it from your terminal.", _copy(resume, "Copy resume command", True)),
             "crashed": ("Crashed", "Continue it from your terminal.", _copy(resume, "Copy resume command", True)),
-            "waiting": ("Your OK is needed", "Approving only saves a script. Nothing is posted to GitHub.",
-                        _copy(reject, "Copy reject command") + _copy(approve, "Copy approve command", True)),
+            "waiting": ("Your OK is needed", "Check the pull request, then approve it or say no. Nothing is posted to GitHub.",
+                        f'<button type="button" class="btn glass prominent" popovertarget="check-pr">{icons.check(16)}<span>Check PR</span></button>'),
             "stopped": ("Stopped", plain.exit_text(outcome.get("exit")).removeprefix("Stopped. "),
                         _link("/", "New run", icons.plus(16), True) if served else ""),
             "done": ("Done", "The pull request text is saved. Nothing has been posted to GitHub.",
@@ -431,10 +431,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
     why = str(outcome.get("why") or "")
     fails = [l.split("PREFLIGHT FAIL", 1)[1].strip() for l in (d.get("console") or "").splitlines() if "PREFLIGHT FAIL" in l]
     if phase == "waiting" and not is_replay:
-        notice = (f'<section class="group"><h2>Approve in your terminal</h2><div class="sect">'
-                  f'<div class="cmd"><code>{e(approve)}</code><button type="button" class="copy" data-copy="{e(approve)}" data-done="Copied">{icons.copy(16)}Copy</button></div>'
-                  f'<div class="cmd"><code>{e(reject)}</code><button type="button" class="copy" data-copy="{e(reject)}" data-done="Copied">{icons.copy(16)}Copy</button></div>'
-                  f'</div><p class="foot">The first approves the exact text below. The second says no. Neither posts anything.</p></section>')
+        notice = '<section hidden></section>'   # the decision lives in the Check PR sheet
     elif phase == "could not start":
         notice = ('<section class="group"><h2>What needs fixing</h2><div class="sect"><ul class="rows">'
                   + "".join(f'<li class="row stopped"><span class="ic">{icons.cross()}</span><span class="t"><span>{e(x)}</span></span></li>' for x in fails)
@@ -508,6 +505,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None) -> str:
   <div class="pop-head"><b>Proof the bug happens</b><button type="button" class="tbtn" popovertarget="proof" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>
   {_k("proof", proof_html or '<div class="proof"><p class="foot">Not shown yet.</p></div>')}
 </div>
+{_check_pr(d, rid, served and not is_replay, approve, reject) if phase == "waiting" and not is_replay else ""}
 <div id="acts" popover class="pop glass" aria-label="Latest activity">
   <div class="pop-head"><b>Latest activity</b><button type="button" class="tbtn" popovertarget="acts" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>
   {_k("log", f'<ul class="rows acts-list">{acts or "<li class=row><span></span><span class=t><span>Nothing yet</span></span></li>"}</ul>')}
@@ -523,7 +521,9 @@ const show = (id, text) => {{
   if (window.marked && window.DOMPurify) el.innerHTML = DOMPurify.sanitize(marked.parse(text));
   else {{ const pre = document.createElement("pre"); pre.textContent = text; el.appendChild(pre); }}
 }};
-const renderMd = () => {{ const MD = JSON.parse(document.getElementById("md").textContent); show("story", MD.story); show("pr", MD.pr); }};
+const renderMd = () => {{ const MD = JSON.parse(document.getElementById("md").textContent); show("story", MD.story); show("pr", MD.pr); show("pr-sheet", MD.pr); }};
+{_DECIDE_JS.replace('__TOKEN__', json.dumps(token)) if served else ''} }}
+}});
 const fmt = s => s < 90 ? Math.round(s) + " s" : s < 5400 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h";
 const tick = () => document.querySelectorAll("[data-since]").forEach(el => {{
   el.textContent = fmt(Math.max(0, (Date.now() - Date.parse(el.dataset.since)) / 1000)) + (el.dataset.suffix || "");
@@ -585,6 +585,29 @@ def _try_outcome(a: dict) -> tuple[str, str]:
     return "Did not run properly", "amber"
 
 
+def _check_pr(d: dict, rid: str, can_decide: bool, approve_cmd: str, reject_cmd: str) -> str:
+    """The pull request, to read before saying yes or no (Isha 2026-10-08: "a Check PR dialog with approve and deny").
+    Approving binds to exactly this text (its sha256); either answer runs the same command the terminal runs."""
+    sha = str((d.get("interrupt") or {}).get("sha256") or "")
+    decide = (f'<div class="decide" data-run="{e(rid)}" data-sha="{e(sha)}">'
+              f'<button type="button" class="btn glass" data-decide="reject" data-label="Say no" data-confirm="Tap again to say no">'
+              f'{icons.cross(16)}<span>Say no</span></button>'
+              f'<button type="button" class="btn glass prominent" data-decide="approve" data-label="Approve this text" '
+              f'data-confirm="Tap again to approve">{icons.check(16)}<span>Approve this text</span></button>'
+              f'<p class="decide-msg" role="status"></p></div>') if can_decide else (
+              f'<div class="cmd"><code>{e(approve_cmd)}</code></div><div class="cmd"><code>{e(reject_cmd)}</code></div>')
+    return (f'<div id="check-pr" popover class="pop sheet glass" aria-label="Check the pull request">'
+            f'<div class="pop-head"><b>Check the pull request</b><button type="button" class="tbtn" popovertarget="check-pr" '
+            f'popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>'
+            f'<div class="fa"><p class="foot">Fingerprint sha256 <code>{e(sha[:12])}</code>: approving binds to exactly this text. '
+            f'If the text changes, the approval is refused.</p>'
+            f'<details open><summary>The pull request text</summary><div class="md" id="pr-sheet"></div></details>'
+            f'<details><summary>What approving does</summary><p>It records your OK for this exact text and writes a script '
+            f'(<code>publish.sh</code>) that you run with your own GitHub login to post the pull request. DebugAssistAgent holds a '
+            f'read-only GitHub token, so it cannot post anything itself.</p><p>Saying no ends the run here. Nothing is saved for '
+            f'posting.</p></details>{decide}</div></div>')
+
+
 def _proof(s: dict, rid: str) -> str:
     """Proof the bug happens (Isha 2026-10-08): first, does a test already in the repo fail for this issue; if not,
     the test written for it at each level (unit, integration, automation) and whether it passes after the fix; then
@@ -643,7 +666,10 @@ def _proof(s: dict, rid: str) -> str:
             ans, tone, extra = "Not found", "grey", ""
             why = f"Tried {len(at)} time{'s' * (len(at) != 1)}: " + "; ".join(_try_outcome(x)[0].lower() for x in at) + "."
         elif key in skipped:
-            ans, tone, extra, why = "Not tried", "grey", "", NOT_TRIED.get(key, "Not available for this issue.")
+            beside = re.match(r"no recorded data beside (.+)", skipped[key])
+            why = (f"There is no recorded real data beside the code at fault ({beside.group(1)}), so there is nothing to "
+                   "build one from." if beside else NOT_TRIED.get(key, "Not available for this issue."))
+            ans, tone, extra = ("Not possible here" if beside else "Not tried"), "grey", ""
         else:
             ans, tone, extra, why = "Not needed", "grey", "", "The bug was already shown and confirmed."
         rows.append(f'<li class="q"><span class="qt">{e(label)} failing for this issue?</span>{_pill(ans, tone)}'
@@ -664,9 +690,23 @@ def _proof(s: dict, rid: str) -> str:
         ev = a.get("evidence") or ""
         lines = [l for l in ev.splitlines() if not l.startswith("writer's symptom:")]
         checks = next((l.removeprefix("writer's symptom:").strip() for l in ev.splitlines() if l.startswith("writer's symptom:")), "")
-        facts = [("Ran", f"<code>{e(pf['ran'])}</code>"), ("Where", e(pf.get("where", ""))), ("Code", e(pf.get("code", ""))),
+        ran = pf.get("ran", "")
+        short = ("cd " + ran.split(" && cd ", 1)[1]) if " && cd " in ran else ran.rsplit(" && ", 1)[-1]
+        ran_html = (f"<code>{e(short)}</code>" + (f'<details class="ran-full"><summary>With its setup</summary><code>{e(ran)}</code></details>'
+                                                  if short != ran else ""))
+        facts = [("Ran", ran_html), ("Where", e(pf.get("where", ""))), ("Code", e(pf.get("code", ""))),
                  ("When", e(pf.get("when", ""))), ("Exit code", e(pf.get("exit_code", ""))),
-                 ("Test fingerprint", f"<code>sha256 {e(pf.get('sha256', ''))}</code>")] if pf.get("ran") else []
+                 ("Test fingerprint", f"<code>sha256 {e(pf.get('sha256', ''))}</code>")] if ran else []
+        refused = ev.startswith("writer refused")
+        if refused:   # never ran: say so, and why (#22288 run: refused drafts read as if they had run)
+            pages.append(
+                f'<article class="page proof-card" aria-label="Try {a["n"]}"><div class="page-head"><h3>Try {a["n"]} · {e(kind)}</h3>'
+                f'{_pill(word, tone)}</div><h4>Not run: the draft was refused before it ran</h4>'
+                f'<pre class="out">{e(ev.removeprefix("writer refused:").strip()[:1000])}</pre>'
+                f'<p class="foot">A draft that breaks a rule the code enforces is refused and never run; it still counts toward the 4 tries.</p></article>')
+            nums.append(f'<button type="button" class="pg num {tone}{" on" if i == 0 else ""}" role="tab" data-go="{i}" '
+                        f'aria-label="Try {a["n"]}: {e(word)}">{a["n"]}</button>')
+            continue
         pages.append(
             f'<article class="page proof-card" aria-label="Try {a["n"]}"><div class="page-head"><h3>Try {a["n"]} · {e(kind)}</h3>'
             f'{_pill(word, tone)}</div>'
@@ -870,6 +910,29 @@ def _engineer_details(d: dict, s: dict, rows: list[dict], live: bool) -> str:
 
 # Served pages only: ask the server for the page again and swap in the pieces whose hash changed. GET only, same
 # origin; replay passes how far in it is (?ms=). Stops when the run is final; shows "viewer offline" if the server goes.
+# your OK from the page: only on served pages (a saved file keeps the terminal commands instead)
+_DECIDE_JS = """
+const TOKEN = __TOKEN__;
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest("[data-decide]"); if (!b) return;
+  const box = b.closest(".decide"), msg = box.querySelector(".decide-msg");
+  if (b.dataset.armed !== "1") {                       // a second tap confirms: no decision on one stray click
+    box.querySelectorAll("[data-decide]").forEach(x => { x.dataset.armed = ""; x.querySelector("span").textContent = x.dataset.label; });
+    b.dataset.armed = "1"; b.querySelector("span").textContent = b.dataset.confirm;
+    setTimeout(() => { if (b.dataset.armed === "1") { b.dataset.armed = ""; b.querySelector("span").textContent = b.dataset.label; } }, 5000);
+    return;
+  }
+  box.querySelectorAll("[data-decide]").forEach(x => { x.disabled = true; });
+  msg.textContent = b.dataset.decide === "approve" ? "Approving…" : "Saying no…";
+  try {
+    const r = await fetch("/api/decide", { method: "POST", headers: { "X-DebugAssistAgent-Token": TOKEN, "Content-Type": "application/json" },
+      body: JSON.stringify({ run_id: box.dataset.run, decision: b.dataset.decide, sha256: box.dataset.sha }) });
+    const j = await r.json();
+    if (!r.ok) { msg.textContent = j.error || "Something went wrong."; box.querySelectorAll("[data-decide]").forEach(x => { x.disabled = false; }); return; }
+    msg.textContent = j.said;
+  } catch (e) { msg.textContent = "Could not reach DebugAssistAgent."; box.querySelectorAll("[data-decide]").forEach(x => { x.disabled = false; });
+"""
+
 _LIVE_JS = """
 const MODE = "__MODE__", T0 = Date.now();
 const offline = on => document.querySelectorAll(".dock .msg span:not(.dot)").forEach(x => x.style.opacity = on ? ".4" : "");

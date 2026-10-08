@@ -465,3 +465,10 @@ ul.log li { white-space: pre-wrap; word-break: break-word; }
 .fa-dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 8px 0 0; font-size: 14px; }
 .fa-dl dt { color: var(--label-2); } .fa-dl dd { margin: 0; overflow-wrap: anywhere; }
 .adv-answer details.fa-wrap { margin-top: 10px; } .adv-answer details.fa-wrap > summary { cursor: pointer; color: var(--blue); font-size: 13px; }
+
+.proof-card .ran-full { margin-top: 6px; } .proof-card .ran-full > summary { font-size: 12px; color: var(--label-2); cursor: pointer; }
+.proof-card .ran-full code { display: block; margin-top: 4px; overflow-wrap: anywhere; color: var(--label-2); }
+
+/* the problem it will prove, picked from the issue; the list one tap away */
+.auto-pick { padding: 14px 18px; } .auto-pick p { margin: 0; font-size: 15px; } .auto-pick .foot { margin-top: 8px; font-size: 13px; color: var(--label-2); }
+.linkbtn { border: 0; background: none; padding: 0; color: var(--blue); font: inherit; cursor: pointer; }

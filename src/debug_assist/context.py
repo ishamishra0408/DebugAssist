@@ -92,7 +92,7 @@ def ranked(checkout: Path, ctx: testwriter.Context) -> list[dict]:
     return out
 
 
-def imported_near(src_text: str, near: set[int], window: int = 40, lang=None) -> list[tuple[str, str]]:
+def imported_near(src_text: str, near: set[int], window: int = 40, lang=None, values_only: bool = False) -> list[tuple[str, str]]:
     """(name, module) for names a file imports from another package (not ./ or ../) and uses within `window` lines of
     a match, closest first. Type-only names last."""
     lang = lang or langs.JS()
@@ -111,7 +111,7 @@ def imported_near(src_text: str, near: set[int], window: int = 40, lang=None) ->
         if dist is not None:
             used.append((is_type, dist, n, mod))
     used.sort()
-    return [(n, mod) for _, _, n, mod in used]
+    return [(n, mod) for is_type, _, n, mod in used if not (values_only and is_type)]
 
 
 def users_of(checkout: Path, name: str, profile=None) -> list[str]:
@@ -128,12 +128,16 @@ def related(checkout: Path, ctx: testwriter.Context, profile=None) -> list[dict]
     for name, v in package_map(checkout, profile).items():
         dirs[name] = dirs[name.replace("-", "_")] = v["dir"]  # Python: import langchain_core, package langchain-core
     out = []
-    for name, module in imported_near(src_text, near, lang=langs.of(profile)):
+    # only code that runs: a type imported as `type X` says nothing about behaviour (#22288 run: IdGenerator,
+    # FlexibleSchema took the brief's room); a definition that turns out to be a type or interface is skipped too
+    for name, module in imported_near(src_text, near, lang=langs.of(profile), values_only=True):
         top = module.split(".")[0] if langs.of(profile).key == "python" else module
         prefer = dirs.get(module) or dirs.get(top) or ""
         found = find_definition(checkout, name, max_lines=120, prefer=prefer, profile=profile)
         if found.startswith("(") or (prefer and not found.startswith(f"--- {prefer}/")):
             continue  # not defined in this repo (e.g. zod), or not where the import says
+        if re.search(rf"^\s*\d+\s+(export\s+)?(declare\s+)?(type|interface)\s+{re.escape(name)}\b", found, re.M):
+            continue
         files = users_of(checkout, name, profile)
         if len(files) > GENERIC_USERS:
             continue

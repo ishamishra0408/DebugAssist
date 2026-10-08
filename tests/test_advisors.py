@@ -151,7 +151,7 @@ def test_triage_with_numbers_uses_its_own_rule_and_the_locator_reads_suspects(fa
                           numbers={"is_defect": 0.9, "confidence": 0.9})
     call = fake_server[-1]["body"]["params"]
     assert call["name"] == "defect_triage" and call["arguments"]["is_defect"] == 0.9 and call["arguments"]["repo"] == {"name": "vercel/ai"}
-    assert rec["answer"].startswith("Verdict: a real defect (likelihood 0.9, sure 0.9).")
+    assert rec["answer"].startswith("Verdict: a real defect (90% likely, triage 90% sure).")
     rec = advisors.review({}, "find_cause", "what went wrong", question="Where is the cause?", context={
         "repo_listing": ["packages/ai/src/tracker.ts"], "repro_output": "AssertionError", "candidates": []})
     call = fake_server[-1]["body"]["params"]

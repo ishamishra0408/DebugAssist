@@ -92,3 +92,12 @@ def test_phoenix_cloud_check_tests_the_address_and_key_together(monkeypatch):
     assert c.status == "FAIL" and "refuses the key" in c.fact
     monkeypatch.setattr(urllib.request, "urlopen", answer(404))
     assert "not a traces address" in preflight.check_phoenix_cloud(True).fact
+
+
+def test_the_system_check_warns_when_a_claude_opus_run_would_be_refused(monkeypatch):
+    monkeypatch.setattr(preflight, "_http", lambda *a, **k: (200, {"data": {"limit": 4, "limit_remaining": 2.40}}, {}))
+    c = preflight.check_openrouter(demo=False)
+    assert c.status == "WARN" and "enough for Standard runs" in c.fact and "not for a Claude Opus run ($2.50)" in c.fact
+    assert preflight.check_openrouter(demo=True).status == "FAIL"                     # the Opus run itself is refused
+    monkeypatch.setattr(preflight, "_http", lambda *a, **k: (200, {"data": {"limit": 10, "limit_remaining": 8.40}}, {}))
+    assert preflight.check_openrouter(demo=False).status == "PASS"

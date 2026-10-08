@@ -39,7 +39,7 @@ def test_the_viewer_listens_on_localhost_only_and_only_reads(live):
     assert _get(live, "/health") == (200, "debug-assist viewer")
     code, page = _get(live, "/run/ai-1-x")
     assert code == 200 and 'data-k="step-0"' in page and "fetch(u" in page and 'http-equiv="refresh"' not in page
-    assert "method:" not in page and "<form" not in page  # the page only GETs its own address
+    assert "<form" not in page and page.count('method: "POST"') == 1 and 'fetch("/api/decide"' in page  # only your OK posts
     for method in ("PUT", "DELETE"):
         assert _get(live, "/run/ai-1-x", method)[0] == 501
     assert _get(live, "/api/start", "POST")[0] == 403      # no token, no origin: refused
@@ -375,3 +375,55 @@ def test_the_advisor_scenes_are_served_and_degrade_quietly():
     assert 'addEventListener("advisor-state"' in js and "window.gsap" in js                       # works without GSAP too
     page = server.connect_page()
     assert "/static/advisors.js" in page and "gsap/3.12.5/gsap.min.js" in page
+
+
+def test_your_ok_from_the_page_runs_the_terminals_command_bound_to_the_text_shown(tmp_path, monkeypatch):
+    from debug_assist.guardrails import fingerprint
+    (tmp_path / "ai-1-x").mkdir()
+    pr = tmp_path / "ai-1-x" / "PR.md"
+    pr.write_text("## Fix\nthe text you read")
+    sha = fingerprint(pr.read_text())
+    monkeypatch.setattr(server, "CFG", SimpleNamespace(runs_dir=tmp_path))
+    monkeypatch.setattr("debug_assist.artifacts.enabled", lambda: False)
+    waiting = SimpleNamespace(tasks=[SimpleNamespace(interrupts=[SimpleNamespace(value={"sha256": sha, "pr_body_path": str(pr)})])])
+    state = {"snap": waiting}
+    monkeypatch.setattr(viewer, "_app", lambda: SimpleNamespace(get_state=lambda cfg: state["snap"]))
+    calls = []
+
+    class Proc:
+        def __init__(self, argv, **kw):
+            calls.append(argv)
+
+        def poll(self):
+            return 0
+    monkeypatch.setattr(server.subprocess, "Popen", Proc)
+    monkeypatch.setitem(server._decider, "proc", None)
+    with pytest.raises(server.Refused, match="approve or say no"):
+        server.decide("ai-1-x", "maybe", sha)
+    with pytest.raises(server.Refused, match="changed since this page was opened"):
+        server.decide("ai-1-x", "approve", "0" * 64)
+    assert "Approved" in server.decide("ai-1-x", "approve", sha)
+    assert calls[-1][2:] == ["debug_assist", "approve", "ai-1-x", "--no-view"]           # exactly the terminal's command
+    assert "said no" in server.decide("ai-1-x", "reject", sha) and calls[-1][3] == "reject"
+    pr.write_text("## Fix\nedited after you read it")
+    with pytest.raises(server.Refused, match="not the text you were shown"):
+        server.decide("ai-1-x", "approve", sha)
+    state["snap"] = SimpleNamespace(tasks=[])
+    with pytest.raises(server.Refused, match="not waiting for your OK"):
+        server.decide("ai-1-x", "approve", sha)
+    with pytest.raises(server.Refused, match="No such run"):
+        server.decide("../etc", "approve", sha)
+
+
+def test_the_problem_is_picked_from_the_issue_and_the_list_shows_only_when_it_holds_more_than_one():
+    """Isha 2026-10-08 (#22288): title, description and reproduction are one problem; don't ask which."""
+    one = [{"heading": "Description", "preview": "After the resume the message holds two text parts"},
+           {"heading": "Reproduction", "preview": "pnpm add ai@7"}]
+    texts = {"Description": "the replayed `text-start` chunk adds a second text part", "Reproduction": "```sh\npnpm add ai\n```"}
+    got = server.pick_focus("Chat.resumeStream duplicates text parts", one, texts)
+    assert got == {"single": True, "heading": "Description", "preview": one[0]["preview"], "from": "the Description section"}
+    two = one + [{"heading": "Secondary observation", "preview": "Also, the gateway drops Error.message"}]
+    assert server.pick_focus("t", two, {**texts, "Secondary observation": "x"})["single"] is False   # #21439's shape
+    plain = [{"heading": "Description", "preview": "it breaks"}]
+    assert server.pick_focus("The title", plain, {"Description": "it breaks"}) == {
+        "single": True, "heading": "", "preview": "The title", "from": "the title"}            # no code quoted: the title

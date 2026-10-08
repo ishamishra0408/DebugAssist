@@ -178,6 +178,12 @@ def check_openrouter(demo: bool) -> Check:
     if (d.get("limit_remaining") or 0) < need:
         return Check("OpenRouter", "FAIL", f"only ${d.get('limit_remaining'):.2f} left; this run may need ${need:.2f}",
                      "top up or raise the key cap")
+    if not demo and d["limit_remaining"] < CFG.demo_budget_usd:
+        # enough for a Standard run, not for a Claude Opus run (2026-10-08: System check said "Working", then the
+        # Opus run of #22288 was refused at the start)
+        return Check("OpenRouter", "WARN", f"key OK, ${d['limit_remaining']:.2f} left: enough for Standard runs "
+                                           f"(${CFG.run_budget_usd:.2f}), not for a Claude Opus run (${CFG.demo_budget_usd:.2f})",
+                     "raise the key's cap in OpenRouter (Settings, API Keys) for Claude Opus runs")
     return Check("OpenRouter", "PASS", f"key OK, ${d['limit_remaining']:.2f} of ${d['limit']:.0f} cap left "
                                        f"(run cap ${need:.2f})")
 

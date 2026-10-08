@@ -159,7 +159,8 @@ def read_issue(s: RunState):
     # defect-triage's own rule over the same numbers (confidence = how far p sits from 0.5): advice only
     out["advisors"] = {"read_issue": advisors.review(
         s, "read_issue", issue.get("body") or "", question=issue["title"],
-        context={"repo_name": f"{issue['owner']}/{issue['repo']}"}, numbers={"is_defect": p, "confidence": max(p, 1 - p)})}
+        context={"repo_name": f"{issue['owner']}/{issue['repo']}"},
+        numbers={"is_defect": p, "confidence": t["is_defect"].get("answer_confidence", max(p, 1 - p))})}
     return out
 
 
@@ -304,9 +305,14 @@ def reproduce(s: RunState):
     seen = secrets_visible(checkout if CFG.sandbox_backend == "e2b" else work, image)
     if seen:
         raise GuardrailViolation(f"sandbox exposes secrets or failed its probe: {seen}")
-    rungs, skipped = ladder.plan(s["triage"]["has_repro_p"], s["profile"].get("recorded_fixtures", False))
-    plan = {"rungs": [r.name for r in rungs], "skipped": skipped, "cap": REPRO_ATTEMPT_CAP}
     ctx = _ctx(s, checkout)
+    # recorded data is a property of the code at fault, not of the repo (#22288: vercel/ai's providers have recordings,
+    # its chat code has none, and three tries were spent looking for them)
+    beside = bool(getattr(ctx, "fixtures", None))
+    rungs, skipped = ladder.plan(s["triage"]["has_repro_p"], s["profile"].get("recorded_fixtures", False) and beside)
+    if s["profile"].get("recorded_fixtures") and not beside:
+        skipped["integration"] = f"no recorded data beside {Path(ctx.source).parent.as_posix()}"
+    plan = {"rungs": [r.name for r in rungs], "skipped": skipped, "cap": REPRO_ATTEMPT_CAP}
     existing = _existing_tests(s, checkout, ctx, profiles.get(s["profile"]["repo"]))
     before = [{k: v for k, v in e.items() if k in ladder.Attempt.__dataclass_fields__}
               for e in events.for_run(s["run_id"]) if e["kind"] == "attempt" and e["step"] == "reproduce"]

@@ -58,8 +58,8 @@ def test_the_page_marks_the_step_we_are_on_in_plain_words():
     assert "DebugAssistAgent" in live and "Nothing to do right now" in live
     paused = viewer.render(_data(), mode="live")
     assert 'class="status s-waiting"' in paused and "Waiting for your OK" in paused and 'class="node waiting"' in paused
-    assert "uv run debug-assist approve ai-1-x" in paused and "uv run debug-assist reject ai-1-x" in paused
-    assert "Approve in your terminal" in paused and "Nothing is posted to GitHub." in paused
+    assert 'popovertarget="check-pr"' in paused and "Check PR" in paused and "Nothing is posted to GitHub." in paused
+    assert 'data-decide="approve"' in paused and 'data-decide="reject"' in paused and "Tap again to approve" in paused
     stopped = viewer.render(_data(state={**st, "outcome": {"exit": "FIX NOT VALIDATED", "why": "w"},
                                          "log": ["write_fix: STOPPED FIX NOT VALIDATED"]}, next=[], interrupt={}), mode="live")
     assert 'class="status s-stopped"' in stopped and "Stopped at step 5 of 10: Fix it" in stopped
@@ -207,6 +207,7 @@ def test_show_the_bug_carries_its_proof(tmp_path, monkeypatch):
     assert 'data-start="1"' in sheet and "Failed, but for another reason" in text and text.count("Shows the bug") == 2
     assert "What the test checks:</b> emits a tool-call" in sheet and "it(&#x27;shows&#x27;" in sheet and "it(&#x27;confirms&#x27;" in sheet
     assert "<code>pnpm test:node x</code>" in sheet and "Docker container from node:22, internet off" in sheet
+    assert "Not run: the draft was refused before it ran" not in sheet       # try 1 ran: it says what it printed
     assert plain.result("reproduce", st) == "Bug shown on try 2, then confirmed on a recorded stream (try 3)"
     old = {**st, "repro": {**st["repro"], "existing_tests": None}, "fix": {}}
     sheet = viewer.render(_data(state=old), mode="live").split('<div id="proof"')[1]
@@ -245,3 +246,38 @@ def test_an_advisors_full_answer_opens_from_its_row_in_plain_sections():
     assert sheet.count("<details") >= 7                                                 # each section folds
     no_raw = {**st, "advisors": {"why_it_shipped": {"status": "ANSWERED", "answer": "x"}}}
     assert "Full answer" not in viewer.render(_data(state=no_raw), mode="live")         # older answers: no button
+
+
+def test_check_pr_binds_your_ok_to_the_text_shown_and_a_saved_file_cannot_decide():
+    """Isha 2026-10-08 (replaces the 2026-10-07 terminal-only ruling): at Your OK, a Check PR sheet with the text, its
+    fingerprint, and Approve / Say no; each needs a second tap. A saved file shows the terminal commands instead."""
+    d = _data(interrupt={"sha256": "abc123def4567890", "pr_body_path": "/x/PR.md"})
+    live = viewer.render(d, mode="live", token="tok")
+    sheet = live.split('<div id="check-pr" popover')[1].split('<div id="acts"')[0]
+    assert "abc123def456" in sheet and 'data-sha="abc123def4567890"' in sheet and 'data-run="ai-1-x"' in sheet
+    assert "approving binds to exactly this text" in sheet and "read-only GitHub token" in sheet and 'id="pr-sheet"' in sheet
+    assert 'fetch("/api/decide"' in live and '"tok"' in live and live.count("fetch(") == 2     # the live poll + your OK
+    saved = viewer.render(d)
+    assert "fetch(" not in saved and "data-decide" not in saved and "uv run debug-assist approve ai-1-x" in saved
+
+
+def test_a_refused_try_says_it_never_ran_and_the_command_shows_without_its_setup(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from debug_assist import testwriter
+    monkeypatch.setattr(viewer, "_runs_dir", lambda: tmp_path)
+    rd = tmp_path / "ai-1-x"
+    (rd / "checkout").mkdir(parents=True)
+    unit = "packages/ai/src/ui/da-repro-1-unit-1.test.ts"
+    testwriter.write_proof(rd / "proof", unit, "t", "export COREPACK_HOME=/work/.corepack CI=1 && mkdir -p /work/.bin && "
+                           "cd packages/ai && pnpm test:node src/ui/da-repro-1-unit-1.test.ts", 1, "AssertionError", "RED", "x",
+                           SimpleNamespace(repo="vercel/ai", base_commit="e7f55a4", image="node"), rd / "checkout")
+    st = {**_data()["state"], "repro": {"status": "REPRODUCED", "failing_test": unit, "evidence": "AssertionError: x",
+                                        "ladder_plan": {"skipped": {"integration": "no recorded data beside packages/ai/src/ui"}}},
+          "attempts": [{"step": "reproduce", "n": 1, "rung": "unit", "outcome": "RED", "test_path": unit, "evidence": "AssertionError: x"},
+                       {"step": "reproduce", "n": 2, "rung": "unit", "outcome": "ERROR", "test_path": "",
+                        "evidence": "writer refused: the test asserts nothing (no expect)"}]}
+    sheet = viewer.render(_data(state=st), mode="live").split('<div id="proof"')[1].split('<div id="acts"')[0]
+    assert "Not run: the draft was refused before it ran" in sheet and "the test asserts nothing (no expect)" in sheet
+    assert "<code>cd packages/ai &amp;&amp; pnpm test:node src/ui/da-repro-1-unit-1.test.ts</code>" in sheet
+    assert "With its setup" in sheet and "COREPACK_HOME" in sheet                                  # folded, not gone
+    assert "Not possible here" in sheet and "no recorded real data beside the code at fault (packages/ai/src/ui)" in sheet
