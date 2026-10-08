@@ -323,3 +323,25 @@ def test_the_connect_page_has_a_card_per_advisor_and_the_steps_to_connect_them(m
     c = cards(mcp="https://advisors.example/mcp/", reviewed=True, key="k")
     assert "Connected. Both review points ask" in c and c.count('class="row done"') == 4 and ">On<" in c
     assert "k3y" not in c and "Set.</span>" in c                                                         # the key is never shown
+
+
+def test_ask_both_advisors_now_is_page_only_and_only_when_they_are_on(live, monkeypatch):
+    import dataclasses
+    from debug_assist import advisors
+    monkeypatch.setattr("debug_assist.profiles.ready", lambda: [])
+    monkeypatch.setitem(server._connector, "repo", None)
+    monkeypatch.delenv("ADVISORS_KEY", raising=False)
+    assert "Ask both advisors now" not in server.connect_page()                     # off: nothing to ask
+    code, out = _get(live, "/api/advisors-check", "POST", _ok_headers(live), b"{}")
+    assert code == 400 and "not switched on" in json.loads(out)["error"]
+    cfg = dataclasses.replace(advisors.CFG, advisors_mcp="https://advisors.example/mcp/", advisors_reviewed=True)
+    monkeypatch.setattr(advisors, "CFG", cfg)
+    monkeypatch.setattr("debug_assist.config.CFG", cfg)
+    monkeypatch.setenv("ADVISORS_KEY", "k")
+    monkeypatch.setattr(advisors, "check_both", lambda: [("allspaw", "ANSWERED", "Blame check: no sentence blames a person."),
+                                                         ("qe-ic-advisor", "FAILED", "AdvisorError: asleep")])
+    assert 'id="ask-advisors"' in server.connect_page()
+    assert _get(live, "/api/advisors-check", "POST", {"Content-Type": "application/json"}, b"{}")[0] == 403  # not from the page
+    code, out = _get(live, "/api/advisors-check", "POST", _ok_headers(live), b"{}")
+    assert code == 200 and json.loads(out)["answers"][0] == {"seat": "allspaw", "status": "ANSWERED",
+                                                             "said": "Blame check: no sentence blames a person."}

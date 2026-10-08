@@ -37,6 +37,12 @@ services:
         value: "0"
       - key: GITHUB_WEBHOOK_SECRET  # the secret typed into the repo's GitHub webhook; only signed deliveries are read
         sync: false
+      - key: ADVISORS_MCP           # the Domain Expertise MCP server: https://domain-expertise-mcp.onrender.com/mcp/
+        sync: false
+      - key: ADVISORS_REVIEWED      # "yes" only after the server was reviewed (Isha accepted it 2026-10-08)
+        sync: false
+      - key: ADVISORS_KEY           # the server's API key, from the advisors' team; never in chat
+        sync: false
       - key: APP_PASSWORD           # 12+ characters; the sign-in for this public address
         sync: false
       - key: MONGODB_URI            # MongoDB Atlas connection string

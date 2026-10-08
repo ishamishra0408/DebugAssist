@@ -399,3 +399,6 @@ ul.log li { white-space: pre-wrap; word-break: break-word; }
 .sub-h { margin: 22px 18px 8px; font-size: 15px; font-weight: 600; color: var(--label-2); }
 .s-idle .dot, .dot.s-idle { background: #8e8e93; }
 .row.next .ic { background: color-mix(in srgb, var(--blue) 22%, transparent); color: var(--blue); }
+.adv-try { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 14px 4px 10px; }
+.adv-try span { font-size: 13px; color: var(--label-2); }
+#adv-answers { margin-top: 4px; }

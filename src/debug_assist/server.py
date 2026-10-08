@@ -465,7 +465,10 @@ def _advisor_cards() -> str:
             f'<p class="status {"s-done" if live else "s-waiting" if st in ("BLOCKED", "ON") else "s-idle"}">'
             f'<span class="dot"></span><span>{e(state)}</span></p>'
             f'<div class="adv-cards">{cards}</div>'
-            f'<h3 class="sub-h">How to connect them</h3><div class="sect"><ul class="rows">{rows}</ul></div>'
+            + (f'<div class="adv-try"><button type="button" class="btn glass prominent" id="ask-advisors">Ask both advisors now</button>'
+               f'<span>One fixed sample question each, marked as a test. Takes up to a minute if their server is asleep.</span></div>'
+               f'<div class="sect" id="adv-answers" hidden><ul class="rows"></ul></div>' if live else "")
+            + f'<h3 class="sub-h">How to connect them</h3><div class="sect"><ul class="rows">{rows}</ul></div>'
             '<p class="foot">Advice only. An advisor never changes the fix, the pull request text or your OK.</p></section>')
 
 
@@ -514,6 +517,22 @@ async function connect(url, again, btn) {{
   }} catch (ex) {{ btn.disabled = false; $("err").textContent = "Could not reach {plain.NAME}. Is it still running?"; }}
 }}
 $("go").onclick = () => connect($("link").value.trim(), false, $("go"));
+const ask = $("ask-advisors");
+if (ask) ask.onclick = async () => {{
+  ask.disabled = true; const box = $("adv-answers"), list = box.querySelector("ul"); list.textContent = "";
+  const row = (seat, ok, said) => {{ const li = document.createElement("li"); li.className = "row " + (ok ? "done" : "stopped");
+    const t = document.createElement("span"); t.className = "t"; const b = document.createElement("b"); b.textContent = seat;
+    const p = document.createElement("span"); p.textContent = said; t.append(b, p); const ic = document.createElement("span"); ic.className = "ic";
+    li.append(ic, t); list.appendChild(li); }};
+  row("Asking…", true, "Waiting for the advisors' server."); box.hidden = false;
+  try {{
+    const r = await fetch("/api/advisors-check", {{ method: "POST", headers: H, body: "{{}}" }});
+    const j = await r.json(); list.textContent = "";
+    if (!r.ok) row("Could not ask", false, j.error || "Something went wrong.");
+    else j.answers.forEach(a => row(a.seat + (a.status === "ANSWERED" ? " answered" : " did not answer"), a.status === "ANSWERED", a.said));
+  }} catch (ex) {{ list.textContent = ""; row("Could not ask", false, "Could not reach {plain.NAME}."); }}
+  finally {{ ask.disabled = false; }}
+}};
 document.querySelectorAll("button.again").forEach(b => b.onclick = () => connect("https://github.com/" + b.dataset.repo, true, b));
 async function poll() {{
   try {{
@@ -821,13 +840,18 @@ class Handler(BaseHTTPRequestHandler):
                 or not (self.headers.get("Content-Type") or "").startswith("application/json")):
             return self._json(403, {"error": "Not allowed. Start runs from the DebugAssistAgent home page."})
         path = urlparse(self.path).path
-        if path not in ("/api/start", "/api/connect"):
+        if path not in ("/api/start", "/api/connect", "/api/advisors-check"):
             return self._json(404, {"error": "not found"})
         n = int(self.headers.get("Content-Length") or 0)
         if n > 4096:
             return self._json(413, {"error": "too large"})
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
+            if path == "/api/advisors-check":
+                from .advisors import check_both, status
+                if status()[0] != "ON":
+                    raise Refused("The advisors are not switched on.")
+                return self._json(200, {"answers": [{"seat": a, "status": b, "said": c} for a, b, c in check_both()]})
             if path == "/api/connect":
                 repo = start_connect(str(body.get("url", "")), again=bool(body.get("again")))
                 return self._json(200, {"repo": repo, "page": f"/connect?repo={repo}"})
