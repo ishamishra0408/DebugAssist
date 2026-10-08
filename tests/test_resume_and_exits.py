@@ -272,3 +272,39 @@ def test_no_recorded_data_beside_the_code_means_no_recorded_data_rung(scratch_db
     out = graph.reproduce(s)
     assert made == ["unit"] and out["repro"]["status"] == ladder.REPRODUCED
     assert out["repro"]["ladder_plan"]["skipped"]["integration"] == "no recorded data beside packages/ai/src/ui"
+
+
+def test_the_pr_is_written_the_way_github_prs_are(monkeypatch):
+    """Isha 2026-10-08: a commit message (recommended, yours to edit), the change with its tests, and a description in
+    GitHub's shape. Approving the text approves the change: its fingerprint closes the description."""
+    from debug_assist import diffview
+    from debug_assist.guardrails import fingerprint
+    patch = ("diff --git a/packages/ai/src/ui/chat.ts b/packages/ai/src/ui/chat.ts\n--- a/packages/ai/src/ui/chat.ts\n"
+             "+++ b/packages/ai/src/ui/chat.ts\n@@ -1,1 +1,1 @@\n-a\n+b\n"
+             + diffview.new_file_diff("packages/ai/src/ui/da-repro-9-unit-1.test.ts", "it('x')")
+             + diffview.new_file_diff("packages/ai/src/ui/da-repro-9-holdout-1.test.ts", "it('y')"))
+    s = {"run_id": "r", "issue": {"number": 9, "owner": "vercel", "repo": "ai", "title": "Chat.resumeStream duplicates text parts"},
+         "profile": {"repo": "vercel/ai"},
+         "cause": {"file": "packages/ai/src/ui/chat.ts", "lines": [883, 897], "why": "The resume reuses the retained state",
+                   "plan": "Continue the retained text part when a resumed stream replays text-start. Keep other paths."},
+         "repro": {"failing_test": "packages/ai/src/ui/da-repro-9-unit-1.test.ts", "evidence": "AssertionError: expected two parts",
+                   "existing_tests": {"passed": 4252, "package": "packages/ai"},
+                   "ladder_plan": {"skipped": {"integration": "no recorded data beside packages/ai/src/ui", "end_to_end": "needs keys"}}},
+         "fix": {"status": "VALIDATED", "suites": ["packages/ai"], "holdout": {"status": "PASSED", "test": "packages/ai/src/ui/da-repro-9-holdout-1.test.ts"}},
+         "guard": {"text": "A test over every way a resume replays parts.", "open_cases": [], "siblings": []},
+         "backtest": {"state": "NONE"}, "condition": {"text": "Resume reused state no test covered."},
+         "second_story": {"text": "### What broke?\nx"}}
+    msg = graph.commit_message(s)
+    assert msg == ("fix(ai): continue the retained text part when a resumed stream replays\n\nThe resume reuses the retained "
+                   "state\n\nFixes #9\n") or msg.startswith("fix(ai): continue the retained text part")
+    assert len(msg.splitlines()[0]) <= 72 and msg.rstrip().endswith("Fixes #9")
+    body = graph.compose_pr_body(s, patch)
+    heads = [l for l in body.splitlines() if l.startswith("## ")]
+    assert heads == ["## Summary", "## Changes", "## Tests", "## Why this slipped through", "## Follow-ups (not in this PR)"]
+    assert "Fixes #9" in body and "- `packages/ai/src/ui/chat.ts` (+1 −1)" in body and "```diff" not in body   # no pasted patch
+    assert "**Unit test**, added `packages/ai/src/ui/da-repro-9-unit-1.test.ts`: fails on `main` with `AssertionError: expected two parts`" in body
+    assert "a second test of the same problem, written without seeing this change" in body
+    assert "**Integration test**: none added. There is no recorded real data beside this code" in body
+    assert "**Automation (end-to-end) test**: none added. It would need live provider keys" in body
+    assert "still pass in packages/ai (4252 tests in packages/ai before the change)" in body
+    assert body.rstrip().endswith(f"<!-- debugassist: change sha256 {fingerprint(patch)} -->")

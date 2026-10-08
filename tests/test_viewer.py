@@ -249,14 +249,23 @@ def test_an_advisors_full_answer_opens_from_its_row_in_plain_sections():
 
 
 def test_check_pr_binds_your_ok_to_the_text_shown_and_a_saved_file_cannot_decide():
-    """Isha 2026-10-08 (replaces the 2026-10-07 terminal-only ruling): at Your OK, a Check PR sheet with the text, its
-    fingerprint, and Approve / Say no; each needs a second tap. A saved file shows the terminal commands instead."""
-    d = _data(interrupt={"sha256": "abc123def4567890", "pr_body_path": "/x/PR.md"})
+    """Isha 2026-10-08: the PR as GitHub shows it: title, Conversation, Commits (editable message), Files changed (git
+    style); Approve / Say no with a second tap; no tick marks. A saved file shows the terminal commands instead."""
+    patch = ("diff --git a/packages/ai/src/ui/chat.ts b/packages/ai/src/ui/chat.ts\n--- a/packages/ai/src/ui/chat.ts\n"
+             "+++ b/packages/ai/src/ui/chat.ts\n@@ -10,3 +10,3 @@ class Chat\n keep\n-old line\n+new line\n"
+             "diff --git a/packages/ai/src/ui/da-repro-1-unit-1.test.ts b/packages/ai/src/ui/da-repro-1-unit-1.test.ts\n"
+             "new file mode 100644\n--- /dev/null\n+++ b/packages/ai/src/ui/da-repro-1-unit-1.test.ts\n@@ -0,0 +1,1 @@\n+it('x')\n")
+    d = _data(interrupt={"sha256": "abc123def4567890", "pr_body_path": "/x/PR.md"}, pr_patch=patch,
+              commit_message="fix(ai): continue the retained text part on resume\n\nWhy.\n\nFixes #1\n")
     live = viewer.render(d, mode="live", token="tok")
     sheet = live.split('<div id="check-pr" popover')[1].split('<div id="acts"')[0]
-    assert "abc123def456" in sheet and 'data-sha="abc123def4567890"' in sheet and 'data-run="ai-1-x"' in sheet
-    assert "approving binds to exactly this text" in sheet and "read-only GitHub token" in sheet and 'id="pr-sheet"' in sheet
-    assert 'fetch("/api/decide"' in live and '"tok"' in live and live.count("fetch(") == 2     # the live poll + your OK
+    assert '<h3 class="pr-title" id="pr-title">fix(ai): continue the retained text part on resume</h3>' in sheet
+    assert all(f'data-tab="{t}"' in sheet for t in ("conv", "commits", "files")) and "Files changed <span class=\"cnt\">2</span>" in sheet
+    assert '<textarea class="commit-msg" id="commit-msg"' in sheet and "Back to the recommendation" in sheet
+    assert 'class="ddel"' in sheet and 'class="dadd"' in sheet and "+2</span>" in sheet and "−1</span>" in sheet
+    assert "abc123def456" in sheet and 'data-sha="abc123def4567890"' in sheet and "binds to exactly this text and change" in sheet
+    assert '<span>Approve</span>' in sheet and "icon" not in sheet.split('class="decide"')[1] and "<svg" not in sheet.split('class="decide"')[1]
+    assert 'fetch("/api/decide"' in live and "commit_message:" in live and live.count("fetch(") == 2
     saved = viewer.render(d)
     assert "fetch(" not in saved and "data-decide" not in saved and "uv run debug-assist approve ai-1-x" in saved
 
@@ -281,3 +290,16 @@ def test_a_refused_try_says_it_never_ran_and_the_command_shows_without_its_setup
     assert "<code>cd packages/ai &amp;&amp; pnpm test:node src/ui/da-repro-1-unit-1.test.ts</code>" in sheet
     assert "With its setup" in sheet and "COREPACK_HOME" in sheet                                  # folded, not gone
     assert "Not possible here" in sheet and "no recorded real data beside the code at fault (packages/ai/src/ui)" in sheet
+
+
+def test_diffs_read_like_git():
+    from debug_assist import diffview
+    patch = ("diff --git a/a.ts b/a.ts\nindex 1..2 100644\n--- a/a.ts\n+++ b/a.ts\n@@ -5,4 +5,5 @@ fn\n same\n-gone <b>\n+came\n+also\n same2\n"
+             + diffview.new_file_diff("t.test.ts", "line1\nline2"))
+    files = diffview.parse(patch)
+    assert [(f["path"], f["new"], f["added"], f["removed"]) for f in files] == [("a.ts", False, 2, 1), ("t.test.ts", True, 2, 0)]
+    rows = files[0]["hunks"][0]["rows"]
+    assert rows == [("ctx", 5, 5, "same"), ("del", 6, "", "gone <b>"), ("add", "", 6, "came"), ("add", "", 7, "also"), ("ctx", 7, 8, "same2")]
+    h = diffview.html(patch)
+    assert "2 files changed" in h and "&lt;b&gt;" in h and "<b>" not in h.replace("<b>", "", 0).split("gone")[1][:5]
+    assert diffview.kind_of_test("packages/x/da-repro-1-integration-3.test.ts") == "integration" and diffview.kind_of_test("x.test.ts") == "unit"

@@ -18,7 +18,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from . import chart, icons, plain
+from . import chart, diffview, icons, plain
 
 _FIELD = {"read_issue": "triage", "gather_context": "context", "reproduce": "repro", "find_cause": "cause", "write_fix": "fix",
           "why_it_shipped": "second_story", "lasting_guard": "guard", "test_past_bugs": "backtest",
@@ -71,6 +71,15 @@ def gather(run_id: str, at: datetime | None = None) -> dict:
     pp = ((snap.values or {}).get("fix") or {}).get("patch_path")
     if pp and Path(pp).exists():
         patch = Path(pp).read_text()
+    pr_patch = Path(intr["patch_path"]).read_text() if intr.get("patch_path") and Path(intr["patch_path"]).exists() else patch
+    commit_msg = (Path(intr["commit_message_path"]).read_text()
+                  if intr.get("commit_message_path") and Path(intr["commit_message_path"]).exists() else "")
+    if intr and not commit_msg:   # paused before commit messages existed: the recommendation, worked out the same way
+        try:
+            from .graph import commit_message
+            commit_msg = commit_message(snap.values or {})
+        except Exception:
+            commit_msg = ""
     calls = list(db()["calls"].find({"run_id": run_id}, {"_id": 0}).sort("at", 1))
     evs, mtr = events.for_run(run_id), meter.snapshot(run_id) or {}
     from .config import CFG
@@ -89,7 +98,8 @@ def gather(run_id: str, at: datetime | None = None) -> dict:
         except ValueError:
             pack = {}
     return {"run_id": run_id, "state": snap.values or {}, "next": list(snap.next or []), "interrupt": intr, "pack": pack,
-            "pr_text": pr_text, "pr_matches": pr_ok, "patch": patch, "events": evs,
+            "pr_text": pr_text, "pr_matches": pr_ok, "patch": patch, "pr_patch": pr_patch, "commit_message": commit_msg,
+            "events": evs,
             "trials": events.trials_of(run_id), "meter": mtr, "calls": calls,
             "built": datetime.now().strftime("%H:%M:%S"),
             "now": (at or datetime.now().astimezone()).isoformat(),
@@ -351,8 +361,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
             sub = plain.result(r["key"], s) or (chips[-1] if chips else "Done")
             trail = e(plain.duration(secs[r["key"]])) if secs.get(r["key"]) is not None else ""
             if r["key"] == "reproduce" and proof_html:
-                trail = (f'<button type="button" class="tbtn proof-btn" popovertarget="proof">{icons.check(14)}'
-                         f'<span>Check proof</span></button>') + trail
+                trail = '<button type="button" class="tbtn proof-btn" popovertarget="proof"><span>Check proof</span></button>' + trail
         elif st == "running":
             sub = " · ".join(chips[-2:] + ([cnt] if cnt else [])) or "Starting this step"
             trail = _since(d, d.get("since"), is_replay)
@@ -416,7 +425,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
             "interrupted": ("Interrupted", f"Nothing has happened for {quiet}. Continue it from your terminal.", _copy(resume, "Copy resume command", True)),
             "crashed": ("Crashed", "Continue it from your terminal.", _copy(resume, "Copy resume command", True)),
             "waiting": ("Your OK is needed", "Check the pull request, then approve it or say no. Nothing is posted to GitHub.",
-                        f'<button type="button" class="btn glass prominent" popovertarget="check-pr">{icons.check(16)}<span>Check PR</span></button>'),
+                        '<button type="button" class="btn glass prominent" popovertarget="check-pr"><span>Check PR</span></button>'),
             "stopped": ("Stopped", plain.exit_text(outcome.get("exit")).removeprefix("Stopped. "),
                         _link("/", "New run", icons.plus(16), True) if served else ""),
             "done": ("Done", "The pull request text is saved. Nothing has been posted to GitHub.",
@@ -586,26 +595,44 @@ def _try_outcome(a: dict) -> tuple[str, str]:
 
 
 def _check_pr(d: dict, rid: str, can_decide: bool, approve_cmd: str, reject_cmd: str) -> str:
-    """The pull request, to read before saying yes or no (Isha 2026-10-08: "a Check PR dialog with approve and deny").
-    Approving binds to exactly this text (its sha256); either answer runs the same command the terminal runs."""
+    """The pull request as GitHub shows it (Isha 2026-10-08): its title, then Conversation (the description), Commits
+    (the commit message, editable before you approve) and Files changed (the fix and its tests, git style). Approving
+    binds to exactly this text and change (its sha256); either answer runs the same command the terminal runs."""
     sha = str((d.get("interrupt") or {}).get("sha256") or "")
+    st = d.get("state") or {}
+    issue = st.get("issue") or {}
+    msg = d.get("commit_message") or ""
+    title = (msg.splitlines() or [f"fix: #{issue.get('number', '')}"])[0]
+    files = diffview.parse(d.get("pr_patch") or "")
+    add, rem = sum(f["added"] for f in files), sum(f["removed"] for f in files)
     decide = (f'<div class="decide" data-run="{e(rid)}" data-sha="{e(sha)}">'
               f'<button type="button" class="btn glass" data-decide="reject" data-label="Say no" data-confirm="Tap again to say no">'
-              f'{icons.cross(16)}<span>Say no</span></button>'
-              f'<button type="button" class="btn glass prominent" data-decide="approve" data-label="Approve this text" '
-              f'data-confirm="Tap again to approve">{icons.check(16)}<span>Approve this text</span></button>'
+              f'<span>Say no</span></button>'
+              f'<button type="button" class="btn glass prominent" data-decide="approve" data-label="Approve" '
+              f'data-confirm="Tap again to approve"><span>Approve</span></button>'
               f'<p class="decide-msg" role="status"></p></div>') if can_decide else (
               f'<div class="cmd"><code>{e(approve_cmd)}</code></div><div class="cmd"><code>{e(reject_cmd)}</code></div>')
+    commit = (f'<textarea class="commit-msg" id="commit-msg" spellcheck="true" rows="9" data-recommended="{e(msg)}">{e(msg)}</textarea>'
+              f'<p class="foot"><span id="commit-note">Recommended. Edit it: your message is what the commit will carry, saved '
+              f'with your approval.</span> <button type="button" class="linkbtn" id="commit-reset">Back to the recommendation</button></p>'
+              ) if can_decide else f'<pre class="out">{e(msg)}</pre>'
     return (f'<div id="check-pr" popover class="pop sheet glass" aria-label="Check the pull request">'
             f'<div class="pop-head"><b>Check the pull request</b><button type="button" class="tbtn" popovertarget="check-pr" '
             f'popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>'
-            f'<div class="fa"><p class="foot">Fingerprint sha256 <code>{e(sha[:12])}</code>: approving binds to exactly this text. '
-            f'If the text changes, the approval is refused.</p>'
-            f'<details open><summary>The pull request text</summary><div class="md" id="pr-sheet"></div></details>'
-            f'<details><summary>What approving does</summary><p>It records your OK for this exact text and writes a script '
-            f'(<code>publish.sh</code>) that you run with your own GitHub login to post the pull request. DebugAssistAgent holds a '
-            f'read-only GitHub token, so it cannot post anything itself.</p><p>Saying no ends the run here. Nothing is saved for '
-            f'posting.</p></details>{decide}</div></div>')
+            f'<div class="prv"><h3 class="pr-title" id="pr-title">{e(title)}</h3>'
+            f'<p class="pr-meta"><span class="pr-state">Draft</span> {e(issue.get("owner", ""))}/{e(issue.get("repo", ""))} · '
+            f'1 commit into <code>main</code> from <code>debugassist/fix-{e(issue.get("number", ""))}</code> · '
+            f'<span class="plus">+{add}</span> <span class="minus">−{rem}</span></p>'
+            f'<div class="seg glass pr-tabs" role="tablist">'
+            f'<button type="button" role="tab" class="on" data-tab="conv" aria-selected="true">Conversation</button>'
+            f'<button type="button" role="tab" data-tab="commits" aria-selected="false">Commits <span class="cnt">1</span></button>'
+            f'<button type="button" role="tab" data-tab="files" aria-selected="false">Files changed <span class="cnt">{len(files)}</span></button></div>'
+            f'<div class="pr-pane" data-pane="conv"><div class="md" id="pr-sheet"></div></div>'
+            f'<div class="pr-pane" data-pane="commits" hidden>{commit}</div>'
+            f'<div class="pr-pane" data-pane="files" hidden>{diffview.html(d.get("pr_patch") or "")}</div>'
+            f'<p class="foot">Fingerprint sha256 <code>{e(sha[:12])}</code>: approving binds to exactly this text and change. '
+            f'Nothing is posted to GitHub: approving writes <code>publish.sh</code>, which you run with your own login.</p>'
+            f'{decide}</div></div>')
 
 
 def _proof(s: dict, rid: str) -> str:
@@ -886,7 +913,7 @@ def _engineer_details(d: dict, s: dict, rows: list[dict], live: bool) -> str:
     <p><code>{e(c.get('file', ''))}</code> lines {e('-'.join(map(str, c.get('lines', []))))}</p><p class="note">{e(c.get('why', ''))}</p>
     <div class="scroll"><table><tr><th>#</th><th>result</th><th>changed</th><th>suites</th><th>evidence</th></tr>{fix_rows}</table></div>
     <p class="note">Second test, written without seeing the fix: <b>{e(ho.get('status', 'not run'))}</b> <code>{e(Path(ho.get('test') or '').name)}</code></p>
-    {f'<details><summary>Patch</summary><pre class="diff">{_diff(d["patch"])}</pre></details>' if d['patch'] else ''}</div>
+    {f'<details><summary>Patch</summary>{diffview.html(d["patch"])}</details>' if d['patch'] else ''}</div>
 </div>'''
     lessons = f'''<div class="grid2">
   <div class="card"><h2>Lasting guard</h2><p>{e(g.get('covers', ''))}</p>
@@ -912,6 +939,23 @@ def _engineer_details(d: dict, s: dict, rows: list[dict], live: bool) -> str:
 # origin; replay passes how far in it is (?ms=). Stops when the run is final; shows "viewer offline" if the server goes.
 # your OK from the page: only on served pages (a saved file keeps the terminal commands instead)
 _DECIDE_JS = """
+document.addEventListener("click", ev => {
+  const t = ev.target.closest(".pr-tabs [data-tab]"); if (!t) return;
+  const sheet = t.closest(".prv");
+  sheet.querySelectorAll(".pr-tabs [data-tab]").forEach(x => { const on = x === t; x.classList.toggle("on", on); x.setAttribute("aria-selected", String(on)); });
+  sheet.querySelectorAll(".pr-pane").forEach(p => { p.hidden = p.dataset.pane !== t.dataset.tab; });
+});
+document.addEventListener("input", ev => {
+  if (ev.target.id !== "commit-msg") return;
+  const first = (ev.target.value.split("\\n")[0] || "").trim(), title = document.getElementById("pr-title");
+  if (title) title.textContent = first || "(no title)";
+  const note = document.getElementById("commit-note");
+  if (note) note.textContent = ev.target.value === ev.target.dataset.recommended ? "Recommended. Edit it: your message is what the commit will carry, saved with your approval." : "Edited by you. This is what the commit will carry.";
+});
+document.addEventListener("click", ev => {
+  if (ev.target.id !== "commit-reset") return;
+  const m = document.getElementById("commit-msg"); m.value = m.dataset.recommended; m.dispatchEvent(new Event("input", { bubbles: true }));
+});
 const TOKEN = __TOKEN__;
 document.addEventListener("click", async ev => {
   const b = ev.target.closest("[data-decide]"); if (!b) return;
@@ -926,7 +970,8 @@ document.addEventListener("click", async ev => {
   msg.textContent = b.dataset.decide === "approve" ? "Approving…" : "Saying no…";
   try {
     const r = await fetch("/api/decide", { method: "POST", headers: { "X-DebugAssistAgent-Token": TOKEN, "Content-Type": "application/json" },
-      body: JSON.stringify({ run_id: box.dataset.run, decision: b.dataset.decide, sha256: box.dataset.sha }) });
+      body: JSON.stringify({ run_id: box.dataset.run, decision: b.dataset.decide, sha256: box.dataset.sha,
+                             commit_message: (document.getElementById("commit-msg") || {}).value || "" }) });
     const j = await r.json();
     if (!r.ok) { msg.textContent = j.error || "Something went wrong."; box.querySelectorAll("[data-decide]").forEach(x => { x.disabled = false; }); return; }
     msg.textContent = j.said;

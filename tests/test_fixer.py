@@ -214,3 +214,12 @@ def test_a_cap_ends_the_fix_step_without_crashing(repo, monkeypatch):
     fix = fixer.write_fix({"issue": {"title": "t"}}, repo, CAUSE, "packages/compat/src/da-repro-1-unit-1.test.ts",
                           "e", PROFILE, run_cmd=_runner(repo, []))
     assert fix["status"] == "NOT VALIDATED" and "cap" in fix["why"]
+
+
+def test_the_cause_step_also_names_the_change_as_a_commit_title(tmp_path):
+    (tmp_path / "a.ts").write_text("x\n" * 20)
+    reply = ("CAUSE_FILE: a.ts\nCAUSE_LINES: 2-4\nWHY: it flushes always.\nFIX_PLAN: In flush, finalize only on a complete stream.\n"
+             "SUBJECT: finalize tool calls only on a complete stream.")
+    got = parse_cause(reply, tmp_path)
+    assert got["plan"] == "In flush, finalize only on a complete stream." and got["subject"] == "finalize tool calls only on a complete stream"
+    assert parse_cause(reply.split("\nSUBJECT")[0], tmp_path)["subject"] == ""          # older replies: none

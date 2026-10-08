@@ -212,7 +212,7 @@ def _start_run(link: str, heading: str, ai: str) -> str:
 _decider: dict = {"proc": None, "run_id": None}
 
 
-def decide(run_id: str, decision: str, sha: str) -> str:
+def decide(run_id: str, decision: str, sha: str, commit_message: str = "") -> str:
     """Approve or say no to a run waiting for your OK. Refused unless the run is waiting, and the text on disk is the
     text you were shown (its sha256, sent by the page). Runs `debug-assist approve|reject <run-id>` in the background."""
     from .guardrails import fingerprint
@@ -235,6 +235,14 @@ def decide(run_id: str, decision: str, sha: str) -> str:
     pr = Path(intr["pr_body_path"])
     if not pr.exists() or fingerprint(pr.read_text()) != sha:
         raise Refused("The pull request text on disk is not the text you were shown. Nothing was approved.")
+    msg = commit_message.replace("\r\n", "\n").strip()
+    if decision == "approve" and msg:
+        if len(msg) > 10000 or not msg.splitlines()[0].strip():
+            raise Refused("The commit message needs a first line (the title), and fewer than 10,000 characters.")
+        mp = Path(intr.get("commit_message_path") or CFG.runs_dir / run_id / "commit-message.txt")
+        mp.write_text(msg + "\n")   # yours: the commit carries it; its fingerprint is logged with the approval
+        from . import events
+        events.log("commit_message", key="commit", run_id=run_id, sha256=fingerprint(msg + "\n"), title=msg.splitlines()[0][:120])
     with open(CFG.runs_dir / run_id / "console-decision.log", "w") as log:
         _decider["proc"] = subprocess.Popen([sys.executable, "-m", "debug_assist", decision, run_id, "--no-view"], cwd=ROOT,
                                             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
@@ -967,7 +975,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
             if path == "/api/decide":
-                said = decide(str(body.get("run_id", "")), str(body.get("decision", "")), str(body.get("sha256", "")))
+                said = decide(str(body.get("run_id", "")), str(body.get("decision", "")), str(body.get("sha256", "")),
+                              str(body.get("commit_message", ""))[:12000])
                 return self._json(200, {"said": said})
             if path == "/api/advisors-ask":
                 from .advisors import AdvisorError, ask, status

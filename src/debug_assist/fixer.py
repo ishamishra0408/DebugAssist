@@ -66,7 +66,9 @@ When you know the cause, reply exactly:
 CAUSE_FILE: <repo-relative path of the source file that must change>
 CAUSE_LINES: <start>-<end>
 WHY: <2-4 sentences: what the code does wrong, and why the failing test shows it>
-FIX_PLAN: <1-3 sentences: the smallest change that makes the test pass without breaking other callers>"""
+FIX_PLAN: <1-3 sentences: the smallest change that makes the test pass without breaking other callers>
+SUBJECT: <that change as a commit title: imperative, under 60 characters, no period, e.g. "finalize tool calls only on a
+complete stream">"""
 
 
 def cause_messages(focus: str, test_path: str, test_code: str, evidence: str, snippets: str, source: str,
@@ -91,7 +93,8 @@ def parse_cause(reply: str, checkout: Path) -> dict:
     f = re.search(r"CAUSE_FILE:\s*`?([^\s`]+)`?", reply)
     l = re.search(r"CAUSE_LINES:\s*(\d+)\s*[-–]\s*(\d+)", reply)
     why = re.search(r"WHY:\s*(.+?)(?=\nFIX_PLAN:|\Z)", reply, re.S)
-    plan = re.search(r"FIX_PLAN:\s*(.+)", reply, re.S)
+    plan = re.search(r"FIX_PLAN:\s*(.+?)(?=\nSUBJECT:|\Z)", reply, re.S)
+    subject = re.search(r"^\s*SUBJECT:\s*(.+)$", reply, re.M)
     if not (f and l and why):
         raise FixRefused("the reply has no CAUSE_FILE / CAUSE_LINES / WHY")
     path, a, b = f.group(1), int(l.group(1)), int(l.group(2))
@@ -102,7 +105,8 @@ def parse_cause(reply: str, checkout: Path) -> dict:
     n = len((checkout / path).read_text().splitlines())
     if not (1 <= a <= b <= n):
         raise FixRefused(f"lines {a}-{b} are outside {path} (1-{n})")
-    return {"file": path, "lines": [a, b], "why": why.group(1).strip(), "plan": (plan.group(1).strip() if plan else "")}
+    return {"file": path, "lines": [a, b], "why": why.group(1).strip(), "plan": (plan.group(1).strip() if plan else ""),
+            "subject": (subject.group(1).strip().strip('"`.').strip()[:72] if subject else "")}
 
 
 def find_cause(state: dict, checkout: Path, ctx, test_path: str, evidence: str, profile=None) -> dict:

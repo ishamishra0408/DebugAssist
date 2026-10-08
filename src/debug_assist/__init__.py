@@ -13,6 +13,7 @@
   uv run debug-assist laya-serve [--port=8790]                      Laya for hosted runs (needs LAYA_TOKEN; put a tunnel in front)
   uv run debug-assist connect <repo-url>                            connect a repo: work out its setup, build its test sandbox, prove its tests
   uv run debug-assist advisors-check                                ask both advisors one fixed sample each (needs them switched on)
+  uv run debug-assist refresh-pr <run-id>                           re-write a waiting run's PR text with the current layout (no AI)
 
 --focus=TEXT            the one problem in the issue to reproduce (default: the issue's title)
 --focus-heading=HEADING the same, taken from the issue's section under that markdown heading
@@ -26,7 +27,7 @@ import sys
 from contextlib import ExitStack
 from datetime import datetime
 
-COMMANDS = {"preflight", "run", "resume", "approve", "reject", "status", "events", "cleanup", "view", "serve", "laya-serve", "connect", "advisors-check"}
+COMMANDS = {"preflight", "run", "resume", "approve", "reject", "status", "events", "cleanup", "view", "serve", "laya-serve", "connect", "advisors-check", "refresh-pr"}
 
 
 def _tracing():
@@ -178,6 +179,20 @@ def main() -> None:
     from .preflight import as_records, report, run_preflight
 
     app = build()
+    if cmd == "refresh-pr":  # the approval step again, from the same facts: a new PR text and fingerprint, no AI
+        cfg = {"configurable": {"thread_id": arg}}
+        from . import artifacts
+        if artifacts.enabled():
+            artifacts.restore_run(arg)
+        snap, intr = _pause(app, cfg)
+        if not intr:
+            sys.exit(f"run {arg} is not waiting for your OK")
+        app.invoke(None, cfg)
+        snap, intr = _pause(app, cfg)
+        if artifacts.enabled():
+            artifacts.save_run(arg)
+        print(f"PR text re-written: sha256 {str((intr or {}).get('sha256'))[:12]} ({(intr or {}).get('pr_body_path')})")
+        return
     if cmd == "run":
         _, repo, number = parse_issue_url(arg)
         run_id = opts.get("run-id") or f"{repo}-{number}-{datetime.now():%Y%m%d-%H%M%S}"  # the home page names its runs
