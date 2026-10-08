@@ -188,3 +188,15 @@ def test_a_public_address_without_its_password_stays_locked_and_says_why(monkeyp
         httpd.shutdown()
     monkeypatch.setenv("APP_PASSWORD", "correct horse battery")
     assert server.locked_reason("0.0.0.0") == ""                      # Render's own hostname counts as the address
+
+
+def test_the_system_check_shows_each_service_in_plain_words(live, monkeypatch):
+    from debug_assist import preflight
+    monkeypatch.setattr(preflight, "run_preflight", lambda url, **k: [
+        preflight.Check("MongoDB", "PASS", "writable primary"),
+        preflight.Check("Embeddings", "FAIL", "VOYAGE_API_KEY not set", "add it to the host's environment yourself")])
+    code, page = _get(live, "/checks")
+    assert code == 200 and "Database (MongoDB)" in page and "Working: writable primary" in page
+    assert "Embeddings (Voyage)" in page and "Not working: VOYAGE_API_KEY not set" in page and "To fix:" in page
+    import html
+    assert "1 thing is not working. A run can't start until it is fixed." in html.unescape(page)

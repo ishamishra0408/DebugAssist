@@ -207,6 +207,54 @@ STATE_ICON = {"Done": "done", "Waiting": "waiting", "Working": "running", "Inter
               "Stopped": "stopped", "Could not start": "stopped"}
 
 
+CHECK_NAMES = {"Repo profile": "Repository set up", "Base checkout": "Code to test (vercel/ai)",
+               "Sandbox (E2B)": "Test sandbox (E2B)", "Docker": "Test sandbox (Docker)", "MongoDB": "Database (MongoDB)",
+               "Vector index": "Similar-bug search", "Embeddings": "Embeddings (Voyage)", "Ollama + Qwen3": "Embeddings (Ollama)",
+               "Laya": "Laya (triage and guard rating)", "OpenRouter": "AI for writing tests and fixes (OpenRouter)",
+               "GitHub token": "GitHub (read-only)", "Phoenix": "Tracing (Phoenix)", "Advisors": "Advisors"}
+
+
+def checks_page() -> str:
+    """Everything a run needs, green or red: the same start-up checks every run does (preflight.py), run now."""
+    from . import icons
+    from .preflight import run_preflight
+    from .profiles import PROFILES
+    e = viewer.e
+    t0 = time.monotonic()
+    repo = next(iter(PROFILES))
+    checks = run_preflight(f"https://github.com/{repo}/issues/1")
+    took = time.monotonic() - t0
+    word = {"PASS": "Working", "WARN": "Working, with a note", "FAIL": "Not working"}
+    cls = {"PASS": "done", "WARN": "waiting", "FAIL": "stopped"}
+    icon = {"PASS": icons.check, "WARN": icons.pause, "FAIL": icons.cross}
+    rows = "".join(
+        f'<li class="row {cls[c.status]}"><span class="ic">{icon[c.status]()}</span><span class="t">'
+        f'<b>{e(CHECK_NAMES.get(c.name, c.name))}</b><span>{e(word[c.status])}: {e(c.fact)}'
+        + (f" · To fix: {e(c.fix)}" if c.fix and c.status != "PASS" else "") + "</span></span></li>" for c in checks)
+    bad = sum(c.status == "FAIL" for c in checks)
+    verdict = "Everything a run needs is working." if not bad else \
+        f"{bad} thing{'s' * (bad != 1)} {'are' if bad != 1 else 'is'} not working. A run can't start until {'they are' if bad != 1 else 'it is'} fixed."
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>System check · {plain.NAME}</title><meta name="color-scheme" content="dark light"><link rel="stylesheet" href="/static/app.css">
+</head><body>
+<canvas id="topo" aria-hidden="true"></canvas><div class="ambient {'s-done' if not bad else 's-stopped'}" aria-hidden="true"></div>
+<div class="scrim top" aria-hidden="true"></div>
+<nav class="toolbar" aria-label="{plain.NAME}">
+  <div class="tgroup glass"><a class="brand" href="/">{icons.mark()}<span>{plain.NAME}</span></a></div>
+  <div class="tgroup glass"><a class="tbtn" href="/" aria-label="New run">{icons.plus(16)}<span class="lbl">New run</span></a>
+    <a class="tbtn" href="/checks" aria-label="Check again">{icons.check(16)}<span class="lbl">Check again</span></a></div>
+</nav>
+<main>
+<header class="hero"><h1>System check</h1>
+  <p class="status {'s-done' if not bad else 's-stopped'}"><span class="dot"></span><span>{e(verdict)}</span></p>
+  <p class="lede">These are the same checks every run does before it starts. Checked just now, in {took:.0f} s.</p></header>
+<section class="group"><h2>Services</h2><div class="sect"><ul class="rows">{rows}</ul></div>
+  <p class="foot">Each check makes one small request (the test sandbox starts and stops a sandbox, which uses a fraction of a cent of credit).</p></section>
+</main>
+<script src="/static/topo.js" defer></script><script src="/static/glass.js" defer></script>
+</body></html>"""
+
+
 def how_page() -> str:
     from . import chart, icons
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
@@ -257,7 +305,8 @@ def home_page() -> str:
 <nav class="toolbar" aria-label="{plain.NAME}">
   <div class="tgroup glass"><a class="brand" href="/">{icons.mark()}<span>{plain.NAME}</span></a></div>
   <div class="tgroup glass"><a class="tbtn" href="#runs" aria-label="Runs">{icons.list_(16)}<span class="lbl">Runs</span></a>
-    <a class="tbtn" href="/how" aria-label="How it works">{icons.play(16)}<span class="lbl">How it works</span></a></div>
+    <a class="tbtn" href="/how" aria-label="How it works">{icons.play(16)}<span class="lbl">How it works</span></a>
+    <a class="tbtn" href="/checks" aria-label="System check">{icons.check(16)}<span class="lbl">System check</span></a></div>
 </nav>
 <main>
 <header class="hero">
@@ -400,6 +449,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(302, "", "text/plain", location="/login")
             if not parts:
                 return self._send(200, home_page())
+            if parts == ["checks"]:
+                return self._send(200, checks_page())
             if parts == ["how"]:
                 return self._send(200, how_page())
             if len(parts) == 2 and parts[0] == "static" and parts[1] in STATIC_FILES:
