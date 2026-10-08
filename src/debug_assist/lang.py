@@ -4,7 +4,10 @@ in one place. testwriter, fixer, guard and context ask the adapter; they never a
   where     source and test files live (git pathspecs from the profile's source_globs), which package a file is in
   tests     how a new test is named and placed (beside the example test), the example test, its setup and a pattern case
   running   the command for one test file or one package's suite, and the verbose flag that lists every case
-  reading   the per-case results and failure blocks of vitest / jest / pytest output
+  reading   the per-case results and failure blocks of vitest / jest / pytest / node:test output
+
+Three kinds: JS (vitest, jest), NodeScripts (test files run with plain `node <file>`: node:test or a script that
+exits 1 on failure; NoLeakMCP, 2026-10-08) and Python (pytest).
   writing   the test framework and rules the AI is given, and the checks a draft must pass (decided in code)
 
 vercel/ai's built-in profile keeps its exact behaviour: its defaults (packages/*/src/**, .test.ts, vitest) are the
@@ -125,7 +128,8 @@ class Lang:
                 continue
             text = f.read_text(errors="ignore")[:200_000]
             score = (5 * (self.tested_stem(f.name) == stem) + len(set(Path(rel).parent.parts) & src_parts)
-                     + 3 * bool(re.search(rf"\b{re.escape(stem)}\b", text)) + self.place_bonus(rel))
+                     + 3 * bool(re.search(rf"\b{re.escape(stem)}\b", text)) + self.place_bonus(rel)
+                     + 6 * (Path(source).as_posix() in text))  # it imports the very file ("../plugins/x/index.js")
             key = (score, len(text))
             if best is None or key > best[0]:
                 best = (key, rel)
@@ -175,7 +179,8 @@ class Lang:
 class JS(Lang):
     key, marker = "js", "package.json"
     EXCLUDE = [":!*.test.ts", ":!*.test.tsx", ":!*.test-d.ts", ":!*.spec.ts", ":!*.spec.tsx", ":!*.test.js",
-               ":!*.spec.js", ":!*.test.jsx", ":!*__fixtures__*", ":!*__snapshots__*", ":!*__tests__*", ":!*.md"]
+               ":!*.spec.js", ":!*.test.jsx", ":!*.test.mjs", ":!*.test.cjs", ":!*.spec.mjs", ":!*__fixtures__*",
+               ":!*__snapshots__*", ":!*__tests__*", ":!*.md"]
 
     def __init__(self, profile=None):
         super().__init__(profile)
@@ -421,8 +426,119 @@ class Python(Lang):
         return "Parametrise it with @pytest.mark.parametrize over every trigger of the class that this code can meet"
 
 
+# ── plain Node: each test file is a script, run with `node <file>` ───────────────────────────────
+class NodeScripts(JS):
+    """No test framework: a test file is a program that exits 1 when something is wrong (node:test does that too).
+    The suite is the list of files that passed when the repo was connected (profile.test_glob)."""
+    key = "node"
+
+    def __init__(self, profile=None):
+        super().__init__(profile)
+        self.framework, self.fence, self.VERBOSE = "node:test", "js", ""
+
+    PATTERNS = ("*.test.mjs", "*.test.js", "*.test.cjs", "*.spec.mjs", "*.spec.js")
+
+    def test_files(self, checkout, pkg_dir):
+        base = Path(checkout) / pkg_dir
+        return [f for pat in self.PATTERNS for f in base.rglob(pat) if not (set(f.relative_to(checkout).parts) & SKIP)]
+
+    def example_test(self, checkout, source):
+        return Lang.example_test(self, checkout, source)  # tests sit in their own folder, not beside the source
+
+    def test_command(self, pkg_dir, test_path="", extra=""):
+        rel = self.within(test_path, pkg_dir) if test_path else self.p.test_glob
+        if not rel:
+            raise ValueError("no test files to run (the profile lists none)")
+        return (self.p.env + self.p.test_cmd.format(package=Path(pkg_dir).name, package_dir=pkg_dir,
+                                                    test_path=rel)).rstrip()
+
+    def header(self, text):
+        first = re.search(r"^(?:test|describe|it)\(", text, re.M)
+        return text[:first.start()] if first else text[:4000]
+
+    def pattern_case(self, text, focus=""):
+        """One top-level test(...) block, preferring one that uses the focus's words; a script with none is shown
+        whole through its setup (header)."""
+        lines, found = text.splitlines(), []
+        for i, l in enumerate(lines):
+            if re.match(r"(test|it)\(", l):
+                for j in range(i + 1, min(len(lines), i + 150)):
+                    if lines[j].startswith("});") or lines[j].startswith("})"):
+                        found.append("\n".join(lines[i:j + 1]))
+                        break
+        words = set(re.findall(r"[A-Za-z]{5,}", focus))
+        return max(found, key=lambda c: sum(w in c for w in words), default="")
+
+    _TAP = re.compile(r"^\s*(not )?ok \d+ - (.+?)(?:\s+#.*)?$", re.M)
+
+    def cases(self, output):
+        """node:test's TAP lines (`ok 1 - name` / `not ok 2 - name`) or its spec reporter (✔ / ✖)."""
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
+        got = {"passed": [], "failed": []}
+        for m in self._TAP.finditer(clean):
+            bucket = got["failed"] if m.group(1) else got["passed"]
+            if m.group(2) not in bucket:
+                bucket.append(m.group(2))
+        for sym, bucket in (("✔", got["passed"]), ("✖", got["failed"])):
+            for m in re.finditer(rf"^\s*{sym} (.+?)(?: \([\d.]+m?s\))?$", clean, re.M):
+                if m.group(1) not in bucket and not m.group(1).startswith("failing tests"):
+                    bucket.append(m.group(1))
+        return got
+
+    def failure_blocks(self, output):
+        """`not ok N - name` → its YAML block (error, expected, actual), up to the next result line."""
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
+        out = {}
+        heads = list(self._TAP.finditer(clean))
+        for i, m in enumerate(heads):
+            if m.group(1):
+                end = heads[i + 1].start() if i + 1 < len(heads) else len(clean)
+                out[m.group(2)] = "\n".join(clean[m.end():end].strip("\n").splitlines()[:40])
+        return out
+
+    def imports(self, src):
+        """Plain-Node repos import across folders with relative paths (`../plugins/mcp-guard/index.js`): those count."""
+        out = []
+        for m in self._IMPORT.finditer(src):
+            if m.group(2).startswith("./"):
+                continue
+            for part in m.group(1).split(","):
+                n = part.strip().split(" as ")[-1].strip()
+                if re.fullmatch(r"[A-Za-z_$][\w$]*", n):
+                    out.append((n, m.group(2), False))
+        return out
+
+    def validate(self, content, rung_name):
+        from .testwriter import WriterRefused
+        if not re.search(r"""from\s+['"](node:)?assert(/strict)?['"]|require\(\s*['"](node:)?assert""", content):
+            raise WriterRefused("the test asserts nothing (no node:assert)")
+        if not re.search(r"""from\s+['"]node:test['"]""", content):
+            raise WriterRefused("use node:test (import { test } from \"node:test\"), one test() per case")
+        if re.search(r"\b(test|it|describe)\.only\(|only:\s*true", content):
+            raise WriterRefused(".only would hide other cases")
+        if re.search(r"https?://(?!localhost|127\.0\.0\.1|\[::1\]|example\.(?:com|org))[\w.-]+\.\w", content):
+            raise WriterRefused("the test reaches for a real host; the sandbox has no network")
+
+    def rules(self) -> str:
+        return ("- Write an ES module run with plain `node <file>`: `import { test } from \"node:test\"` and\n"
+                "  `import assert from \"node:assert/strict\"`, one top-level test() per case, no nested tests.\n"
+                "- Import the code under test with relative paths, the way the example test does: the file is saved\n"
+                "  beside it.\n"
+                "- No network, no API keys: only servers the test starts itself on localhost, like the example. Setting\n"
+                "  a FAKE key in process.env is fine.\n"
+                "- Make the failing assertion SHOW the evidence: assert.deepStrictEqual(actual, expected) on the actual\n"
+                "  values, never a bare count or boolean, so the failure prints what went wrong.\n"
+                "- Do not test anything else. One to three test() cases.")
+
+    def guard_rules(self) -> str:
+        return ("Write one top-level test() per trigger, from a list: `for (const c of cases) test(c.name, ...)`, "
+                "over every trigger of the class that this code can meet")
+
+
 def of(profile=None) -> Lang:
-    return Python(profile) if getattr(profile, "language", "") == "python" else JS(profile)
+    if getattr(profile, "language", "") == "python":
+        return Python(profile)
+    return NodeScripts(profile) if getattr(profile, "runner", "") == "node" else JS(profile)
 
 
 def package_map(checkout: Path, profile=None) -> dict:
@@ -448,4 +564,6 @@ def package_map(checkout: Path, profile=None) -> dict:
         except Exception:
             continue
         out[name] = {"dir": d, "deps": deps}
+    if "." in tuple(lang.p.package_globs) and not any(v["dir"] == "." for v in out.values()):
+        out["(repo)"] = {"dir": ".", "deps": set()}  # one package with no manifest at the top: the whole repo
     return out

@@ -196,12 +196,61 @@ def test_prove_runs_the_biggest_suites_offline_and_ends_the_sandbox(fake_world, 
     p = C.draft("acme/py", C.detect(fake_world["root"]), "f" * 40, "main")
     out = C.prove_tests(p, fake_world["root"], ["libs/partners/openai", "libs/core"], lambda line: None)
     assert out == [("libs/core", "pass"), ("libs/partners/openai", "fail")]           # most test files first
-    assert calls[0][0].endswith("cd libs/core && uv run --no-sync pytest -q ") and not any(n for _, n in calls)
+    assert calls[0][0].endswith("cd libs/core && uv run --no-sync pytest -q") and not any(n for _, n in calls)
     assert closed == [fake_world["root"]]
 
 
-def test_a_repo_without_one_top_level_setup_says_what_it_found(tmp_path):
-    write(tmp_path, {"plugins/guard/package.json": {"name": "g"}, "render/package.json": {"name": "r"},
-                     "tests/guard.test.mjs": "", ".nvmrc": "20\n"})
+def test_a_repo_without_one_top_level_setup_or_tests_says_what_it_found(tmp_path):
+    write(tmp_path, {"plugins/guard/package.json": {"name": "g"}, "render/package.json": {"name": "r"}, ".nvmrc": "20\n"})
     with pytest.raises(ValueError, match=r"no package.json at the top of the repo.*found one in: plugins/guard, render"):
         C.detect(tmp_path)
+
+
+NOLEAK = {  # NoLeakMCP's shape (2026-10-08): no top-level package.json, tests run with plain node
+    ".nvmrc": "20\n", "README.md": "", "docs/x.md": "",
+    "plugins/mcp-guard/package.json": {"name": "dsh-mcp-guard", "type": "module"},
+    "plugins/mcp-guard/index.js": "export function scanArguments(a) { return null }\n",
+    "realtime/package.json": {"name": "rt", "dependencies": {"convex": "^1.16.0"}}, "realtime/package-lock.json": "{}",
+    "realtime/bridge/tail.mjs": "export const x = 1\n",
+    "render/package.json": {"name": "r", "optionalDependencies": {"convex": "^1.16.0"}},
+    "render/arena/arena-core.mjs": "export function runAttack() {}\n",
+    "tests/guard.test.mjs": 'import { scanArguments } from "../plugins/mcp-guard/index.js";\nprocess.exit(0)\n',
+    "tests/arena.test.mjs": 'import { test } from "node:test";\nimport { runAttack } from "../render/arena/arena-core.mjs";\n',
+}
+
+
+def test_a_plain_node_repo_is_one_package_whose_suite_is_its_test_files(tmp_path):
+    f = C.detect(write(tmp_path, NOLEAK), "HTML")
+    assert (f["language"], f["manager"], f["runner"], f["packages"], f["node"]) == ("javascript", "npm", "node", ["."], 20)
+    assert f["installs"] == [("realtime", True), ("render", False)]               # mcp-guard has nothing to install
+    assert f["source_globs"] == ("plugins/**", "realtime/**", "render/**") and f["test_style"] == "tests"
+    assert f["test_files"] == ["tests/arena.test.mjs", "tests/guard.test.mjs"] and f["test_suffix"] == ".test.mjs"
+    p = C.draft("ishamishra0408/NoLeakMCP", f, "a" * 40, "main")
+    assert p.image == "node:20-slim" and p.runner == "node" and p.test_glob == "tests/arena.test.mjs tests/guard.test.mjs"
+    assert p.install_cmd == ("(cd realtime && npm ci) || echo realtime >> /etc/da-install-failures; "
+                             "(cd render && npm install) || echo render >> /etc/da-install-failures; true")
+    assert "RUN export CI=1 NO_COLOR=1 && (cd realtime && npm ci)" in C.dockerfile(p, f["packages"])
+    from debug_assist import lang
+    nl = lang.of(p)
+    assert nl.key == "node" and nl.test_command(".").endswith(
+        'for f in tests/arena.test.mjs tests/guard.test.mjs; do echo "## $f"; node "$f" || rc=1; done; exit $rc')
+    assert nl.test_command(".", "tests/da-repro-3-unit-1.test.mjs").startswith("export CI=1 NO_COLOR=1 && cd . || exit 1;")
+
+
+def test_a_plain_node_repo_keeps_only_the_test_files_that_pass_offline(tmp_path, monkeypatch):
+    root = write(tmp_path / "nl", NOLEAK)
+    for c in (["git", "init", "-q"], ["git", "add", "-A"], ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "b"]):
+        subprocess.run(c, cwd=root, check=True)
+    gh = {"repos/i/nl": {"default_branch": "main", "language": "HTML"}, "repos/i/nl/commits/main": {"sha": "b" * 40}}
+    monkeypatch.setattr(C.github_read, "api", lambda path, *a: gh.get(path))
+    monkeypatch.setattr("debug_assist.checkout.ensure_base", lambda prof: root)
+    ran, closed = [], []
+    monkeypatch.setattr("debug_assist.sandbox_e2b.run", lambda cmd, wd, network=False, timeout=0: (
+        ran.append(cmd), subprocess.CompletedProcess(cmd, 0 if "guard" in cmd else 1, "ok 1 - x", ""))[1])
+    monkeypatch.setattr("debug_assist.sandbox_e2b.close", lambda wd: closed.append(wd))
+    repos = Coll()
+    res = C.connect("i/nl", coll=Coll(), repos=repos, workdir=tmp_path / "w", build=lambda *a: None)
+    assert res["status"] == "connected" and len(ran) == 2 and all("node" in c for c in ran)   # one file at a time
+    p = from_doc(repos.docs["i/nl"]["profile"])
+    assert p.baseline == (("tests/arena.test.mjs", "fail"), ("tests/guard.test.mjs", "pass"))
+    assert p.test_glob == "tests/guard.test.mjs"                                  # the suite a fix must keep green

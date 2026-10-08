@@ -10,8 +10,9 @@ After this, issues from the repo can be run like vercel/ai's (profiles.get finds
 
 No AI: every setting comes from the repo's own files (package.json, lock files, pyproject.toml, tests folders).
 Progress is kept in MongoDB's `connects` collection, one document per repo, so the Connect page shows it live.
-JavaScript/TypeScript (npm, pnpm, yarn; vitest, jest) and Python (uv, poetry, pip; pytest). Public repos only: the
-template fetches the code without credentials.
+JavaScript/TypeScript (npm, pnpm, yarn; vitest, jest), plain Node (test files run with `node <file>`, node:test or
+scripts that exit 1 on failure) and Python (uv, poetry, pip; pytest). Public repos only: the template fetches the code
+without credentials.
 """
 import json
 import re
@@ -29,6 +30,7 @@ SKIP_DIRS = {"node_modules", ".git", "examples", "example", "docs", "doc", "webs
              "template", "cookbook", "benchmarks", "e2e", ".github", "dist", "build", "site"}
 MAX_PACKAGES = 30          # Python packages installed one by one into the template (a uv workspace installs all at once)
 PROVE_PACKAGES = 4         # packages whose tests run at connection: the ones with the most test files
+PROVE_FILES = 30          # plain Node: test files run one by one at connection
 PROVE_TIMEOUT_S = 600
 NODE_DEFAULT, PY_DEFAULT = 22, "3.12"
 REPO = re.compile(r"^(?:https://github\.com/)?([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$")
@@ -104,9 +106,49 @@ def _node_major(pkg: dict, root: Path) -> tuple[int, str]:
     return NODE_DEFAULT, "default"
 
 
+NODE_TESTS = ("*.test.mjs", "*.test.js", "*.test.cjs", "*.spec.mjs", "*.spec.js")
+CODE = ("*.js", "*.mjs", "*.cjs", "*.ts")
+NOT_SOURCE = {"tests", "test", "__tests__", "docs", "site", "website", "examples", "evidence", "diagrams", "eval",
+              "architecture", "node_modules", ".github"}
+
+
+def detect_node_scripts(root: Path, pkg: dict) -> dict | None:
+    """No vitest or jest: test files that run with plain `node <file>` (node:test, or a script that exits 1 when
+    something fails). The whole repo is one package; the suite is the test files (narrowed to those that pass at
+    connection); every folder with its own package.json and dependencies is installed."""
+    tests = sorted({f.relative_to(root).as_posix() for pat in NODE_TESTS for f in root.rglob(pat)
+                    if not _skipped(f.relative_to(root).as_posix())})
+    if not tests:
+        return None
+    ev = [f"no vitest or jest: {len(tests)} test files run with plain node (e.g. {', '.join(tests[:3])})"]
+    installs = []
+    for f in sorted(root.glob("**/package.json")):
+        rel = f.parent.relative_to(root).as_posix()
+        if _skipped(f.relative_to(root).as_posix()):
+            continue
+        d = _json(f)
+        if any(d.get(k) for k in ("dependencies", "devDependencies", "optionalDependencies")):
+            installs.append((rel, (f.parent / "package-lock.json").exists()))
+    ev.append("installs: " + (", ".join(f"{d} ({'npm ci' if lock else 'npm install'})" for d, lock in installs)
+                              or "nothing (no folder has dependencies)"))
+    code_dirs = sorted({Path(f.relative_to(root)).parts[0] for pat in CODE for f in root.glob(f"*/**/{pat}")
+                        if not _skipped(f.relative_to(root).as_posix()) and Path(f.relative_to(root)).parts[0] not in NOT_SOURCE
+                        and not re.search(r"\.(test|spec)\.", f.name)})
+    ev.append("source: " + (", ".join(code_dirs) or "the whole repo"))
+    style = "tests" if sum(bool({"tests", "test", "__tests__"} & set(Path(t).parts)) for t in tests) * 2 >= len(tests) else "beside"
+    suffix = max((sfx for sfx in (".test.mjs", ".test.js", ".test.cjs", ".spec.mjs", ".spec.js")),
+                 key=lambda sfx: sum(t.endswith(sfx) for t in tests))
+    major, why = _node_major(pkg, root)
+    ev.append(f"Node {major} ({why})")
+    return {"language": "javascript", "manager": "npm", "runner": "node", "packages": ["."], "package_globs": (".",),
+            "source_globs": tuple(f"{d}/**" for d in code_dirs) or ("**",), "test_style": style, "test_suffix": suffix,
+            "node": major, "lock": False, "root_build": False, "package_manager_field": "", "installs": installs,
+            "test_files": tests, "evidence": ev}
+
+
 def detect_js(root: Path) -> dict | None:
     if not (root / "package.json").exists():
-        return None
+        return detect_node_scripts(root, {})
     pkg, ev = _json(root / "package.json"), []
     manager = "pnpm" if (root / "pnpm-lock.yaml").exists() else "yarn" if (root / "yarn.lock").exists() else "npm"
     lock = {"pnpm": "pnpm-lock.yaml", "yarn": "yarn.lock", "npm": "package-lock.json"}[manager]
@@ -126,6 +168,10 @@ def detect_js(root: Path) -> dict | None:
         d = _json(root / p / "package.json")
         for k in ("dependencies", "devDependencies"):
             deps.update(d.get(k) or {})
+    if "vitest" not in deps and "jest" not in deps:
+        node = detect_node_scripts(root, pkg)
+        if node:
+            return node
     runner = "vitest" if "vitest" in deps else "jest" if "jest" in deps else "vitest"
     ev.append(f"test runner {runner}" + ("" if runner in deps else " (not in the dependencies; assumed)"))
     ts = (root / "tsconfig.json").exists() or any((root / p / "tsconfig.json").exists() for p in packages[:50])
@@ -224,6 +270,12 @@ def draft(repo: str, facts: dict, commit: str, branch: str) -> RepoProfile:
         env = "export CI=1 NO_COLOR=1 POETRY_VIRTUALENVS_IN_PROJECT=true && "
         return RepoProfile(repo, "python", f"python:{facts['python']}-slim", install_cmd=install,
                            test_cmd="cd {package_dir} && " + PY_TEST[m], env=env, **common)
+    if facts["runner"] == "node":
+        install = "; ".join(f"(cd {d} && {'npm ci' if lock else 'npm install'}) || echo {d} >> /etc/da-install-failures"
+                            for d, lock in facts["installs"])
+        test = 'cd {package_dir} || exit 1; rc=0; for f in {test_path}; do echo "## $f"; node "$f" || rc=1; done; exit $rc'
+        return RepoProfile(repo, "javascript", f"node:{facts['node']}-slim", install_cmd=(install + "; true") if install else "true",
+                           test_cmd=test, env=JS_ENV["npm"], test_glob=" ".join(facts["test_files"]), **common)
     berry = bool(re.match(r"yarn@[2-9]", facts["package_manager_field"]))
     install = {"pnpm": "pnpm install --frozen-lockfile --store-dir /work/.pnpm-store",
                "yarn": "yarn install --immutable" if berry else "yarn install --frozen-lockfile",
@@ -341,7 +393,7 @@ def connect(repo: str, coll=None, repos=None, build=None, prove=None, workdir: P
         pr.step("prove", "running")
         baseline = (prove or prove_tests)(p, root, facts["packages"], pr.log)
         passed = [d for d, r in baseline if r == "pass"]
-        detail = f"{len(passed)} of {len(baseline)} packages' tests pass with the network off: " + \
+        detail = f"{len(passed)} of {len(baseline)} test suites pass with the network off: " + \
             ", ".join(f"{d} {r}" for d, r in baseline)
         if not passed:
             pr.step("prove", "failed", detail)
@@ -350,6 +402,8 @@ def connect(repo: str, coll=None, repos=None, build=None, prove=None, workdir: P
 
         step = "save"
         p = replace(p, baseline=tuple(baseline), connected_at=now())
+        if p.runner == "node":  # a fix must keep green what was green: the files that passed here
+            p = replace(p, test_glob=" ".join(passed))
         if repos is None:
             from .store import db
             repos = db()["repos"]
@@ -372,14 +426,21 @@ def build_template(p: RepoProfile, recipe: Path, log) -> None:
 
 
 def prove_tests(p: RepoProfile, root: Path, packages: list[str], log) -> list[tuple[str, str]]:
-    """The packages with the most test files (up to PROVE_PACKAGES), each suite once, network off, in the template."""
+    """The packages with the most test files (up to PROVE_PACKAGES), each suite once, network off, in the template.
+    Plain Node: each test file on its own (up to PROVE_FILES), since one file needing the network would sink the rest."""
+    from . import lang as langs
     from .sandbox_e2b import close, run
-    pats = ["test_*.py", "*_test.py"] if p.language == "python" else ["*.test.*", "*.spec.*"]
-    counts = {d: len(_test_files(root, d, pats, 200)) for d in packages}
+    lang = langs.of(p)
+    if p.runner == "node":
+        runs = [(f, lang.test_command(".", f)) for f in p.test_glob.split()[:PROVE_FILES]]
+    else:
+        pats = ["test_*.py", "*_test.py"] if p.language == "python" else ["*.test.*", "*.spec.*"]
+        counts = {d: len(_test_files(root, d, pats, 200)) for d in packages}
+        runs = [(d, lang.test_command(d)) for d in sorted((d for d in packages if counts[d]), key=lambda d: -counts[d])[:PROVE_PACKAGES]]
     out = []
-    for d in sorted((d for d in packages if counts[d]), key=lambda d: -counts[d])[:PROVE_PACKAGES]:
+    for d, cmd in runs:
         t0 = time.monotonic()
-        r = run(p.env + p.test_cmd.format(package_dir=d, package=Path(d).name, test_path=""), root, timeout=PROVE_TIMEOUT_S)
+        r = run(cmd, root, timeout=PROVE_TIMEOUT_S)
         verdict = "pass" if r.returncode == 0 else "fail"
         tail = ((r.stdout or "") + (r.stderr or "")).strip().splitlines()[-1:] or [""]
         out.append((d, verdict))

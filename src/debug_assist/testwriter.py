@@ -281,7 +281,31 @@ def assertion_text(output: str) -> list[str]:
                 block.append(line)
         found.append("\n".join(block))
     found += [l for l in clean.splitlines() if l.startswith("E   ")]  # pytest's assertion explanation lines
+    found += _tap_errors(clean)
     return found
+
+
+def _tap_errors(clean: str) -> list[str]:
+    """node:test's TAP: the message and the "+" (actual) lines sit indented under `error: |-` (blank lines inside), the
+    value under `actual:`."""
+    lines, out = clean.splitlines(), []
+    for i, line in enumerate(lines):
+        m = re.match(r"^(\s*)(error|actual):(.*)$", line)
+        if not m or not re.match(r"^\s+\w", line):
+            continue
+        indent, body = len(m.group(1)), []
+        if m.group(3).strip() and m.group(3).strip() not in ("|-", "|", ">-", ">"):
+            body.append(m.group(3).strip())
+        for nxt in lines[i + 1:]:
+            if nxt.strip() and len(nxt) - len(nxt.lstrip()) <= indent:
+                break
+            body.append(nxt.strip())
+        body = [b for b in body if b]
+        if m.group(2) == "error":
+            out.append("\n".join(body[:1] + [b for b in body[1:] if b.startswith("+") and not b.startswith("+ actual")]))
+        else:
+            out.append("actual: " + " ".join(body))
+    return out
 
 
 def validate(content: str, rung: ladder.Rung, lang: langs.Lang | None = None) -> None:

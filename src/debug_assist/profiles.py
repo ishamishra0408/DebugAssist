@@ -39,6 +39,7 @@ class RepoProfile:
     connected_at: str = ""
     baseline: tuple = ()             # (package dir, "pass" | "fail") for each suite run at connection, network off
     notes: tuple = ()                # what the connection found and why it chose each setting
+    test_glob: str = ""              # plain-Node repos (runner "node"): the test files that make up the suite
 
 
 # vercel/ai, proven 2026-10-06 at e7f55a4 in NODE_IMAGE: install 55 s, build 63 s, then provider-utils 1,064, gateway 645
