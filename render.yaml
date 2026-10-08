@@ -15,7 +15,9 @@ services:
       uv run debug-assist serve --host=0.0.0.0 --port=$PORT
     healthCheckPath: /health
     envVars:
-      - key: UV_PYTHON              # .python-version pins the Mac's build; Linux takes any 3.12
+      - key: PYTHON_VERSION         # Render reads this before .python-version, which pins the Mac's Apple-chip build
+        value: "3.12.7"
+      - key: UV_PYTHON              # and uv likewise: any 3.12 here
         value: "3.12"
       - key: SANDBOX_BACKEND
         value: e2b
