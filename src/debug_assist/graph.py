@@ -240,9 +240,14 @@ def _existing_tests(s: RunState, checkout: Path, ctx, prof) -> dict:
     out = (r.stdout or "") + (r.stderr or "")
     blocks = lang.failure_blocks(out)
     for_issue = [h[:200] for h, b in blocks.items() if testwriter.right_reason(focus, b)]
+    # none of the package's own tests could even load (#22085 run, 2026-10-08: @ai-sdk/workflow was not installed on the
+    # test machine, every file failed on a missing config, and 4 tries were then spent on tests that could never run)
+    cannot = (r.returncode not in (0, 124, 125) and not testwriter.counts(out).get("passed")
+              and ladder.classify(prof.language, r.returncode, out)[0] == ladder.ERROR)
     status = ("FOUND" if for_issue else "NONE FAIL" if r.returncode == 0 else
-              "NOT CHECKED" if r.returncode in (124, 125) else "OTHER FAILURES")
+              "NOT CHECKED" if r.returncode in (124, 125) else "CANNOT RUN" if cannot else "OTHER FAILURES")
     res = {"status": status, "package": pkg, "exit": r.returncode, **testwriter.counts(out), "for_issue": for_issue[:5],
+           **({"why": ladder.classify(prof.language, r.returncode, out)[1][:300]} if cannot else {}),
            "other_failures": [h[:200] for h in blocks if h[:200] not in for_issue][:5],
            "proof": str(testwriter.write_proof(run_dir(s) / "proof", f"{pkg} (the repo's own tests)", None, cmd,
                                                r.returncode, out, status, "", prof, checkout, name="existing-tests"))}
@@ -276,6 +281,9 @@ def _after_fix(s: RunState, prof, checkout: Path, paths: list) -> list[dict]:
             if put_back:
                 dest.unlink(missing_ok=True)
     return out
+
+
+TEST_MACHINE_NOT_READY = "TEST MACHINE NOT READY"
 
 
 def _record_attempt(s: RunState, a: ladder.Attempt) -> ladder.Attempt:
@@ -321,6 +329,13 @@ def reproduce(s: RunState):
         skipped["integration"] = f"no recorded data beside {Path(ctx.source).parent.as_posix()}"
     plan = {"rungs": [r.name for r in rungs], "skipped": skipped, "cap": REPRO_ATTEMPT_CAP}
     existing = _existing_tests(s, checkout, ctx, profiles.get(s["profile"]["repo"]))
+    if existing.get("status") == "CANNOT RUN":  # a test written here could never run: stop before any AI is spent
+        why = f"the test machine cannot run the tests of {existing.get('package')}: {existing.get('why', '')}"
+        return {"repro": {"status": "NOT RUN", "ladder_plan": plan, "existing_tests": existing, "attempts_used": 0,
+                          "failing_test": None, "oracle_test": None, "located": ctx.source, "checkout": str(checkout),
+                          "sandbox_secrets_visible": seen},
+                "outcome": stop(TEST_MACHINE_NOT_READY, f"{why}; no test was written"),
+                "log": [f"reproduce: STOPPED {TEST_MACHINE_NOT_READY}: {why}"]}
     before = [{k: v for k, v in e.items() if k in ladder.Attempt.__dataclass_fields__}
               for e in events.for_run(s["run_id"]) if e["kind"] == "attempt" and e["step"] == "reproduce"]
     result = ladder.climb(rungs, lambda r, n, h: _record_attempt(s, _write_and_run_test(s, r, n, h, ctx, checkout)),

@@ -71,7 +71,10 @@ PROFILES = {
                          # these 9 depend on it directly. Dependents still not installed are listed on every fix.
                          "@ai-sdk/baseten", "@ai-sdk/cerebras", "@ai-sdk/deepinfra", "@ai-sdk/fireworks",
                          "@ai-sdk/gmicloud", "@ai-sdk/google-vertex", "@ai-sdk/huggingface", "@ai-sdk/togetherai",
-                         "@ai-sdk/zai")),  # e.g. packages/openai-compatible/src/chat/__fixtures__/*.chunks.txt (by-hand run, rung 2)
+                         "@ai-sdk/zai",
+                         # 2026-10-08, run of #22085: the issue was in @ai-sdk/workflow, which was not installed, so
+                         # no test in it could load (missing @vercel/ai-tsconfig) and 4 tries were spent for nothing
+                         "@ai-sdk/workflow")),  # e.g. packages/openai-compatible/src/chat/__fixtures__/*.chunks.txt (by-hand run, rung 2)
     ),
     "langchain-ai/langchain": RepoProfile(
         "langchain-ai/langchain", "python", PYTHON_IMAGE,

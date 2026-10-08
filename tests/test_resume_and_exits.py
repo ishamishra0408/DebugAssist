@@ -308,3 +308,28 @@ def test_the_pr_is_written_the_way_github_prs_are(monkeypatch):
     assert "**Automation (end-to-end) test**: none added. It would need live provider keys" in body
     assert "still pass in packages/ai (4252 tests in packages/ai before the change)" in body
     assert body.rstrip().endswith(f"<!-- debugassist: change sha256 {fingerprint(patch)} -->")
+
+
+def test_a_package_whose_own_tests_cannot_load_stops_before_any_test_is_written(scratch_db, tmp_path, monkeypatch):
+    """#22085 run, 2026-10-08: @ai-sdk/workflow was not installed on the test machine; every test file failed on a
+    missing config, and 4 Opus tries were then spent on tests that could never run. Now it stops at once, for free."""
+    import subprocess
+    from debug_assist.profiles import PROFILES
+    out = (" FAIL  src/do-generate-step.test.ts [ src/do-generate-step.test.ts ]\n"
+           "Error: Cannot find module './node_modules/@vercel/ai-tsconfig/ts-library.json'\n"
+           " Test Files  30 failed (30)\n      Tests  no tests\n")
+    monkeypatch.setattr("debug_assist.sandbox.run_in_sandbox", lambda cmd, wd, **k: subprocess.CompletedProcess(cmd, 1, out, ""))
+    s = {"run_id": "ai-22085-x", "issue": {"title": "t"}, "focus": "keeps a `tool-call` without its result"}
+    monkeypatch.setattr(graph, "CFG", dataclasses.replace(graph.CFG, runs_dir=tmp_path))
+    ctx = SimpleNamespace(source="packages/workflow/src/model-call-iterator.ts", package_dir="packages/workflow")
+    with events.bind("ai-22085-x", "reproduce"):
+        got = graph._existing_tests(s, tmp_path, ctx, PROFILES["vercel/ai"])
+    assert got["status"] == "CANNOT RUN" and "Cannot find module" in got["why"]
+    s = _repro_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(graph, "_existing_tests", lambda *a: got)
+    wrote = []
+    monkeypatch.setattr(graph, "_write_and_run_test", lambda *a: wrote.append(a))
+    with events.bind("r1", "reproduce"):
+        res = graph.reproduce(s)
+    assert res["outcome"]["exit"] == "TEST MACHINE NOT READY" and not wrote and res["repro"]["attempts_used"] == 0
+    assert "packages/workflow" in res["outcome"]["why"] and graph._unless_stopped("find_cause")(res) == graph.END

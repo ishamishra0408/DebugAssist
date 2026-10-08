@@ -26,6 +26,8 @@ EXITS = {
     "NOT A DEFECT": "Stopped. This does not look like a bug.",
     "CONTEXT NOT FOUND": "Stopped. It could not find any code that matches the issue.",
     "NEVER REPRODUCED": "Stopped. It could not make the bug happen, so it did not try to fix it.",
+    "TEST MACHINE NOT READY": "Stopped. The test machine cannot run this part of the code's tests yet, so no test was "
+                              "written and nothing was spent on one.",
     "CAUSE NOT FOUND": "Stopped. It could not find the code that causes the bug.",
     "FIX NOT VALIDATED": "Stopped. None of its fixes passed the tests.",
     "TEST FLAWED": "Stopped. The test that shows the bug turned out to be wrong.",

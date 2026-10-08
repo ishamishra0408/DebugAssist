@@ -26,7 +26,7 @@ LOOPS = [("try", "context", "context", "Try again · up to 4 tries", "the test f
          ("refix", "cause", "cause", "Try again · up to 3 fixes", "the fix failed the tests"),
          ("round2", "fixed", "cause", "Write the fix again", "the second test failed")]
 EXIT_FROM = {"NEEDS PERSON": "issue", "NOT A DEFECT": "issue", "CONTEXT NOT FOUND": "triaged",
-             "NEVER REPRODUCED": "context", "CAUSE NOT FOUND": "shown", "FIX NOT VALIDATED": "cause",
+             "NEVER REPRODUCED": "context", "TEST MACHINE NOT READY": "context", "CAUSE NOT FOUND": "shown", "FIX NOT VALIDATED": "cause",
              "TEST FLAWED": "cause", "STORY NOT WRITTEN": "proven", "GUARD NOT WRITTEN": "why", "REJECTED": "wait"}
 
 # Three lanes that never share space (Isha 2026-10-08: the advisor tags and the retry labels drew over each other):
@@ -161,7 +161,7 @@ def this_run(d: dict) -> list:
     first_red = next((i for i, a in enumerate(tries) if a.get("outcome") == "RED"), None)
     for a in tries[:first_red if first_red is not None else len(tries)]:
         steps.append(["ce-try", "context", plain.happened({"kind": "attempt", **a}) + ". Trying again."])
-    if outcome.get("exit") == "NEVER REPRODUCED":
+    if outcome.get("exit") in ("NEVER REPRODUCED", "TEST MACHINE NOT READY"):
         stop("context"); return steps
     if (s.get("repro") or {}).get("status") != "REPRODUCED":
         return steps
