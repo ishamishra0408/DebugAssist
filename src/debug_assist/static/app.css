@@ -452,3 +452,16 @@ ul.log li { white-space: pre-wrap; word-break: break-word; }
 .adv-answer { border-radius: var(--r-inner); padding: 12px 14px; background: var(--surface-2); font-size: 14px; }
 .adv-answer b { display: block; margin-bottom: 4px; } .adv-answer p { margin: 0; color: var(--label-2); }
 .adv-answer.ok b { color: var(--green); } .adv-answer.bad b { color: var(--red); }
+
+/* an advisor's full answer: plain sections, each folded, the JSON last */
+.fa { display: grid; gap: 8px; }
+.fa details { background: var(--surface); border-radius: 14px; box-shadow: inset 0 0 0 1px var(--hair); padding: 12px 14px; }
+.fa summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+.fa p { margin: 8px 0 0; font-size: 14px; } .fa pre { margin-top: 8px; }
+.fa-list, .fa-plain { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 14px; }
+.fa-plain { padding-left: 18px; list-style: disc; }
+.fa-list li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; align-items: start; }
+.fa-list .ok { color: var(--green); } .fa-list .no { color: var(--red); }
+.fa-dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 8px 0 0; font-size: 14px; }
+.fa-dl dt { color: var(--label-2); } .fa-dl dd { margin: 0; overflow-wrap: anywhere; }
+.adv-answer details.fa-wrap { margin-top: 10px; } .adv-answer details.fa-wrap > summary { cursor: pointer; color: var(--blue); font-size: 13px; }

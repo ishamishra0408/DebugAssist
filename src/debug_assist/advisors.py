@@ -82,6 +82,14 @@ class AdvisorError(RuntimeError):
     pass
 
 
+class Answer(str):
+    """The plain-sentence summary, carrying the server's whole answer (.raw) so the page can show it in full."""
+    raw: dict = {}
+
+
+RAW_MAX = 16000   # characters of the server's answer kept with a run (its answers are a few KB)
+
+
 def status() -> tuple[str, str]:
     """(OFF | BLOCKED | ON, why) from the two settings."""
     if not CFG.advisors_mcp:
@@ -104,7 +112,9 @@ def review(state: dict, step: str, evidence: str, question: str = "", context: d
         try:
             extra = {k: v for k, v in (("context", context), ("numbers", numbers)) if v}
             answer = _call(r["seat"], question or r["question"], evidence, **extra)
-            rec.update(status="ANSWERED", answer=answer[:4000])
+            rec.update(status="ANSWERED", answer=str(answer)[:4000])
+            if getattr(answer, "raw", None):
+                rec["raw"] = answer.raw
         except Exception as ex:  # an advisor that can't be reached costs the advice, never the run
             rec.update(status="FAILED", why=f"{type(ex).__name__}: {str(ex)[:200]}")
         if rec["status"] == "ANSWERED":
@@ -115,7 +125,7 @@ def review(state: dict, step: str, evidence: str, question: str = "", context: d
                 rec["receipt"] = "not written: no advisor bundle on this host"
     else:
         rec["why"] = why
-    events.log("advisor", key=f"{step}:{r['seat']}", **{k: v for k, v in rec.items() if k != "answer"},
+    events.log("advisor", key=f"{step}:{r['seat']}", **{k: v for k, v in rec.items() if k not in ("answer", "raw")},
                answered=rec.get("answer", "")[:300])
     return rec
 
@@ -293,7 +303,10 @@ def summarize(seat: str, result: dict) -> str:
         lines.append(f"Verdict: {state or 'none'}.")
     if result.get("judgment_id"):
         lines.append(f"Reference {result['judgment_id']}.")
-    return " ".join(lines)[:4000]
+    out = Answer(" ".join(lines)[:4000])
+    out.raw = result if len(json.dumps(result, default=str)) <= RAW_MAX else {"note": "answer too long to keep",
+                                                                                 "verdict": result.get("verdict")}
+    return out
 
 
 def receipt(seat: str, question: str, answer: str) -> None:

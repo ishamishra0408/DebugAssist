@@ -221,3 +221,27 @@ def test_a_proof_button_added_by_a_live_update_has_a_sheet_to_open():
     st = {**_data()["state"], "repro": {"status": "RUNNING"}, "attempts": []}
     before = viewer.render(_data(state=st, interrupt={}, next=["reproduce"]), mode="live")
     assert '<div id="proof" popover' in before and 'data-k="proof"' in before and "Not shown yet." in before
+
+
+def test_an_advisors_full_answer_opens_from_its_row_in_plain_sections():
+    """Isha 2026-10-08: show what the advisor's answer gave in full, in a collapsible dialog."""
+    raw = {"seat": "allspaw-debugassist", "judgment_id": "judg_1", "verdict": "READY_FOR_JUDGMENT",
+           "machine_result": {"state": "READY_FOR_JUDGMENT", "blame_sentences": ["<b>The reviewer should have caught it.</b>"],
+                              "checks": [{"id": "blame_scan", "passed": False, "detail": "1 sentence blames a person"},
+                                         {"id": "required_fields", "passed": True, "detail": "present"}],
+                              "rules": ["no blame language: condition is a property of system, never a person"]},
+           "falsifiable_test": {"statement": "The guard prevents the incident class.", "resolve_rule": "PASS if no recurrence in 30 days",
+                                "state": "delivered", "test_id": "test_1"},
+           "calibration": {"judgments": 3, "resolved": 0, "passed": 0, "failed": 0, "pass_rate_note": "n=3 < 30"}}
+    st = {**_data()["state"], "advisors": {"why_it_shipped": {"status": "ANSWERED", "seat": "allspaw",
+                                                               "answer": "Blame check: 1 sentence…", "raw": raw}}}
+    page = viewer.render(_data(state=st), mode="live")
+    assert 'popovertarget="advfull-why_it_shipped"' in page and '<div id="advfull-why_it_shipped" popover' in page
+    sheet = page.split('id="advfull-why_it_shipped"')[1]
+    for part in ("Verdict", "Checks it ran", "What it found", "Rules it applies", "How this answer will be tested",
+                 "Its record so far", "Everything it sent (JSON)", "blame scan", "3 answers, 0 checked"):
+        assert part in sheet, part
+    assert "<b>The reviewer" not in sheet and "&lt;b&gt;The reviewer" in sheet          # the server's text is escaped
+    assert sheet.count("<details") >= 7                                                 # each section folds
+    no_raw = {**st, "advisors": {"why_it_shipped": {"status": "ANSWERED", "answer": "x"}}}
+    assert "Full answer" not in viewer.render(_data(state=no_raw), mode="live")         # older answers: no button

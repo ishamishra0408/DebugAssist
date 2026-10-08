@@ -575,7 +575,12 @@ document.addEventListener("click", async ev => {{
     const fields = {{}}; box.querySelectorAll("input[name], textarea[name]").forEach(x => {{ fields[x.name] = x.value; }});
     const r = await fetch("/api/advisors-ask", {{ method: "POST", headers: H, body: JSON.stringify({{ seat: box.dataset.seat, fields }}) }});
     const j = await r.json();
-    if (r.ok) {{ show(true, box.dataset.seat + " said", j.said); say("answered"); }}
+    if (r.ok) {{
+      show(true, box.dataset.seat + " said", j.said); say("answered");
+      if (j.full) {{ const d = document.createElement("details"); d.className = "fa-wrap";   // built and escaped by the server
+        const sm = document.createElement("summary"); sm.textContent = "Full answer"; d.appendChild(sm);
+        const body = document.createElement("div"); body.innerHTML = j.full; d.appendChild(body); out.appendChild(d); }}
+    }}
     else {{ show(false, "Not asked", j.error || "Something went wrong."); say("failed"); }}
   }} catch (ex) {{ show(false, "Not asked", "Could not reach {plain.NAME}."); say("failed"); }}
   finally {{ b.disabled = false; }}
@@ -905,7 +910,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise Refused(str(ex).capitalize() + ".")
                 except (AdvisorError, OSError) as ex:
                     return self._json(502, {"error": f"The advisor did not answer: {ex}"[:300]})
-                return self._json(200, {"said": said})
+                raw = getattr(said, "raw", None)
+                return self._json(200, {"said": str(said), **({"full": viewer.full_answer(raw)} if raw else {})})
             if path == "/api/connect":
                 repo = start_connect(str(body.get("url", "")), again=bool(body.get("again")))
                 return self._json(200, {"repo": repo, "page": f"/connect?repo={repo}"})

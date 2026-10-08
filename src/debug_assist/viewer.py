@@ -689,10 +689,57 @@ def _proof(s: dict, rid: str) -> str:
             'files added. A test that fails for a different reason does not count as showing the bug.</p></div>')
 
 
+def full_answer(raw: dict) -> str:
+    """The advisors' server's whole answer, in plain sections, each folded; the JSON itself last."""
+    mr = raw.get("machine_result") or {}
+    tick = lambda ok: f'<span class="ok">{icons.check(14)}</span>' if ok else f'<span class="no">{icons.cross(14)}</span>'  # noqa: E731
+    parts = [("Verdict", f'<p><b>{e(raw.get("verdict") or mr.get("state") or "none")}</b>'
+                         + (f' · {e(mr.get("reason"))}' if mr.get("reason") else "")
+                         + (f'<br>Needs: {e(", ".join(mr.get("needs") or []))}' if mr.get("needs") else "") + "</p>")]
+    checks = mr.get("checks") or []
+    if checks:
+        parts.append(("Checks it ran", '<ul class="fa-list">' + "".join(
+            f'<li>{tick(c.get("passed"))}<span><b>{e(str(c.get("id", "")).replace("_", " "))}</b> {e(c.get("detail", ""))}</span></li>'
+            for c in checks) + "</ul>"))
+    found = []
+    if mr.get("blame_sentences") is not None:
+        found.append(("Sentences read as blame", ", ".join(f'"{x}"' for x in mr["blame_sentences"]) or "none"))
+    if mr.get("guard_kind"):
+        m = mr.get("guard_patterns_matched") or {}
+        found.append(("Guard kind", f'{mr["guard_kind"]} (condition phrases: {", ".join(m.get("condition") or []) or "none"}; '
+                                    f'instruction phrases: {", ".join(m.get("instruction") or []) or "none"})'))
+    for c in mr.get("candidates") or []:
+        found.append(("Suspect kept", f'{c.get("path")}' + (f' lines {c["lines"]}' if c.get("lines") else "")
+                                      + f' · confidence {c.get("confidence")} · {c.get("reason", "")}'))
+    if mr.get("question"):
+        found.append(("Missing fact to ask", f'{mr["question"]}' + (f' ({mr["answerer"]})' if mr.get("answerer") else "")))
+    for k in ("is_defect", "confidence"):
+        if k in mr:
+            found.append(({"is_defect": "Likelihood of a defect", "confidence": "How sure"}[k], str(mr[k])))
+    if found:
+        parts.append(("What it found", "<dl class=\"fa-dl\">" + "".join(f"<dt>{e(a)}</dt><dd>{e(b)}</dd>" for a, b in found) + "</dl>"))
+    if mr.get("rules"):
+        parts.append(("Rules it applies", '<ul class="fa-plain">' + "".join(f"<li>{e(x)}</li>" for x in mr["rules"]) + "</ul>"))
+    ft = raw.get("falsifiable_test") or {}
+    if ft:
+        parts.append(("How this answer will be tested", f'<p>{e(ft.get("statement", ""))}</p><p class="foot">{e(ft.get("resolve_rule", ""))}'
+                                                        f' · now: {e(ft.get("state", ""))} · test {e(ft.get("test_id", ""))}</p>'))
+    cal = raw.get("calibration") or {}
+    if cal:
+        parts.append(("Its record so far", f'<p>{e(cal.get("judgments", 0))} answers, {e(cal.get("resolved", 0))} checked against what '
+                                           f'happened ({e(cal.get("passed", 0))} right, {e(cal.get("failed", 0))} wrong). '
+                                           f'{e(cal.get("pass_rate_note") or "")}</p>'))
+    parts.append(("Everything it sent (JSON)", f'<pre class="out">{e(json.dumps(raw, indent=1, default=str)[:16000])}</pre>'))
+    ref = raw.get("judgment_id")
+    return ('<div class="fa">' + (f'<p class="foot">Reference {e(ref)} · seat {e(raw.get("seat", ""))}</p>' if ref else "")
+            + "".join(f'<details{" open" if i < 2 else ""}><summary>{e(t)}</summary>{body}</details>' for i, (t, body) in enumerate(parts))
+            + "</div>")
+
+
 def _advisors(s: dict) -> str:
     """Where an advisor seat reviews a step's output, and what happened: plain words, advice only."""
     from .advisors import REVIEWS, status
-    now, done, rows = status()[0], s.get("advisors") or {}, []
+    now, done, rows, sheets = status()[0], s.get("advisors") or {}, [], []
     said = {"OFF": "Not asked: advisors are off (not connected yet)",
             "BLOCKED": "Not asked: the advisors' server has not been reviewed yet",
             "ON": "Will be asked when this step finishes", "FAILED": "Could not be reached; the run went on without it"}
@@ -701,9 +748,17 @@ def _advisors(s: dict) -> str:
         st = rec.get("status", now)
         sub = (f"Said: {rec.get('answer', '')[:240]}" if st == "ANSWERED" else said.get(st, "Not asked"))
         ic = icons.check() if st == "ANSWERED" else icons.pause() if st in ("OFF", "BLOCKED") else icons.cross() if st == "FAILED" else icons.list_(18)
+        raw, pid = rec.get("raw"), f"advfull-{step}"
+        btn = (f'<button type="button" class="tbtn proof-btn" popovertarget="{pid}">{icons.list_(14)}<span>Full answer</span></button>'
+               if raw else "")
         rows.append(f'<li class="row {"done" if st == "ANSWERED" else "pending"}"><span class="ic">{ic}</span><span class="t">'
-                    f'<b>{e(r["seat"])} reviews {e(r["what"])}</b><span>{e(sub)}</span></span></li>')
-    return (f'<section class="group"><h2>Advisors</h2><div class="sect"><ul class="rows">{"".join(rows)}</ul></div>'
+                    f'<b>{e(r["seat"])} reviews {e(r["what"])}</b><span>{e(sub)}</span></span><span class="tr">{btn}</span></li>')
+        if raw:
+            sheets.append(f'<div id="{pid}" popover class="pop sheet glass" aria-label="{e(r["seat"])}: full answer">'
+                          f'<div class="pop-head"><b>{e(r["seat"])}: full answer</b><button type="button" class="tbtn" '
+                          f'popovertarget="{pid}" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>'
+                          f'{full_answer(raw)}</div>')
+    return (f'<section class="group"><h2>Advisors</h2><div class="sect"><ul class="rows">{"".join(rows)}</ul></div>{"".join(sheets)}'
             '<p class="foot">Advice only. An advisor never changes the fix, the pull request text or your OK. They are '
             'switched on after the advisors\' server has been reviewed: <a href="/connect#advisors">how to connect them</a>.</p></section>')
 

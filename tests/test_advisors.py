@@ -95,7 +95,7 @@ def fake_server(monkeypatch, tmp_path):
 def test_both_review_points_ask_the_server_and_say_what_it_found_in_plain_words(fake_server, tmp_path):
     rec = advisors.review({}, "why_it_shipped", "C1 — no test cut a stream. The reviewer should have caught it.",
                           question="The fix: flush emits only finished tool calls")
-    assert rec["status"] == "ANSWERED" and rec["receipt"] == "written"
+    assert rec["status"] == "ANSWERED" and rec["receipt"] == "written" and rec["raw"]["judgment_id"] == "judg_d0b404bac15e"
     assert rec["answer"] == ('Blame check: 1 sentence read as blaming a person: "The reviewer should have caught it." '
                              "Reference judg_d0b404bac15e.")
     call = fake_server[0]
