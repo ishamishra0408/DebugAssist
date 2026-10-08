@@ -7,10 +7,11 @@
    Reduce Motion: one still frame, no tilt, no stagger. Hidden or off-screen: the loop stops. */
 (() => {
   const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const PALETTES = {           // a, b: the two inks; motif 0 = flowing strands, 1 = rings around a lens
-    ember: { a: [1.0, 0.58, 0.24], b: [1.0, 0.36, 0.42], motif: 1 },     // allspaw: incident review
-    moss:  { a: [0.30, 0.86, 0.52], b: [0.62, 0.98, 0.80], motif: 0 },   // qe-ic-advisor: quality gate
-    tide:  { a: [0.30, 0.62, 1.0], b: [0.62, 0.86, 1.0], motif: 0 },
+  const PALETTES = {           // a, b: the two inks; motif 0 = flowing strands … 1 = rings around a lens
+    tide:   { a: [0.30, 0.62, 1.0], b: [0.62, 0.86, 1.0], motif: 0 },    // defect-triage: currents to sort
+    violet: { a: [0.64, 0.46, 1.0], b: [0.92, 0.62, 1.0], motif: 1 },    // cause-locator: rings closing on a point
+    ember:  { a: [1.0, 0.58, 0.24], b: [1.0, 0.36, 0.42], motif: 0.6 },  // allspaw: incident review
+    moss:   { a: [0.30, 0.86, 0.52], b: [0.62, 0.98, 0.80], motif: 0 },  // qe-ic-advisor: quality gate
   };
   const FRAG = `
 precision highp float;
@@ -74,7 +75,7 @@ void main(){
       gl.viewport(0, 0, canvas.width, canvas.height);
     };
     size(); new ResizeObserver(() => { size(); if (still) draw(s); }).observe(canvas);
-    const card = canvas.closest(".adv-card");
+    const card = canvas.closest(".adv-tile, .adv-card");
     card.addEventListener("pointermove", ev => {
       const r = canvas.getBoundingClientRect();
       s.ptr = [((ev.clientX - r.left) - r.width / 2) / r.height, (r.height / 2 - (ev.clientY - r.top)) / r.height];
@@ -124,7 +125,7 @@ void main(){
   });
 
   // entrance and tilt: GSAP when it is there (and motion is welcome), plain otherwise
-  const cards = [...document.querySelectorAll(".adv-card")];
+  const cards = [...document.querySelectorAll(".adv-tile, .adv-card")];
   if (still || !window.gsap) { scenes.forEach(s => { s.scan = 1.1; }); return; }
   gsap.from(cards, { y: 28, opacity: 0, duration: .9, ease: "power3.out", stagger: .14, clearProps: "transform,opacity" });
   scenes.forEach((s, i) => gsap.to(s, { scan: 1.1, duration: 1.4, ease: "power2.inOut", delay: .25 + i * .14 }));
@@ -133,7 +134,7 @@ void main(){
       if (ev.target.closest("input, textarea, button")) return;
       const r = card.getBoundingClientRect();
       const x = (ev.clientX - r.left) / r.width - .5, y = (ev.clientY - r.top) / r.height - .5;
-      gsap.to(card, { rotateY: x * 4, rotateX: -y * 3, duration: .5, ease: "power2.out", transformPerspective: 900 });
+      gsap.to(card, { rotateY: x * 6, rotateX: -y * 5, duration: .5, ease: "power2.out", transformPerspective: 700 });
     });
     card.addEventListener("pointerleave", () => gsap.to(card, { rotateY: 0, rotateX: 0, duration: .7, ease: "power3.out" }));
   });

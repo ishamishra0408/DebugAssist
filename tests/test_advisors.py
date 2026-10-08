@@ -43,6 +43,11 @@ def test_a_real_answer_is_logged_as_a_receipt_and_changes_nothing_else(monkeypat
 ALLSPAW = {"seat": "allspaw-debugassist", "judgment_id": "judg_d0b404bac15e", "verdict": "READY_FOR_JUDGMENT",
            "machine_result": {"verdict": "READY_FOR_JUDGMENT", "state": "READY_FOR_JUDGMENT", "seat": "allspaw",
                               "blame_sentences": ["The reviewer should have caught it."]}}
+TRIAGE = {"seat": "defect-triage", "judgment_id": "judg_t1", "verdict": "DEFECT",
+          "machine_result": {"verdict": "DEFECT", "state": "DEFECT", "is_defect": 0.9, "confidence": 0.9}}
+LOCATE = {"seat": "cause-locator", "judgment_id": "judg_l1", "verdict": "CANDIDATES",
+          "machine_result": {"verdict": "CANDIDATES", "state": "CANDIDATES",
+                             "candidates": [{"path": "packages/ai/src/tracker.ts", "lines": "40-60", "confidence": 0.5}]}}
 QEIC = {"seat": "qe-ic-debugassist", "judgment_id": "judg_45d6b5d8dee8", "verdict": "FAIL",
         "machine_result": {"verdict": "FAIL", "state": "FAIL", "check": "unstated", "guard_kind": "condition",
                            "guard_patterns_matched": {"condition": ["test fails"], "instruction": []}}}
@@ -67,8 +72,10 @@ def fake_server(monkeypatch, tmp_path):
             if body["method"] == "tools/list":
                 result = {"tools": [{"name": "advise"}, {"name": "allspaw_debugassist"}]}
             else:
-                alias = body["params"]["arguments"]["seat_alias"]
-                sc = ALLSPAW if alias == "allspaw" else QEIC
+                if body["params"]["name"] == "defect_triage":
+                    sc = TRIAGE
+                else:
+                    sc = {"allspaw": ALLSPAW, "cause-locator": LOCATE}.get(body["params"]["arguments"]["seat_alias"], QEIC)
                 result = {"content": [{"type": "text", "text": json.dumps(sc)}], "structuredContent": sc, "isError": False}
             data = f"event: message\ndata: {json.dumps({'jsonrpc': '2.0', 'id': 1, 'result': result})}\n\n".encode()
             self.send_response(200)
@@ -127,10 +134,31 @@ def test_the_chart_shows_each_seat_beside_the_step_it_reviews(monkeypatch, tmp_p
     svg = chart.svg(chart.advisor_states(None))
     assert 'id="ca-why"' in svg and "Advisor allspaw: off" in svg and "Advisor qe-ic-advisor: off" in svg
     done = chart.advisor_states({"state": {"advisors": {"why_it_shipped": {"status": "ANSWERED"}}}})
-    assert done == {"why_it_shipped": "ANSWERED", "lasting_guard": "OFF"}
+    assert done == {"read_issue": "OFF", "find_cause": "OFF", "why_it_shipped": "ANSWERED", "lasting_guard": "OFF"}
+    assert 'id="ca-triaged"' in svg and 'id="ca-cause"' in svg and "Advisor cause-locator: off" in svg
 
 
 def test_the_check_asks_both_review_points_once_and_says_it_is_a_test(fake_server):
     got = advisors.check_both()
-    assert [g[:2] for g in got] == [("allspaw", "ANSWERED"), ("qe-ic-advisor", "ANSWERED")]
-    assert {c["body"]["params"]["arguments"]["consumer"] for c in fake_server} == {"test"}   # not counted as a real run
+    assert [g[:2] for g in got] == [("defect-triage", "ANSWERED"), ("cause-locator", "ANSWERED"),
+                                    ("allspaw", "ANSWERED"), ("qe-ic-advisor", "ANSWERED")]
+    assert {c["body"]["params"]["arguments"].get("consumer") for c in fake_server
+            if c["body"]["params"]["name"] == "advise"} == {"test"}                          # not counted as a real run
+
+
+def test_triage_with_numbers_uses_its_own_rule_and_the_locator_reads_suspects(fake_server):
+    rec = advisors.review({}, "read_issue", "the issue body", question="the title", context={"repo_name": "vercel/ai"},
+                          numbers={"is_defect": 0.9, "confidence": 0.9})
+    call = fake_server[-1]["body"]["params"]
+    assert call["name"] == "defect_triage" and call["arguments"]["is_defect"] == 0.9 and call["arguments"]["repo"] == {"name": "vercel/ai"}
+    assert rec["answer"].startswith("Verdict: a real defect (likelihood 0.9, sure 0.9).")
+    rec = advisors.review({}, "find_cause", "what went wrong", question="Where is the cause?", context={
+        "repo_listing": ["packages/ai/src/tracker.ts"], "repro_output": "AssertionError", "candidates": []})
+    call = fake_server[-1]["body"]["params"]
+    assert call["name"] == "advise" and call["arguments"]["seat_alias"] == "cause-locator" and "repo_listing" in call["arguments"]["context"]
+    assert rec["answer"].startswith("Kept 1 suspect: packages/ai/src/tracker.ts lines 40-60 (confidence 0.5).")
+    assert advisors.summarize("defect-triage", {"machine_result": {"state": "NEEDS_PERSON", "question": "Which version?",
+                                                                   "answerer": "the reporter"}}).startswith(
+        "Verdict: a person decides. The missing fact to ask the reporter: Which version?")
+    assert advisors.summarize("cause-locator", {"machine_result": {"state": "CAUSE_NOT_FOUND", "code": "NO_LOCATING_CUE"}}) == \
+        "Not located: no failing output to locate from."

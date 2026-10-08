@@ -388,22 +388,50 @@ ul.log li { white-space: pre-wrap; word-break: break-word; }
 .page-head h3 { margin: 0; }
 
 /* advisors: one card per seat */
-.adv-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; }
-.adv-card { background: var(--surface); border-radius: var(--r-group); box-shadow: inset 0 0 0 1px var(--hair); min-width: 0;
-  overflow: hidden; transform-style: preserve-3d; will-change: transform; }
-/* the advisor's living scene, with its name set into it */
-.adv-banner { position: relative; height: 148px; isolation: isolate; }
-.adv-banner canvas.sigil { position: absolute; inset: 0; width: 100%; height: 100%; display: block; z-index: -1; }
-.adv-banner canvas.sigil.no-gl { background: radial-gradient(120% 90% at 70% 10%, color-mix(in srgb, var(--blue) 35%, transparent), transparent 70%); }
-.adv-banner .pill { position: absolute; top: 14px; right: 14px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
-.adv-id { position: absolute; left: 20px; bottom: 14px; display: grid; gap: 2px; }
-.adv-role { font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--label-2); }
-.adv-name { font-size: 30px; line-height: 1.05; font-weight: 700; letter-spacing: -.035em; color: var(--label); }
-.adv-body { padding: 4px 20px 18px; }
-.adv-motto { margin: 10px 0 14px; font-size: 19px; line-height: 1.3; letter-spacing: -.02em; font-weight: 500; color: var(--label); }
+/* advisors: where they sit (a step track), a rail of four living tiles, one panel for the one picked */
+.adv-cards { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.adv-track { list-style: none; margin: 4px 0 2px; padding: 0 6px; display: grid; grid-template-columns: repeat(10, minmax(0, 1fr));
+  position: relative; }
+.adv-track::before { content: ""; position: absolute; left: 5%; right: 5%; top: 11px; height: 2px; border-radius: 2px; background: var(--hair); }
+.adv-track li { position: relative; display: grid; justify-items: center; gap: 4px; text-align: center; min-width: 0; }
+.adv-track .tick { width: 8px; height: 8px; margin: 7px 0; border-radius: 50%; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--hair); }
+.adv-track .mark { width: 22px; height: 22px; border-radius: 50%; border: 0; cursor: pointer; padding: 0;
+  background: var(--pal); box-shadow: 0 0 0 4px var(--bg), 0 0 18px -2px var(--pal); transition: transform .25s ease; }
+.adv-track .mark.on { transform: scale(1.18); box-shadow: 0 0 0 4px var(--bg), 0 0 0 6px var(--pal), 0 0 22px var(--pal); }
+.adv-track .n { font-size: 11px; color: var(--label-3); font-variant-numeric: tabular-nums; }
+.adv-track .lab { font-size: 11px; color: var(--label-3); line-height: 1.2; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.adv-track .who { font-size: 11px; font-weight: 600; color: var(--label); }
+.adv-track .adv-at .lab { color: var(--label-2); }
+.adv-track li:not(.adv-at) .lab { visibility: hidden; }   /* only the four advisor steps are named */
+.pal-tide { --pal: #4f9dff; } .pal-violet { --pal: #a575ff; } .pal-ember { --pal: #ff8a3d; } .pal-moss { --pal: #4bd884; }
+.adv-rail { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; perspective: 900px; }
+.adv-tile { position: relative; isolation: isolate; overflow: hidden; height: 112px; border: 0; padding: 0; cursor: pointer; text-align: left;
+  border-radius: 18px; background: var(--surface); color: var(--label); box-shadow: inset 0 0 0 1px var(--hair);
+  transform-style: preserve-3d; transition: box-shadow .25s ease; font: inherit; }
+.adv-tile canvas.sigil { position: absolute; inset: 0; width: 100%; height: 100%; display: block; z-index: -1; opacity: .9; }
+.adv-tile canvas.sigil.no-gl { background: radial-gradient(120% 90% at 70% 10%, color-mix(in srgb, var(--blue) 35%, transparent), transparent 70%); }
+.adv-tile.on { box-shadow: inset 0 0 0 2px var(--label), 0 10px 30px -12px rgba(0, 0, 0, .6); }
+.adv-tile:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.adv-step { position: absolute; top: 10px; left: 12px; font-size: 11px; font-weight: 600; letter-spacing: .06em; color: var(--label-2); }
+.adv-dot { position: absolute; top: 12px; right: 12px; width: 8px; height: 8px; border-radius: 50%; background: #8e8e93; }
+.adv-dot.green { background: var(--green); box-shadow: 0 0 10px var(--green); } .adv-dot.amber { background: var(--orange); }
+.adv-tile-id { position: absolute; left: 12px; right: 12px; bottom: 10px; display: grid; gap: 1px; }
+.adv-tile-id b { font-size: 17px; letter-spacing: -.02em; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adv-role { font-size: 10px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--label-2); }
+.adv-panel { background: var(--surface); border-radius: var(--r-group); box-shadow: inset 0 0 0 1px var(--hair); padding: 18px 20px 20px; min-width: 0; }
+.adv-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.adv-motto { margin: 0 0 14px; font-size: 24px; line-height: 1.2; letter-spacing: -.03em; font-weight: 600; color: var(--label); }
 .adv-facts { display: grid; gap: 10px; margin: 0; font-size: 14px; }
-.adv-facts div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 12px; }
+.adv-facts div { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 12px; }
 .adv-facts dt { color: var(--label-2); } .adv-facts dd { margin: 0; color: var(--label); }
+.adv-useful { margin: 14px 0 0; font-size: 13px; color: var(--label-2); }
+.adv-ask h4 { margin: 0; font-size: 15px; }
+.adv-connect { margin-top: 6px; } .adv-connect > summary { cursor: pointer; margin: 6px 18px 8px; font-size: 14px; font-weight: 600; color: var(--label-2); }
+@media (max-width: 760px) {
+  .adv-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .adv-track .lab { display: none; }
+  .adv-motto { font-size: 20px; }
+}
 .sub-h { margin: 22px 18px 8px; font-size: 15px; font-weight: 600; color: var(--label-2); }
 .s-idle .dot, .dot.s-idle { background: #8e8e93; }
 .row.next .ic { background: color-mix(in srgb, var(--blue) 22%, transparent); color: var(--blue); }

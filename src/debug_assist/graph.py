@@ -21,6 +21,7 @@ ladder reads the attempts it already made from the event log.
 import functools
 import json
 import operator
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, TypedDict
@@ -155,6 +156,10 @@ def read_issue(s: RunState):
         out["outcome"] = stop(NOT_A_DEFECT, f"triage is confident this is not a bug (is_defect p={p:.2f})")
     if "outcome" in out:
         out["log"].append(f"read_issue: STOPPED {out['outcome']['exit']}: {out['outcome']['why']}")
+    # defect-triage's own rule over the same numbers (confidence = how far p sits from 0.5): advice only
+    out["advisors"] = {"read_issue": advisors.review(
+        s, "read_issue", issue.get("body") or "", question=issue["title"],
+        context={"repo_name": f"{issue['owner']}/{issue['repo']}"}, numbers={"is_defect": p, "confidence": max(p, 1 - p)})}
     return out
 
 
@@ -336,6 +341,33 @@ def reproduce(s: RunState):
     return out
 
 
+def _locator_review(s: RunState, checkout: Path, ctx, cause: dict | None) -> dict:
+    """cause-locator on the suspects: the cause found (if any) and the next files by the issue's strings, against the
+    files of their packages and the failing test's output. Confidence is a stated convention, not a measurement: the
+    cause found sits AT the bar (0.5: named, not yet proven by a fix); the others scale below it by match score."""
+    prof = profiles.get(s["profile"]["repo"])
+    lang = langs.of(prof)
+    ranking = [(p, sc) for p, sc in (ctx.ranking or [])]
+    top = max((sc for _, sc in ranking), default=1) or 1
+    cands = []
+    if cause:
+        cands.append({"path": cause["file"], "lines": f"{cause['lines'][0]}-{cause['lines'][1]}",
+                      "reason": (cause.get("why") or "")[:300], "confidence": 0.5})
+    for path, sc in ranking:
+        if len(cands) < 3 and path not in [c["path"] for c in cands]:
+            cands.append({"path": path, "reason": "contains the issue's own strings", "confidence": round(0.5 * sc / top, 2)})
+    pkgs = {lang.package_of(c["path"]) for c in cands}
+    listed = subprocess.run(["git", "-C", str(checkout), "ls-files", "--", *lang.pathspec()], capture_output=True,
+                            text=True, timeout=60).stdout.split()
+    listing = [f for f in listed if lang.package_of(f) in pkgs][:2000]
+    listing += [c["path"] for c in cands if c["path"] not in listing]
+    r = s["repro"]
+    return advisors.review(s, "find_cause", f"{s.get('focus') or s['issue']['title']}\n\n{(s['issue'].get('body') or '')[:1500]}",
+                           question="Where is the cause?", context={
+                               "repo_listing": listing, "repro_output": (r.get("oracle_evidence") or r.get("evidence") or "")[:6000],
+                               "candidates": cands})
+
+
 def find_cause(s: RunState):
     r = s["repro"]
     checkout = Path(r["checkout"])
@@ -345,9 +377,10 @@ def find_cause(s: RunState):
                                  r.get("oracle_evidence") or r.get("evidence") or "", profiles.get(s["profile"]["repo"]))
     except fixer.FixRefused as e:
         return {"cause": {"status": "NOT FOUND", "why": str(e)}, "outcome": stop("CAUSE NOT FOUND", str(e)),
+                "advisors": {"find_cause": _locator_review(s, checkout, ctx, None)},
                 "log": [f"find_cause: STOPPED CAUSE NOT FOUND: {e}"]}
     a, b = cause["lines"]
-    return {"cause": {"status": "FOUND", **cause},
+    return {"cause": {"status": "FOUND", **cause}, "advisors": {"find_cause": _locator_review(s, checkout, ctx, cause)},
             "log": [f"find_cause: {cause['file']}:{a}-{b}"
                     + (f" (looked up {', '.join(cause['looked_up'])})" if cause["looked_up"] else "")]}
 

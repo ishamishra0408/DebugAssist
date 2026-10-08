@@ -296,66 +296,75 @@ def test_with_the_database_off_pages_answer_at_once_and_say_so(tmp_path, monkeyp
 
 
 def test_the_connect_page_has_a_card_per_advisor_and_the_steps_to_connect_them(monkeypatch):
-    """Isha 2026-10-08: show the option to connect the advisors. One card per seat, and the four steps each ticked on
-    its own facts. The page never switches them on, and never claims more than is true."""
+    """Four advisors without the bloat (Isha 2026-10-08): a step track showing where each is asked, a rail of four
+    tiles, one panel for the one picked; the steps to connect them, each ticked on its own facts, folded once done."""
     import dataclasses
+    import re
     from debug_assist import advisors
     monkeypatch.setattr("debug_assist.profiles.ready", lambda: [])
     monkeypatch.setitem(server._connector, "repo", None)
     monkeypatch.delenv("ADVISORS_KEY", raising=False)
 
-    def cards(mcp="", reviewed=False, key=None):
+    def section(mcp="", reviewed=False, key=None):
         cfg = dataclasses.replace(advisors.CFG, advisors_mcp=mcp, advisors_reviewed=reviewed)
         monkeypatch.setattr(advisors, "CFG", cfg)
         monkeypatch.setattr("debug_assist.config.CFG", cfg)
         if key:
             monkeypatch.setenv("ADVISORS_KEY", key)
         return server.connect_page().split('id="advisors"')[1]
-    c = cards()
-    assert c.count('class="adv-card"') == len(advisors.REVIEWS) and "allspaw" in c and "qe-ic-advisor" in c
-    assert "Step 6 · Why it slipped" in c and "Step 7 · Guard similar bugs" in c
-    assert 'canvas class="sigil" data-seat="allspaw" data-palette="ember"' in c and 'data-palette="moss"' in c   # each its own scene
-    assert "Incident review" in c and "Conditions, not culprits." in c and "Quality gate" in c and "Ship or stop." in c
-    assert "Not connected." in c and c.count('class="row done"') == 1 and 'class="row next"' in c   # only the call is done
-    assert "ADVISORS_REVIEWED" in c and "<button" not in c and "<form" not in c                       # nothing to press
-    c = cards(mcp="https://advisors.example/mcp/")
-    assert "has not been marked reviewed" in c and "Waiting for review" in c and c.count('class="row done"') == 2
-    c = cards(mcp="https://advisors.example/mcp/", reviewed=True)
-    assert "no key is set, so the server will refuse" in c and "No key yet" in c and c.count('class="row done"') == 3
-    c = cards(mcp="https://advisors.example/mcp/", reviewed=True, key="k")
-    assert "Connected. Both review points ask" in c and c.count('class="row done"') == 4 and ">On<" in c
-    assert "k3y" not in c and "Set.</span>" in c                                                         # the key is never shown
+    c = section()
+    assert re.findall(r'class="adv-tile[^"]*"[^>]*data-seat="([^"]+)"', c) == ["defect-triage", "cause-locator", "allspaw", "qe-ic-advisor"]
+    marks = re.findall(r'<li class="adv-at"><button[^>]*data-seat="([^"]+)"[^>]*></button><span class="n">(\d+)</span>', c)
+    assert marks == [("defect-triage", "1"), ("cause-locator", "4"), ("allspaw", "6"), ("qe-ic-advisor", "7")]
+    assert c.count('role="tabpanel" data-seat=') == 4 and len(re.findall(r'role="tabpanel" data-seat="[^"]+" hidden', c)) == 3
+    assert "After step 1, Read the issue" in c and "After step 4, Find the cause" in c and "Where&#x27;s the cause?" in c
+    assert "Real defect or not?" in c and "Conditions, not culprits." in c and "Ship or stop." in c
+    assert all(f'data-palette="{p}"' in c for p in ("tide", "violet", "ember", "moss"))
+    assert "Not connected." in c and "1 of 4 done" in c and '<details class="adv-connect" open>' in c
+    assert "<form" not in c and 'class="adv-ask"' not in c                                   # off: nothing to ask
+    c = section(mcp="https://advisors.example/mcp/")
+    assert "has not been marked reviewed" in c and "Waiting for review" in c and "2 of 4 done" in c
+    c = section(mcp="https://advisors.example/mcp/", reviewed=True)
+    assert "no key is set, so the server will refuse" in c and "No key yet" in c and "3 of 4 done" in c
+    c = section(mcp="https://advisors.example/mcp/", reviewed=True, key="k")
+    assert "4 of 4 done" in c and '<details class="adv-connect">' in c and ">On<" in c       # folded away once done
+    assert "Set.</span>" in c and c.count('class="adv-ask"') == 4
 
 
 def test_each_advisor_can_be_asked_by_hand_with_empty_boxes_and_a_hint(live, monkeypatch):
-    """Isha 2026-10-08: no 'ask both' with a fixed question. Each card has its own two empty boxes (with a hint for
-    what to paste and the step after which the advisor is useful); the answer appears under that card."""
+    """Each advisor's panel has its own empty boxes (as that advisor reads them) and a hint of when it helps; the
+    answer appears under it. Asked by hand = consumer "operator"."""
     import dataclasses
     from debug_assist import advisors
     monkeypatch.setattr("debug_assist.profiles.ready", lambda: [])
     monkeypatch.setitem(server._connector, "repo", None)
-    assert 'class="adv-ask"' not in server.connect_page()                            # off: nothing to ask
-    code, out = _get(live, "/api/advisors-ask", "POST", _ok_headers(live), b'{"seat": "allspaw"}')
+    code, out = _get(live, "/api/advisors-ask", "POST", _ok_headers(live), b'{"seat": "allspaw", "fields": {}}')
     assert code == 400 and "not switched on" in json.loads(out)["error"]
     cfg = dataclasses.replace(advisors.CFG, advisors_mcp="https://advisors.example/mcp/", advisors_reviewed=True)
     monkeypatch.setattr(advisors, "CFG", cfg)
     monkeypatch.setattr("debug_assist.config.CFG", cfg)
     monkeypatch.setenv("ADVISORS_KEY", "k")
-    page = server.connect_page()
-    assert page.count('class="adv-ask"') == 2 and "Ask both" not in page
-    assert 'placeholder="Paste the report on why the bug slipped through' in page and "Most useful after step 6, Why it slipped" in page
-    assert "Most useful after step 7, Guard similar bugs" in page and 'value="' not in page.split('id="advisors"')[1]  # empty boxes
+    page = server.connect_page().split('id="advisors"')[1]
+    assert page.count('class="adv-ask"') == 4 and 'value="' not in page                           # empty boxes
+    assert 'name="repo"' in page and 'name="files"' in page and 'placeholder="Paste the stack trace or the failed assertion"' in page
     asked = []
-    monkeypatch.setattr(advisors, "_call", lambda seat, q, ev, consumer="debugassist": (asked.append((seat, q, ev, consumer)),
-                        "Blame check: no sentence blames a person.")[1])
-    body = json.dumps({"seat": "allspaw", "question": "The fix: x", "evidence": "The report."}).encode()
-    assert _get(live, "/api/advisors-ask", "POST", {"Content-Type": "application/json"}, body)[0] == 403  # not from the page
-    code, out = _get(live, "/api/advisors-ask", "POST", _ok_headers(live), body)
-    assert code == 200 and json.loads(out) == {"said": "Blame check: no sentence blames a person."}
-    assert asked == [("allspaw", "The fix: x", "The report.", "operator")]                     # marked as asked by hand
-    code, out = _get(live, "/api/advisors-ask", "POST", _ok_headers(live), json.dumps({"seat": "allspaw", "question": "", "evidence": "x"}).encode())
-    assert code == 400 and "fill in both boxes" in json.loads(out)["error"].lower()
-    code, out = _get(live, "/api/advisors-ask", "POST", _ok_headers(live), json.dumps({"seat": "nobody", "question": "q", "evidence": "e"}).encode())
+    monkeypatch.setattr(advisors, "_call", lambda seat, q, ev, consumer="debugassist", context=None, numbers=None: (
+        asked.append((seat, q, ev, consumer, context)), "said")[1])
+
+    def post(body):
+        return _get(live, "/api/advisors-ask", "POST", _ok_headers(live), json.dumps(body).encode())
+    assert _get(live, "/api/advisors-ask", "POST", {"Content-Type": "application/json"}, b"{}")[0] == 403   # not from the page
+    code, out = post({"seat": "allspaw", "fields": {"q": "The fix: x", "e": "The report."}})
+    assert code == 200 and json.loads(out) == {"said": "said"} and asked[-1] == ("allspaw", "The fix: x", "The report.", "operator", None)
+    code, out = post({"seat": "defect-triage", "fields": {"title": "T", "body": "B", "repo": "acme/x"}})
+    assert code == 200 and asked[-1] == ("defect-triage", "T", "B", "operator", {"repo_name": "acme/x"})
+    code, out = post({"seat": "cause-locator", "fields": {"desc": "D", "repro": "AssertionError", "files": "a.ts\nb.ts\n"}})
+    ctx = asked[-1][4]
+    assert code == 200 and ctx["repo_listing"] == ["a.ts", "b.ts"] and ctx["repro_output"] == "AssertionError"
+    assert [c["path"] for c in ctx["candidates"]] == ["a.ts", "b.ts"]
+    code, out = post({"seat": "defect-triage", "fields": {"title": "T", "body": "", "repo": ""}})
+    assert code == 400 and "fill in every box: issue text, repository" in json.loads(out)["error"].lower()
+    code, out = post({"seat": "nobody", "fields": {}})
     assert code == 400 and "no such advisor" in json.loads(out)["error"].lower()
 
 

@@ -41,7 +41,7 @@ def _e(t: str) -> str:
     return (t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
-ADVISED = {"why": "why_it_shipped", "guard": "lasting_guard"}   # chart state → the step whose output a seat reviews
+ADVISED = {"triaged": "read_issue", "cause": "find_cause", "why": "why_it_shipped", "guard": "lasting_guard"}  # chart state → reviewed step
 ADV_WORD = {"OFF": "off", "BLOCKED": "not reviewed yet", "ON": "on", "ANSWERED": "answered", "FAILED": "unreachable"}
 
 

@@ -438,23 +438,43 @@ def _advisor_cards() -> str:
             ("Waiting for review", "amber") if st == "BLOCKED" else ("Off", "grey"))
     def ask_box(seat: str) -> str:
         a = advisors.ASK[seat]
-        return (f'<div class="adv-ask" data-seat="{e(seat)}"><p class="hint">{e(a["useful"])}</p>'
-                f'<label><span>{e(a["q"])}</span><input type="text" name="q" placeholder="{e(a["q_hint"])}" autocomplete="off"></label>'
-                f'<label><span>{e(a["e"])}</span><textarea name="e" rows="4" placeholder="{e(a["e_hint"])}"></textarea></label>'
+        boxes = "".join(
+            f'<label><span>{e(label)}</span>' + (f'<textarea name="{name}" rows="3" placeholder="{e(hint)}"></textarea>' if kind == "textarea"
+                                                 else f'<input type="text" name="{name}" placeholder="{e(hint)}" autocomplete="off">') + '</label>'
+            for name, label, hint, kind in a["fields"])
+        return (f'<div class="adv-ask" data-seat="{e(seat)}"><h4>Ask {e(seat)} yourself</h4>'
+                f'<p class="hint">{e(a["useful"])}</p>{boxes}'
                 f'<div class="adv-go"><button type="button" class="btn glass prominent">Ask {e(seat)}</button>'
                 f'<span class="adv-note">Takes up to a minute if their server is asleep.</span></div>'
                 f'<div class="adv-answer" hidden></div></div>')
-    def card(step: str, r: dict) -> str:
-        who = advisors.ASK.get(r["seat"], {})
-        return (f'<article class="adv-card" data-seat="{e(r["seat"])}">'
-                f'<div class="adv-banner"><canvas class="sigil" data-seat="{e(r["seat"])}" data-palette="{e(who.get("palette", "tide"))}" aria-hidden="true"></canvas>'
-                f'<span class="pill {pill[1]}">{e(pill[0])}</span>'
-                f'<div class="adv-id"><span class="adv-role">{e(who.get("role", "Advisor"))}</span><b class="adv-name">{e(r["seat"])}</b></div></div>'
-                f'<div class="adv-body"><p class="adv-motto">\u201c{e(who.get("motto", ""))}\u201d</p>'
-                f'<dl class="adv-facts"><div><dt>Reviews</dt><dd>Step {num[step]} · {e(label[step])}</dd></div>'
-                f'<div><dt>Checks</dt><dd>{e(r["question"])}</dd></div></dl>'
-                + (ask_box(r["seat"]) if live and r["seat"] in advisors.ASK else "") + '</div></article>')
-    cards = "".join(card(step, r) for step, r in advisors.REVIEWS.items())
+
+    seats = [(step, r, advisors.ASK.get(r["seat"], {})) for step, r in advisors.REVIEWS.items()]
+    at_step = {num[step]: (r["seat"], who.get("palette", "tide")) for step, r, who in seats}
+    track = "".join(
+        f'<li class="{"adv-at" if i + 1 in at_step else ""}">'
+        + (f'<button type="button" class="adv-pick mark pal-{e(at_step[i + 1][1])}" data-seat="{e(at_step[i + 1][0])}" '
+           f'aria-label="{e(at_step[i + 1][0])}, step {i + 1}"></button>' if i + 1 in at_step else '<span class="tick"></span>')
+        + f'<span class="n">{i + 1}</span><span class="lab">{e(lab)}</span>'
+        + (f'<span class="who">{e(at_step[i + 1][0])}</span>' if i + 1 in at_step else "") + '</li>'
+        for i, (_, lab, _) in enumerate(plain.STEPS))
+    tiles = "".join(
+        f'<button type="button" class="adv-tile adv-pick{" on" if k == 0 else ""}" role="tab" aria-selected="{str(k == 0).lower()}" '
+        f'data-seat="{e(r["seat"])}" aria-controls="adv-panel-{e(r["seat"])}">'
+        f'<canvas class="sigil" data-seat="{e(r["seat"])}" data-palette="{e(who.get("palette", "tide"))}" aria-hidden="true"></canvas>'
+        f'<span class="adv-step">Step {num[step]}</span><span class="adv-dot {pill[1]}" title="{e(pill[0])}"></span>'
+        f'<span class="adv-tile-id"><span class="adv-role">{e(who.get("role", "Advisor"))}</span><b>{e(r["seat"])}</b></span></button>'
+        for k, (step, r, who) in enumerate(seats))
+    panels = "".join(
+        f'<div class="adv-panel" id="adv-panel-{e(r["seat"])}" role="tabpanel" data-seat="{e(r["seat"])}"{"" if k == 0 else " hidden"}>'
+        f'<div class="adv-panel-head"><p class="adv-motto">\u201c{e(who.get("motto", ""))}\u201d</p>'
+        f'<span class="pill {pill[1]}">{e(pill[0])}</span></div>'
+        f'<dl class="adv-facts"><div><dt>Asked</dt><dd>After step {num[step]}, {e(label[step])}. Advice only.</dd></div>'
+        f'<div><dt>Checks</dt><dd>{e(r["question"])}</dd></div>'
+        f'<div><dt>Gets</dt><dd>{e(who.get("gets", ""))}</dd></div></dl>'
+        + (ask_box(r["seat"]) if live and r["seat"] in advisors.ASK else "") + '</div>'
+        for k, (step, r, who) in enumerate(seats))
+    cards = (f'<ol class="adv-track" aria-label="Where in a run each advisor is asked">{track}</ol>'
+             f'<div class="adv-rail" role="tablist" aria-label="Advisors">{tiles}</div>{panels}')
     steps = [("Server address", bool(cfg.advisors_mcp),
               f"Set: {cfg.advisors_mcp}" if cfg.advisors_mcp else
               "ADVISORS_MCP = https://domain-expertise-mcp.onrender.com/mcp/ (from the advisors' team)"),
@@ -471,7 +491,7 @@ def _advisor_cards() -> str:
         f'<li class="row {"done" if ok else "next" if i == first else "pending"}"><span class="ic">'
         f'{icons.check() if ok else f"<span class=num>{i + 1}</span>"}</span><span class="t"><b>{e(t)}</b><span>{e(d)}</span></span></li>'
         for i, (t, ok, d) in enumerate(steps))
-    state = ("Connected. Both review points ask the advisors during each run." if live else
+    state = ("Connected. Each advisor is asked during every run, at its step." if live else
              "Switched on, but no key is set, so the server will refuse." if st == "ON" and advisors.CALL_WRITTEN else
              "Switched on, but the question call is not written yet, so nobody is asked." if st == "ON" else
              "An address is set, but the server has not been marked reviewed, so the advisors stay off." if st == "BLOCKED" else
@@ -480,7 +500,8 @@ def _advisor_cards() -> str:
             f'<p class="status {"s-done" if live else "s-waiting" if st in ("BLOCKED", "ON") else "s-idle"}">'
             f'<span class="dot"></span><span>{e(state)}</span></p>'
             f'<div class="adv-cards">{cards}</div>'
-            f'<h3 class="sub-h">How to connect them</h3><div class="sect"><ul class="rows">{rows}</ul></div>'
+            f'<details class="adv-connect"{" open" if first is not None else ""}><summary>How to connect them · '
+            f'{sum(ok for _, ok, _ in steps)} of {len(steps)} done</summary><div class="sect"><ul class="rows">{rows}</ul></div></details>'
             '<p class="foot">Advice only. An advisor never changes the fix, the pull request text or your OK.</p></section>')
 
 
@@ -531,6 +552,18 @@ async function connect(url, again, btn) {{
   }} catch (ex) {{ btn.disabled = false; $("err").textContent = "Could not reach {plain.NAME}. Is it still running?"; }}
 }}
 $("go").onclick = () => connect($("link").value.trim(), false, $("go"));
+const pick = seat => {{
+  document.querySelectorAll(".adv-tile").forEach(t => {{ const on = t.dataset.seat === seat; t.classList.toggle("on", on); t.setAttribute("aria-selected", String(on)); }});
+  document.querySelectorAll(".adv-track .mark").forEach(m => m.classList.toggle("on", m.dataset.seat === seat));
+  document.querySelectorAll(".adv-panel").forEach(p => {{ p.hidden = p.dataset.seat !== seat; }});
+  const panel = document.getElementById("adv-panel-" + seat);
+  if (panel && window.gsap && !matchMedia("(prefers-reduced-motion: reduce)").matches)
+    gsap.fromTo(panel, {{ opacity: 0, y: 10 }}, {{ opacity: 1, y: 0, duration: .45, ease: "power3.out", clearProps: "transform,opacity" }});
+  try {{ localStorage.setItem("da-advisor", seat); }} catch (e) {{}}
+}};
+document.addEventListener("click", ev => {{ const t = ev.target.closest(".adv-pick"); if (t) pick(t.dataset.seat); }});
+try {{ const saved = localStorage.getItem("da-advisor"); if (saved && document.getElementById("adv-panel-" + saved)) pick(saved); }} catch (e) {{}}
+const firstMark = document.querySelector(".adv-tile.on"); if (firstMark) document.querySelectorAll(".adv-track .mark").forEach(m => m.classList.toggle("on", m.dataset.seat === firstMark.dataset.seat));
 document.addEventListener("click", async ev => {{
   const b = ev.target.closest(".adv-ask button"); if (!b) return;
   const box = b.closest(".adv-ask"), out = box.querySelector(".adv-answer");
@@ -539,8 +572,8 @@ document.addEventListener("click", async ev => {{
   const say = state => document.dispatchEvent(new CustomEvent("advisor-state", {{ detail: {{ seat: box.dataset.seat, state }} }}));
   b.disabled = true; say("asking"); show(true, "Asking…", "Waiting for the advisors' server.");
   try {{
-    const r = await fetch("/api/advisors-ask", {{ method: "POST", headers: H, body: JSON.stringify({{
-      seat: box.dataset.seat, question: box.querySelector("[name=q]").value, evidence: box.querySelector("[name=e]").value }}) }});
+    const fields = {{}}; box.querySelectorAll("input[name], textarea[name]").forEach(x => {{ fields[x.name] = x.value; }});
+    const r = await fetch("/api/advisors-ask", {{ method: "POST", headers: H, body: JSON.stringify({{ seat: box.dataset.seat, fields }}) }});
     const j = await r.json();
     if (r.ok) {{ show(true, box.dataset.seat + " said", j.said); say("answered"); }}
     else {{ show(false, "Not asked", j.error || "Something went wrong."); say("failed"); }}
@@ -866,7 +899,8 @@ class Handler(BaseHTTPRequestHandler):
                 if status()[0] != "ON":
                     raise Refused("The advisors are not switched on.")
                 try:
-                    said = ask(str(body.get("seat", "")), str(body.get("question", "")), str(body.get("evidence", "")))
+                    fields = body.get("fields") if isinstance(body.get("fields"), dict) else {}
+                    said = ask(str(body.get("seat", "")), {str(k): str(v)[:20000] for k, v in fields.items()})
                 except ValueError as ex:
                     raise Refused(str(ex).capitalize() + ".")
                 except (AdvisorError, OSError) as ex:
