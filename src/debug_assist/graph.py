@@ -212,6 +212,63 @@ def _write_and_run_test(s: RunState, rung: ladder.Rung, n: int, history: list, c
                               proof_dir=run_dir(s) / "proof")
 
 
+def _existing_tests(s: RunState, checkout: Path, ctx, prof) -> dict:
+    """Does a test already in the repo fail for this issue? The package's own tests, once, on the unfixed code, with
+    the internet off (Isha 2026-10-08: show that first; only when none does is a test written). Recorded as an event,
+    so a resumed run does not run them again."""
+    done = next((e for e in events.for_run(s["run_id"]) if e["kind"] == "existing_tests"), None)
+    if done:
+        return {k: v for k, v in done.items() if k not in ("run_id", "step", "kind", "at", "key")}
+    from .sandbox import run_in_sandbox
+    lang = langs.of(prof)
+    pkg = getattr(ctx, "package_dir", "") or lang.package_of(ctx.source)
+    focus = s.get("focus") or s["issue"]["title"]
+    try:
+        cmd = lang.test_command(pkg)
+    except ValueError as ex:
+        return {"status": "NOT CHECKED", "why": str(ex), "package": pkg}
+    r = run_in_sandbox(cmd, checkout, network=False, timeout=600, image=prof.image)
+    out = (r.stdout or "") + (r.stderr or "")
+    blocks = lang.failure_blocks(out)
+    for_issue = [h[:200] for h, b in blocks.items() if testwriter.right_reason(focus, b)]
+    status = ("FOUND" if for_issue else "NONE FAIL" if r.returncode == 0 else
+              "NOT CHECKED" if r.returncode in (124, 125) else "OTHER FAILURES")
+    res = {"status": status, "package": pkg, "exit": r.returncode, **testwriter.counts(out), "for_issue": for_issue[:5],
+           "other_failures": [h[:200] for h in blocks if h[:200] not in for_issue][:5],
+           "proof": str(testwriter.write_proof(run_dir(s) / "proof", f"{pkg} (the repo's own tests)", None, cmd,
+                                               r.returncode, out, status, "", prof, checkout, name="existing-tests"))}
+    events.log("existing_tests", key="suite", **res)
+    return res
+
+
+def _after_fix(s: RunState, prof, checkout: Path, paths: list) -> list[dict]:
+    """Each test that showed the bug, run again on the FIXED code: the proof that it now passes. A test that was moved
+    out of the code (attempt-tests/) is put back for the run and taken out again."""
+    from .sandbox import run_in_sandbox
+    lang, out = langs.of(prof), []
+    for rel in dict.fromkeys(p for p in paths if p):
+        dest, put_back = checkout / rel, False
+        if not dest.exists():
+            shelved = run_dir(s) / "attempt-tests" / Path(rel).name
+            if not shelved.exists():
+                continue
+            dest.write_text(shelved.read_text())
+            put_back = True
+        try:
+            cmd = lang.test_command(lang.package_of(rel), rel)
+            r = run_in_sandbox(cmd, checkout, network=False, timeout=300, image=prof.image)
+            text = (r.stdout or "") + (r.stderr or "")
+            outcome, line = ladder.classify(prof.language, r.returncode, text)
+            proof = testwriter.write_proof(run_dir(s) / "proof", rel, dest.read_text(), cmd, r.returncode, text, outcome,
+                                           line, prof, checkout, name=f"after-fix-{Path(rel).name}")
+            out.append({"test_path": rel, "outcome": outcome, "line": line, "proof": str(proof)})
+            events.log("after_fix", key=rel, test=rel, outcome=outcome)
+        finally:
+            if put_back:
+                dest.unlink(missing_ok=True)
+    return out
+
+
 def _record_attempt(s: RunState, a: ladder.Attempt) -> ladder.Attempt:
     a.at = now()
     events.log("attempt", key=f"{a.rung}#{a.n}", **ladder.as_records([a])[0])  # written as it ends: survives a crash
@@ -245,6 +302,7 @@ def reproduce(s: RunState):
     rungs, skipped = ladder.plan(s["triage"]["has_repro_p"], s["profile"].get("recorded_fixtures", False))
     plan = {"rungs": [r.name for r in rungs], "skipped": skipped, "cap": REPRO_ATTEMPT_CAP}
     ctx = _ctx(s, checkout)
+    existing = _existing_tests(s, checkout, ctx, profiles.get(s["profile"]["repo"]))
     before = [{k: v for k, v in e.items() if k in ladder.Attempt.__dataclass_fields__}
               for e in events.for_run(s["run_id"]) if e["kind"] == "attempt" and e["step"] == "reproduce"]
     result = ladder.climb(rungs, lambda r, n, h: _record_attempt(s, _write_and_run_test(s, r, n, h, ctx, checkout)),
@@ -264,7 +322,7 @@ def reproduce(s: RunState):
                      "oracle_test": oracle.test_path if oracle else None,
                      "oracle_evidence": oracle.evidence if oracle else None,
                      "attempts_used": len(result.attempts), "sandbox_secrets_visible": seen,
-                     "located": ctx.source, "checkout": str(checkout),
+                     "located": ctx.source, "checkout": str(checkout), "existing_tests": existing,
                      "confirm_tries": (len(result.attempts) - result.attempts.index(red) - 1) if red else 0},
            "attempts": new,
            "log": [f"reproduce: {result.status}" + (f" at rung {result.rung}" if result.rung else "") +
@@ -332,6 +390,8 @@ def write_fix(s: RunState):
                       "status": fixer.THIRD_TEST_PASSED if third["status"] == "PASSED"
                       else f"SEEN (round 2: the fix saw this test; fresh third test {third['status']})"}
     fix["holdout"] = ho
+    if fix["status"] == "VALIDATED":  # the proof, the other way round: every test that showed the bug now passes
+        fix["after_fix"] = _after_fix(s, prof, checkout, [r.get("failing_test"), r.get("oracle_test")])
     clock = dict(s["fix_clock"])
     clock["stopped_at"] = now()
     clock["seconds"] = round((datetime.fromisoformat(clock["stopped_at"])

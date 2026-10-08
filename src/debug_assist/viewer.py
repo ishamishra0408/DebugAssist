@@ -529,6 +529,27 @@ const tick = () => document.querySelectorAll("[data-since]").forEach(el => {{
   el.textContent = fmt(Math.max(0, (Date.now() - Date.parse(el.dataset.since)) / 1000)) + (el.dataset.suffix || "");
 }});
 renderMd(); tick(); setInterval(tick, 1000);
+// the page it is on, or heading to while a turn animates (quick clicks count from there)
+const pagerAt = w => w._to ?? Math.round(w.querySelector(".pages").scrollLeft / Math.max(1, w.querySelector(".pages").clientWidth));
+const pagerMark = (w, i) => w.querySelectorAll(".pg.num").forEach((b, k) => {{ b.classList.toggle("on", k === i); b.setAttribute("aria-selected", String(k === i)); }});
+const pagerSync = w => {{ if (w._to == null) pagerMark(w, pagerAt(w)); }};
+const pagerGo = (w, i) => {{ const p = w.querySelector(".pages"); i = Math.max(0, Math.min(p.children.length - 1, i));
+  w._to = i; pagerMark(w, i); clearTimeout(w._t); w._t = setTimeout(() => {{ w._to = null; pagerSync(w); }}, 700);
+  p.scrollTo({{ left: i * p.clientWidth, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }}); }};
+document.addEventListener("click", ev => {{
+  const b = ev.target.closest(".pg"); if (!b) return;
+  const w = b.closest("[data-pager]"), i = pagerAt(w);
+  pagerGo(w, b.classList.contains("prev") ? i - 1 : b.classList.contains("next") ? i + 1 : +b.dataset.go);
+}});
+document.addEventListener("scroll", ev => {{ const w = ev.target.closest && ev.target.closest("[data-pager]"); if (w) pagerSync(w); }}, true);
+document.addEventListener("keydown", ev => {{
+  const p = ev.target.closest && ev.target.closest(".pages"); if (!p || !["ArrowLeft", "ArrowRight"].includes(ev.key)) return;
+  ev.preventDefault(); const w = p.closest("[data-pager]"); pagerGo(w, pagerAt(w) + (ev.key === "ArrowRight" ? 1 : -1));
+}});
+document.addEventListener("toggle", ev => {{
+  if (ev.target.id !== "proof" || ev.newState !== "open") return;
+  ev.target.querySelectorAll("[data-pager]").forEach(w => {{ const p = w.querySelector(".pages"); p.scrollLeft = (+p.dataset.start || 0) * p.clientWidth; pagerSync(w); }});
+}}, true);
 document.addEventListener("click", ev => {{
   const b = ev.target.closest("[data-copy]");
   if (!b) return;
@@ -541,49 +562,131 @@ document.addEventListener("click", ev => {{
 </script></body></html>"""
 
 
+LEVELS = [("unit", "Unit test"), ("integration", "Integration test"), ("end_to_end", "Automation test (end to end)")]
+NOT_TRIED = {"integration": "This repo has no recorded real data to build one from.",
+             "end_to_end": "It would need live API keys and the internet. The test machine has neither, on purpose."}
+
+
+def _pill(text: str, tone: str) -> str:
+    return f'<span class="pill {tone}">{e(text)}</span>'
+
+
+def _try_outcome(a: dict) -> tuple[str, str]:
+    """(plain words, tone) for one try."""
+    ev = a.get("evidence") or ""
+    if a.get("outcome") == "RED":
+        return "Shows the bug", "red"
+    if a.get("outcome") == "GREEN":
+        return "Passed: did not show the bug", "grey"
+    if ev.startswith("writer refused"):
+        return "Draft refused before it ran", "amber"
+    if ev.startswith("RED for another reason"):
+        return "Failed, but for another reason", "amber"
+    return "Did not run properly", "amber"
+
+
 def _proof(s: dict, rid: str) -> str:
-    """Proof the bug happens: each test that failed on the unfixed code for the problem's reason (the first, and the
-    one that confirmed it on recorded data), with what it printed, the test itself, and how and where it ran
-    (testwriter.write_proof). Empty until the bug has been shown."""
+    """Proof the bug happens (Isha 2026-10-08): first, does a test already in the repo fail for this issue; if not,
+    the test written for it at each level (unit, integration, automation) and whether it passes after the fix; then
+    every try, one page each. Empty until the bug has been shown."""
     from .testwriter import read_proof
     r = s.get("repro") or {}
     if r.get("status") != "REPRODUCED" or not r.get("failing_test"):
         return ""
     rdir = _runs_dir() / rid
-    tries = {a.get("test_path"): a for a in s.get("attempts") or [] if a.get("step", "reproduce") == "reproduce"}
-    shown = [(r["failing_test"], r.get("evidence") or "", "first")]
-    if r.get("oracle_test") and r["oracle_test"] != r["failing_test"]:
-        shown.append((r["oracle_test"], r.get("oracle_evidence") or "", "confirm"))
-    cards = []
-    for path, evidence, role in shown:
-        a = tries.get(path) or {}
+    tries = sorted((a for a in s.get("attempts") or [] if a.get("step", "reproduce") == "reproduce" and a.get("n")),
+                   key=lambda a: a["n"])
+    fix = s.get("fix") or {}
+    after = {x["test_path"]: x for x in fix.get("after_fix") or []}
+    judge = r.get("oracle_test") or r.get("failing_test")
+
+    def after_fix(path: str) -> str:
+        got = after.get(path)
+        if got:
+            return (_pill("Passes after the fix", "green") if got["outcome"] == "GREEN" else
+                    _pill("Still fails after the fix", "red"))
+        if not fix.get("status"):
+            return _pill("Waiting for the fix", "grey")
+        if fix["status"] != "VALIDATED":
+            return _pill("No fix passed yet", "grey")
+        if path == judge:  # a validated fix passed its judging test by definition
+            return _pill("Passes after the fix", "green")
+        return _pill("Not re-run after the fix (runs before 8 Oct 2026)", "grey")
+
+    # 1. the checklist
+    ex, rows = r.get("existing_tests") or {}, []
+    pkg = ex.get("package") or ""
+    total = (ex.get("passed") or 0) + (ex.get("failed") or 0)
+    if ex.get("status") == "FOUND":
+        ans, tone, why = "Found", "green", f"Already in the repo and failing for this issue: {', '.join(ex['for_issue'][:2])}"
+    elif ex.get("status") == "NONE FAIL":
+        ans, tone, why = "Not found", "grey", (f"All {total} of the repo's own tests in {pkg} pass on the unfixed code" if total
+                                               else f"The repo's own tests in {pkg} all pass on the unfixed code") + \
+            ", so none of them catches it. A test was written for it below."
+    elif ex.get("status") == "OTHER FAILURES":
+        ans, tone, why = "Not found", "grey", (f"{ex.get('failed', 'Some')} of the repo's own tests in {pkg} fail, but none "
+                                               "for this issue's reason. A test was written for it below.")
+    else:
+        ans, tone, why = "Not checked", "grey", ex.get("why") or "Runs before 8 Oct 2026 did not check the repo's own tests first."
+    rows.append(f'<li class="q"><span class="qt">Test already in the repo failing for this issue?</span>{_pill(ans, tone)}'
+                f'<span class="qa">{e(why)}</span></li>')
+    skipped = (r.get("ladder_plan") or {}).get("skipped") or {}
+    for key, label in LEVELS:
+        at = [a for a in tries if a.get("rung") == key]
+        red = next((a for a in at if a.get("outcome") == "RED"), None)
+        if red:
+            ans, tone = "Found", "green"
+            why = (f"Written for this issue (try {red['n']}). It fails on the unfixed code, showing the problem"
+                   + (", on real recorded data." if key == "integration" else "."))
+            extra = after_fix(red.get("test_path", ""))
+        elif at:
+            ans, tone, extra = "Not found", "grey", ""
+            why = f"Tried {len(at)} time{'s' * (len(at) != 1)}: " + "; ".join(_try_outcome(x)[0].lower() for x in at) + "."
+        elif key in skipped:
+            ans, tone, extra, why = "Not tried", "grey", "", NOT_TRIED.get(key, "Not available for this issue.")
+        else:
+            ans, tone, extra, why = "Not needed", "grey", "", "The bug was already shown and confirmed."
+        rows.append(f'<li class="q"><span class="qt">{e(label)} failing for this issue?</span>{_pill(ans, tone)}'
+                    f'<span class="qa">{e(why)}{f" {extra}" if extra else ""}</span></li>')
+    checklist = f'<ul class="checklist">{"".join(rows)}</ul>'
+
+    # 2. the tries, one page each
+    pages, nums, start = [], [], 0
+    for i, a in enumerate(tries):
+        path, name = a.get("test_path") or "", Path(a.get("test_path") or "").name
+        word, tone = _try_outcome(a)
+        if a.get("outcome") == "RED" and not start:
+            start = i
         kind = plain.TEST_KIND.get(a.get("rung", ""), "test")
-        title = (f"Try {a['n']} · {kind}" if a.get("n") else kind.capitalize()) + \
-            (" · confirmed it on real recorded data" if role == "confirm" else "")
-        name = Path(path).name
-        code_file = next((f for f in (rdir / "checkout" / path, rdir / "attempt-tests" / name) if f.exists()), None)
+        code_file = next((f for f in (rdir / "checkout" / path, rdir / "attempt-tests" / name) if path and f.exists()), None)
         code = code_file.read_text(errors="replace") if code_file else ""
-        pf = read_proof(rdir / "proof" / f"{name}.txt")
-        lines = [l for l in evidence.splitlines() if not l.startswith("writer's symptom:")]
-        checks = next((l.removeprefix("writer's symptom:").strip() for l in evidence.splitlines()
-                       if l.startswith("writer's symptom:")), "")
+        pf = read_proof(rdir / "proof" / f"{name}.txt") if name else {}
+        ev = a.get("evidence") or ""
+        lines = [l for l in ev.splitlines() if not l.startswith("writer's symptom:")]
+        checks = next((l.removeprefix("writer's symptom:").strip() for l in ev.splitlines() if l.startswith("writer's symptom:")), "")
         facts = [("Ran", f"<code>{e(pf['ran'])}</code>"), ("Where", e(pf.get("where", ""))), ("Code", e(pf.get("code", ""))),
                  ("When", e(pf.get("when", ""))), ("Exit code", e(pf.get("exit_code", ""))),
                  ("Test fingerprint", f"<code>sha256 {e(pf.get('sha256', ''))}</code>")] if pf.get("ran") else []
-        cards.append(
-            f'<article class="proof-card"><h3>{e(title)}</h3>'
-            f'<p class="verdict"><span class="dot"></span>Failed on the unfixed code, showing the problem</p>'
+        pages.append(
+            f'<article class="page proof-card" aria-label="Try {a["n"]}"><div class="page-head"><h3>Try {a["n"]} · {e(kind)}</h3>'
+            f'{_pill(word, tone)}</div>'
             + (f'<p class="checks"><b>What the test checks:</b> {e(checks)}</p>' if checks else "")
-            + f'<h4>What it printed</h4><pre class="out">{e(chr(10).join(lines).strip()[:3000])}</pre>'
-            + (f'<details><summary>The test it wrote · {e(name)}</summary><pre class="code">{e(code[:20000])}</pre></details>' if code else "")
+            + f'<h4>What it printed on the unfixed code</h4><pre class="out">{e(chr(10).join(lines).strip()[:3000]) or "Nothing recorded."}</pre>'
+            + (f'<h4>After the fix</h4><p>{after_fix(path)}</p>' if a.get("outcome") == "RED" else "")
+            + (f'<details><summary>The test · {e(name)}</summary><pre class="code">{e(code[:20000])}</pre></details>' if code else "")
             + (f'<details><summary>Everything it printed</summary><pre class="out">{e(pf["output"][-20000:])}</pre></details>'
                if pf.get("output") else "")
             + (f'<dl class="facts">{"".join(f"<dt>{k}</dt><dd>{v}</dd>" for k, v in facts)}</dl>' if facts else
                '<p class="foot">The exact command and full output were not kept for runs before 8 Oct 2026.</p>')
             + "</article>")
-    return ('<div class="proof">' + "".join(cards) +
-            '<p class="foot">The code was the repository as it is, with only these new test files added. A test that fails '
-            'for a different reason is not counted as showing the bug.</p></div>')
+        nums.append(f'<button type="button" class="pg num {tone}{" on" if i == 0 else ""}" role="tab" data-go="{i}" '
+                    f'aria-label="Try {a["n"]}: {e(word)}">{a["n"]}</button>')
+    pager = (f'<div class="pager-wrap" data-pager><div class="pager-bar"><b>Every try</b><div class="pager" role="tablist" aria-label="Tries">'
+             f'<button type="button" class="pg prev" aria-label="Previous try">{icons.chevron(14)}</button>{"".join(nums)}'
+             f'<button type="button" class="pg next" aria-label="Next try">{icons.chevron(14)}</button></div></div>'
+             f'<div class="pages" tabindex="0" data-start="{start}">{"".join(pages)}</div></div>') if pages else ""
+    return (f'<div class="proof">{checklist}{pager}<p class="foot">The code was the repository as it is, with only new test '
+            'files added. A test that fails for a different reason does not count as showing the bug.</p></div>')
 
 
 def _advisors(s: dict) -> str:

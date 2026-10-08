@@ -163,8 +163,9 @@ def test_latest_activity_is_a_pop_up_and_usage_uses_standard_names():
 
 
 def test_show_the_bug_carries_its_proof(tmp_path, monkeypatch):
-    """Isha 2026-10-08: "attach proof that the bug reproduces". The tests that failed for the problem's reason, what
-    they printed, the tests themselves, and (runs from now on) the exact command, where, the code and the exit code."""
+    """Isha 2026-10-08: first, does a test already in the repo fail for this issue; if not, the test written at each
+    level (unit, integration, automation), shown failing on the unfixed code and passing after the fix; then every try
+    as a page of its own."""
     from types import SimpleNamespace
 
     from debug_assist import plain, testwriter
@@ -178,20 +179,37 @@ def test_show_the_bug_carries_its_proof(tmp_path, monkeypatch):
     testwriter.write_proof(rd / "proof", "packages/p/src/da-repro-1-unit-2.test.ts", "it('shows')", "pnpm test:node x",
                            1, "FAIL x\nAssertionError: expected [ { type: 'tool-call' } ] to strictly equal []", "RED", "x",
                            prof, rd / "checkout")
+    unit, integ = "packages/p/src/da-repro-1-unit-2.test.ts", "packages/p/src/da-repro-1-integration-3.test.ts"
     st = {**_data()["state"],
-          "repro": {"status": "REPRODUCED", "confirmed": True, "failing_test": "packages/p/src/da-repro-1-unit-2.test.ts",
-                    "evidence": "AssertionError: expected [ { type: 'tool-call' } ] to strictly equal []\nwriter's symptom: emits a tool-call",
-                    "oracle_test": "packages/p/src/da-repro-1-integration-3.test.ts", "oracle_evidence": "AssertionError: same"},
-          "attempts": [{"step": "reproduce", "n": 1, "rung": "unit", "outcome": "ERROR", "test_path": "packages/p/src/da-repro-1-unit-1.test.ts"},
-                       {"step": "reproduce", "n": 2, "rung": "unit", "outcome": "RED", "test_path": "packages/p/src/da-repro-1-unit-2.test.ts"},
-                       {"step": "reproduce", "n": 3, "rung": "integration", "outcome": "RED", "test_path": "packages/p/src/da-repro-1-integration-3.test.ts"}]}
+          "repro": {"status": "REPRODUCED", "confirmed": True, "failing_test": unit, "oracle_test": integ,
+                    "existing_tests": {"status": "NONE FAIL", "package": "packages/p", "passed": 412, "failed": 0},
+                    "ladder_plan": {"rungs": ["unit", "integration"], "skipped": {"end_to_end": "needs live keys"}}},
+          "fix": {"status": "VALIDATED", "after_fix": [{"test_path": unit, "outcome": "GREEN"}, {"test_path": integ, "outcome": "GREEN"}]},
+          "attempts": [{"step": "reproduce", "n": 1, "rung": "unit", "outcome": "ERROR", "test_path": "packages/p/src/da-repro-1-unit-1.test.ts",
+                        "evidence": "RED for another reason: x"},
+                       {"step": "reproduce", "n": 2, "rung": "unit", "outcome": "RED", "test_path": unit,
+                        "evidence": "AssertionError: expected [ { type: 'tool-call' } ] to strictly equal []\nwriter's symptom: emits a tool-call"},
+                       {"step": "reproduce", "n": 3, "rung": "integration", "outcome": "RED", "test_path": integ, "evidence": "AssertionError: same"}]}
     page = viewer.render(_data(state=st), mode="live")
     assert 'popovertarget="proof"' in page and "See the proof" in page and '<div id="proof" popover' in page
-    assert "Try 2 · quick test" in page and "Try 3 · recorded-stream test · confirmed it on real recorded data" in page
-    assert "What the test checks:</b> emits a tool-call" in page and "type: &#x27;tool-call&#x27;" in page
-    assert "it(&#x27;shows&#x27;" in page and "it(&#x27;confirms&#x27;" in page            # both tests, shelved or kept
-    assert "<code>pnpm test:node x</code>" in page and "Docker container from node:22, internet off" in page
-    assert "vercel/ai at e7f55a481fe2" in page and "were not kept for runs before" in page  # try 3 has no proof file
+    sheet = page.split('<div id="proof"')[1].split('<div id="acts"')[0]
+    text = re.sub(r"<[^>]+>", " ", sheet)
+    # the checklist, in Isha's order: the repo's own tests first, then what was written at each level
+    qs = re.findall(r'class="qt">([^<]+)<', sheet)
+    assert qs == ["Test already in the repo failing for this issue?", "Unit test failing for this issue?",
+                  "Integration test failing for this issue?", "Automation test (end to end) failing for this issue?"]
+    assert "All 412 of the repo&#x27;s own tests in packages/p pass on the unfixed code" in sheet
+    assert re.search(r"Unit test failing.*?Found.*?Written for this issue \(try 2\).*?Passes after the fix", sheet, re.S)
+    assert re.search(r"Integration test failing.*?Found.*?on real recorded data.*?Passes after the fix", sheet, re.S)
+    assert re.search(r"Automation test.*?Not tried.*?live API keys", sheet, re.S)
+    # every try is a page, turned by number; the pager opens on the try that showed the bug
+    assert sheet.count('class="page proof-card"') == 3 and re.findall(r'data-go="(\d)"', sheet) == ["0", "1", "2"]
+    assert 'data-start="1"' in sheet and "Failed, but for another reason" in text and text.count("Shows the bug") == 2
+    assert "What the test checks:</b> emits a tool-call" in sheet and "it(&#x27;shows&#x27;" in sheet and "it(&#x27;confirms&#x27;" in sheet
+    assert "<code>pnpm test:node x</code>" in sheet and "Docker container from node:22, internet off" in sheet
     assert plain.result("reproduce", st) == "Bug shown on try 2, then confirmed on a recorded stream (try 3)"
+    old = {**st, "repro": {**st["repro"], "existing_tests": None}, "fix": {}}
+    sheet = viewer.render(_data(state=old), mode="live").split('<div id="proof"')[1]
+    assert "Not checked" in sheet and "Waiting for the fix" in sheet
     no = viewer.render(_data(state={**st, "repro": {"status": "NEVER REPRODUCED"}}), mode="live")
     assert "See the proof" not in no

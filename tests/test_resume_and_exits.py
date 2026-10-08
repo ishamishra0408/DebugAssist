@@ -48,6 +48,7 @@ def test_confident_bug_goes_on(monkeypatch):
 # ── the ladder inside the reproduce step ─────────────────────────────────────────────────────────
 def _repro_state(tmp_path, monkeypatch):
     monkeypatch.setattr(graph, "secrets_visible", lambda work, image: [])
+    monkeypatch.setattr(graph, "_existing_tests", lambda *a: {"status": "NONE FAIL", "passed": 12, "failed": 0})
     monkeypatch.setattr(graph, "CFG", dataclasses.replace(graph.CFG, runs_dir=tmp_path))
     monkeypatch.setattr(graph, "run_copy", lambda prof, dest: dest)
     monkeypatch.setattr(graph.testwriter, "locate", lambda *a: SimpleNamespace(source="packages/x/src/y.ts"))
@@ -224,3 +225,36 @@ def test_judge_count_reads_old_round_two_runs_as_one_judge():
     assert judge_count("VALIDATED", {"status": THIRD_TEST_PASSED}) == 2
     assert judge_count("VALIDATED", {"status": "PASSED (round 2)"}) == 1   # before the ruling: the fix saw the test
     assert judge_count("NOT VALIDATED", {"status": "PASSED"}) == 0
+
+
+def test_the_repos_own_tests_run_first_and_each_repro_test_runs_again_after_the_fix(tmp_path, monkeypatch):
+    """Proof, both ways (Isha 2026-10-08): does a test already in the repo fail for this issue (once, then reused on
+    resume); and after the fix, does each test that showed the bug pass (a shelved one is put back for the run)."""
+    import subprocess
+    from types import SimpleNamespace
+    from debug_assist import events, testwriter
+    from debug_assist.profiles import PROFILES
+    monkeypatch.setattr(graph, "CFG", dataclasses.replace(graph.CFG, runs_dir=tmp_path))
+    logged = []
+    monkeypatch.setattr(events, "log", lambda kind, key="", **kw: logged.append({"kind": kind, **kw}))
+    monkeypatch.setattr(events, "for_run", lambda rid: logged)
+    ran = []
+    out = (" FAIL  src/a.test.ts > stream > ends\nAssertionError: expected [ { type: 'tool-call' } ] to equal []\n"
+           "+ { type: 'tool-call' }\n Tests  1 failed | 411 passed (412)\n")
+    monkeypatch.setattr("debug_assist.sandbox.run_in_sandbox",
+                        lambda cmd, wd, **k: (ran.append(cmd), subprocess.CompletedProcess(cmd, 1 if not ran[1:] else 0, out, ""))[1])
+    s = {"run_id": "ai-1-x", "issue": {"title": "t"}, "focus": "emits a `tool-call` part"}
+    ctx = SimpleNamespace(source="packages/openai-compatible/src/chat/x.ts", package_dir="packages/openai-compatible")
+    got = graph._existing_tests(s, tmp_path, ctx, PROFILES["vercel/ai"])
+    assert got["status"] == "FOUND" and got["passed"] == 411 and got["failed"] == 1 and got["package"] == "packages/openai-compatible"
+    assert ran[0].endswith("cd packages/openai-compatible && pnpm test:node") and (tmp_path / "ai-1-x/proof/existing-tests.txt").exists()
+    assert graph._existing_tests(s, tmp_path, ctx, PROFILES["vercel/ai"])["status"] == "FOUND" and len(ran) == 1  # reused
+    (tmp_path / "ai-1-x/attempt-tests").mkdir(parents=True)
+    (tmp_path / "ai-1-x/attempt-tests/da-repro-1-unit-2.test.ts").write_text("shelved")
+    (tmp_path / "co/packages/openai-compatible/src").mkdir(parents=True)
+    res = graph._after_fix(s, PROFILES["vercel/ai"], tmp_path / "co", ["packages/openai-compatible/src/da-repro-1-unit-2.test.ts", None])
+    assert res[0]["outcome"] == "GREEN" and "da-repro-1-unit-2.test.ts" in ran[-1]
+    assert not (tmp_path / "co/packages/openai-compatible/src/da-repro-1-unit-2.test.ts").exists()       # taken out again
+    assert (tmp_path / "ai-1-x/proof/after-fix-da-repro-1-unit-2.test.ts.txt").exists()
+    assert testwriter.counts("====== 2 failed, 40 passed in 3.1s ======") == {"passed": 40, "failed": 2}
+    assert testwriter.counts("# pass 7\n# fail 0") == {"passed": 7, "failed": 0} and testwriter.counts("nothing") == {}

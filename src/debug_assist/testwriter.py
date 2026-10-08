@@ -352,8 +352,8 @@ def attempt(state: dict, rung: ladder.Rung, n: int, history: list, ctx: Context,
                           test_path=rel)
 
 
-def write_proof(proof_dir: Path, rel: str, content: str, cmd: str, code: int, out: str, outcome: str, line: str,
-                profile, checkout: Path) -> Path:
+def write_proof(proof_dir: Path, rel: str, content: str | None, cmd: str, code: int, out: str, outcome: str, line: str,
+                profile, checkout: Path, name: str | None = None) -> Path:
     """The proof that a test fails (or passes) on the unfixed code, as plain text anyone can check: the test's
     fingerprint, the code it ran against, the exact command, where and when it ran, the exit code and the whole
     output. runs/<id>/proof/<test file name>.txt (Isha 2026-10-08: "attach proof that the bug reproduces")."""
@@ -366,9 +366,9 @@ def write_proof(proof_dir: Path, rel: str, content: str, cmd: str, code: int, ou
     else:
         where = f"Docker container from {profile.image}"
     proof_dir.mkdir(parents=True, exist_ok=True)
-    f = proof_dir / f"{Path(rel).name}.txt"
+    f = proof_dir / f"{name or Path(rel).name}.txt"
     f.write_text(f"test file   {rel}\n"
-                 f"sha256      {hashlib.sha256(content.encode()).hexdigest()}\n"
+                 f"sha256      {hashlib.sha256(content.encode()).hexdigest() if content is not None else '-'}\n"
                  f"code        {profile.repo} at {(profile.base_commit or '')[:12]}: source unchanged, only new test files\n"
                  f"ran         {cmd}\n"
                  f"where       {where}, internet off\n"
@@ -377,6 +377,22 @@ def write_proof(proof_dir: Path, rel: str, content: str, cmd: str, code: int, ou
                  f"verdict     {outcome}: {line}\n"
                  f"--- output ---\n{ANSI.sub('', out)[-40000:]}")
     return f
+
+
+def counts(output: str) -> dict:
+    """{"passed": n, "failed": n} from the runner's own summary (vitest, jest, pytest, node:test, plain scripts); {} when
+    it printed none."""
+    t = ANSI.sub("", output)
+    for rx in (r"^\s*Tests:?\s+(?:(?P<f>\d+) failed\s*[|,]\s*)?(?P<p>\d+) passed",       # vitest, jest
+               r"=+ (?:(?P<f>\d+) failed, )?(?P<p>\d+) passed",                         # pytest
+               r"(?P<p>\d+) passed, (?P<f>\d+) failed"):                                # plain scripts
+        found = list(re.finditer(rx, t, re.M))
+        if found:
+            return {"passed": sum(int(m.group("p")) for m in found), "failed": sum(int(m.group("f") or 0) for m in found)}
+    tap_p, tap_f = re.findall(r"^# pass (\d+)", t, re.M), re.findall(r"^# fail (\d+)", t, re.M)  # node:test
+    if tap_p:
+        return {"passed": sum(map(int, tap_p)), "failed": sum(map(int, tap_f))}
+    return {}
 
 
 def read_proof(f: Path) -> dict:
