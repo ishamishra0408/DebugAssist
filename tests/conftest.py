@@ -27,6 +27,19 @@ def no_inherited_git_env(monkeypatch):
         monkeypatch.delenv(k, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def advisors_off(monkeypatch, tmp_path):
+    """Tests never reach the real advisors or write to the real bundle, whatever .env says (2026-10-08: with the
+    advisors switched on in .env, a test could have asked the live server). A test that needs them sets its own."""
+    import dataclasses
+
+    from debug_assist import advisors, config
+    off = dataclasses.replace(config.CFG, advisors_mcp="", advisors_reviewed=False, bundle_dir=tmp_path / "bundle")
+    monkeypatch.setattr(advisors, "CFG", off)
+    monkeypatch.setattr(config, "CFG", off)
+    monkeypatch.delenv("ADVISORS_KEY", raising=False)
+
+
 @pytest.fixture
 def scratch_db(monkeypatch):
     """The meter and the event log, pointed at a throwaway database (the real one is never touched)."""

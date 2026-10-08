@@ -103,9 +103,15 @@ def check_both() -> list[tuple[str, str, str]]:
     for step, r in REVIEWS.items():
         q, ev = SAMPLES[step]
         try:
-            out.append((r["seat"], "ANSWERED", _call(r["seat"], q, ev, consumer="test")))
+            said = _call(r["seat"], q, ev, consumer="test")
+            out.append((r["seat"], "ANSWERED", said))
         except Exception as ex:
             out.append((r["seat"], "FAILED", f"{type(ex).__name__}: {str(ex)[:200]}"))
+            continue
+        try:  # every seat use leaves a receipt, test samples too (the bundle's rule)
+            receipt(r["seat"], f"advisors-check (fixed test sample) for {step}: {r['question']}", said)
+        except OSError:
+            pass
     return out
 
 
