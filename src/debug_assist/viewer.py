@@ -104,6 +104,7 @@ def gather(run_id: str, at: datetime | None = None) -> dict:
             pack = {}
     return {"run_id": run_id, "state": snap.values or {}, "next": list(snap.next or []), "interrupt": intr, "pack": pack,
             "pr_text": pr_text, "pr_matches": pr_ok, "patch": patch, "pr_patch": pr_patch, "commit_message": commit_msg,
+            "decided_by": next((x.get("by") for x in reversed(evs) if x.get("kind") == "decision" and x.get("by")), ""),
             "events": evs,
             "trials": events.trials_of(run_id), "meter": mtr, "calls": calls,
             "built": datetime.now().strftime("%H:%M:%S"),
@@ -693,7 +694,8 @@ def _check_pr(d: dict, rid: str, can_decide: bool, approve_cmd: str, reject_cmd:
              '<span class="gh-state closed">Closed</span>' if said == "REJECTED" else '<span class="gh-state open">Approved</span>')
     lock = ('<div class="gh-annot bad"><b>This text was changed after it was locked. Approval will be refused.</b></div>'
             if d.get("pr_matches") is False and waiting else "")
-    done = (f'<div class="gh-merge"><div class="gh-merge-lines"><b>{"You closed this pull request" if said == "REJECTED" else "You approved this pull request"}</b>'
+    who_did = e(d.get("decided_by") or "You")
+    done = (f'<div class="gh-merge"><div class="gh-merge-lines"><b>{who_did} {"closed" if said == "REJECTED" else "approved"} this pull request</b>'
             f'<span class="gh-muted">{e(counts)}</span><span class="gh-muted">'
             + ("Nothing was posted to GitHub." if said == "REJECTED" else
                "Nothing was posted to GitHub. publish.sh in the run's folder lists the git steps for you to run.")

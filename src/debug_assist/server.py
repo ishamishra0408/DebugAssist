@@ -37,52 +37,41 @@ HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t#]*$", re.M)
 HEALTH = b"debug-assist viewer"
 TOKEN = secrets.token_urlsafe(24)  # new every time the server starts; only this server's pages carry it
 TOKEN_HEADER = "X-DebugAssistAgent-Token"
-SESSION_S = 12 * 3600
-_failed_logins: dict = {}   # client address → recent failed attempts (a public address gets 5 a minute)
-
-
 def _public_host() -> str:
     """The hosted address (e.g. debugassist.onrender.com), set where it is deployed. Empty on the Mac."""
     import os  # Render sets RENDER_EXTERNAL_HOSTNAME itself, so a Render deploy needs no PUBLIC_HOST
     return (os.environ.get("PUBLIC_HOST") or os.environ.get("RENDER_EXTERNAL_HOSTNAME") or "").strip().lower()
 
 
-def _password() -> str:
-    import os
-    return os.environ.get("APP_PASSWORD", "")
+LOGIN_ERRORS = {"state": "That sign-in took too long or came from another tab. Try again.",
+                "github": "GitHub did not answer. Try again in a minute.",
+                "cancelled": "Sign-in was cancelled on GitHub.",
+                "off": "GitHub sign-in is not set up on this address yet."}
 
 
-def _session_key() -> bytes:
-    import hashlib
-    return hashlib.sha256(b"da-session:" + _password().encode()).digest()
-
-
-def make_session(now: float | None = None) -> str:
-    import hmac
-    exp = str(int((time.time() if now is None else now) + SESSION_S))
-    return exp + "." + hmac.new(_session_key(), exp.encode(), "sha256").hexdigest()
-
-
-def session_ok(value: str, now: float | None = None) -> bool:
-    import hmac
-    exp, _, sig = (value or "").partition(".")
-    if not exp.isdigit() or int(exp) < (time.time() if now is None else now):
-        return False
-    return hmac.compare_digest(sig, hmac.new(_session_key(), exp.encode(), "sha256").hexdigest())
-
-
-def login_page(error: str = "") -> str:
+def login_page(error: str = "", refused: str = "") -> str:
+    """Sign in with GitHub (Isha 2026-10-08): one button; only the accounts on this site's list get in."""
     from . import icons
     e = viewer.e
+    msg = (f"The GitHub account {refused} is not on this site's list. Ask the owner to add it." if refused
+           else LOGIN_ERRORS.get(error, ""))
+    gh = ('<svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 '
+          '8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94'
+          '-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64'
+          '-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 '
+          '2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73'
+          '.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>')
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sign in · {plain.NAME}</title><meta name="color-scheme" content="dark light"><link rel="stylesheet" href="/static/app.css">
 </head><body><div class="ambient s-idle" aria-hidden="true"></div>
 <main style="max-width:440px;width:100%"><header class="hero"><p class="eyebrow">{icons.mark(20)} {plain.NAME}</p><h1>Sign in</h1>
-<p class="lede">This address can start runs that spend money, so it is locked.</p></header>
-<form method="post" action="/login" class="group"><div class="sect"><div class="field">
-<input name="password" type="password" autocomplete="current-password" placeholder="Password" aria-label="Password" required autofocus>
-<button type="submit" class="btn glass prominent">Sign in</button></div></div>
-<p class="err" role="alert">{e(error)}</p></form></main></body></html>"""
+<p class="lede">Runs started here spend money, so each person signs in with their own GitHub account.</p></header>
+<section class="group"><a class="btn glass prominent gh-signin" href="/auth/github">{gh}<span>Sign in with GitHub</span></a>
+<p class="err" role="alert">{e(msg)}</p>
+<p class="foot">GitHub tells {plain.NAME} who you are, nothing else: it gets no access to your repositories and keeps no GitHub token.</p>
+</section></main></body></html>"""
+
+
 _plans: dict = {}
 STATIC_FILES = {"app.css": "text/css; charset=utf-8", "topo.js": "text/javascript; charset=utf-8",
                 "glass.js": "text/javascript; charset=utf-8", "chart.js": "text/javascript; charset=utf-8",
@@ -245,7 +234,7 @@ def _start_run(link: str, heading: str, ai: str, look_in: str = "", test_in: str
 _decider: dict = {"proc": None, "run_id": None}
 
 
-def decide(run_id: str, decision: str, sha: str, commit_message: str = "") -> str:
+def decide(run_id: str, decision: str, sha: str, commit_message: str = "", by: str = "") -> str:
     """Approve or say no to a run waiting for your OK. Refused unless the run is waiting, and the text on disk is the
     text you were shown (its sha256, sent by the page). Runs `debug-assist approve|reject <run-id>` in the background."""
     from .guardrails import fingerprint
@@ -275,7 +264,11 @@ def decide(run_id: str, decision: str, sha: str, commit_message: str = "") -> st
         mp = Path(intr.get("commit_message_path") or CFG.runs_dir / run_id / "commit-message.txt")
         mp.write_text(msg + "\n")   # yours: the commit carries it; its fingerprint is logged with the approval
         from . import events
-        events.log("commit_message", key="commit", run_id=run_id, sha256=fingerprint(msg + "\n"), title=msg.splitlines()[0][:120])
+        with events.bind(run_id, "approval"):
+            events.log("commit_message", key="commit", sha256=fingerprint(msg + "\n"), title=msg.splitlines()[0][:120])
+    from . import events
+    with events.bind(run_id, "approval"):   # who answered, from their GitHub sign-in ("" on this Mac without sign-in)
+        events.log("decision", key=f"decision-{sha[:12]}", decision=decision, by=by, sha256=sha)
     with open(CFG.runs_dir / run_id / "console-decision.log", "w") as log:
         _decider["proc"] = subprocess.Popen([sys.executable, "-m", "debug_assist", decision, run_id, "--no-view"], cwd=ROOT,
                                             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
@@ -724,7 +717,7 @@ def _label_queue() -> str:
             + (f'<div class="sect"><ul class="rows">{"".join(rows)}</ul></div>' if rows else "") + "</section>")
 
 
-def home_page() -> str:
+def home_page(user: str = "") -> str:
     from . import icons
     from .store import reachable
     e = viewer.e
@@ -758,6 +751,7 @@ def home_page() -> str:
     <a class="tbtn" href="/connect" aria-label="Connect">{icons.link(16)}<span class="lbl">Connect</span></a>
     <a class="tbtn" href="/how" aria-label="How it works">{icons.play(16)}<span class="lbl">How it works</span></a>
     <a class="tbtn" href="/checks" aria-label="System check">{icons.check(16)}<span class="lbl">System check</span></a></div>
+  {f'<div class="tgroup glass"><a class="tbtn" href="/logout" title="Signed in with GitHub as {e(user)}" aria-label="Sign out ({e(user)})"><span class="lbl">{e(user)}</span><span>Sign out</span></a></div>' if user else ''}
 </nav>
 <main>
 <header class="hero">
@@ -859,11 +853,11 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _send(self, code: int, body: str, ctype: str = "text/html; charset=utf-8", location: str | None = None,
-              cookie: str | None = None):
+              cookie: list | None = None):
         b = body.encode()
         self.send_response(code)
-        if cookie:
-            self.send_header("Set-Cookie", cookie)
+        for c in cookie or []:
+            self.send_header("Set-Cookie", c)
         self.send_header("Content-Type", ctype)
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Frame-Options", "DENY")
@@ -886,13 +880,62 @@ class Handler(BaseHTTPRequestHandler):
         ok = {f"http://127.0.0.1:{port}", f"http://localhost:{port}"} | ({f"https://{_public_host()}"} if _public_host() else set())
         return self.headers.get("Origin") in ok
 
+    def _cookie(self, name: str) -> str:
+        from http.cookies import CookieError, SimpleCookie
+        try:
+            c = SimpleCookie(self.headers.get("Cookie") or "")
+        except CookieError:
+            return ""
+        return c[name].value if name in c else ""
+
+    def user(self) -> str:
+        """The GitHub account signed in, or ""."""
+        from . import ghauth
+        return ghauth.session_user(self._cookie("da_session")) if ghauth.configured() else ""
+
     def _signed_in(self) -> bool:
-        """No password set (the Mac): always. A hosted address: only with a valid session cookie."""
-        if not _password():
-            return True
-        from http.cookies import SimpleCookie
-        c = SimpleCookie(self.headers.get("Cookie") or "")
-        return "da_session" in c and session_ok(c["da_session"].value)
+        """GitHub sign-in not set up (this Mac): always. Set up: only with a valid session for an account on the list.
+        (A public address without it never gets here: it stays locked.)"""
+        from . import ghauth
+        return not ghauth.configured() or bool(self.user())
+
+    def _base(self) -> str:
+        return f"https://{_public_host()}" if _public_host() else f"http://{(self.headers.get('Host') or '').lower()}"
+
+    def _secure(self) -> str:
+        return "; Secure" if (_public_host() or self.headers.get("X-Forwarded-Proto") == "https") else ""
+
+    def _auth(self, parts: list, q: dict):
+        """/login, /auth/github (off to GitHub), /auth/github/callback (back from it), /logout."""
+        from . import ghauth
+        if parts == ["login"]:
+            return self._send(200, login_page((q.get("error") or [""])[0]))
+        if parts == ["logout"]:
+            return self._send(302, "", "text/plain", location="/login",
+                              cookie=[f"da_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0{self._secure()}"])
+        if not ghauth.configured():
+            return self._send(302, "", "text/plain", location="/login?error=off")
+        redirect_uri = self._base() + "/auth/github/callback"
+        if parts == ["auth", "github"]:
+            state, value = ghauth.new_state((q.get("next") or ["/"])[0])
+            return self._send(302, "", "text/plain", location=ghauth.authorize_url(state, redirect_uri),
+                              cookie=[f"da_oauth={value}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age={ghauth.STATE_S}{self._secure()}"])
+        clear = f"da_oauth=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0{self._secure()}"
+        if (q.get("error") or [""])[0] == "access_denied":
+            return self._send(302, "", "text/plain", location="/login?error=cancelled", cookie=[clear])
+        nxt = ghauth.check_state(self._cookie("da_oauth"), (q.get("state") or [""])[0])
+        if nxt is None:
+            return self._send(302, "", "text/plain", location="/login?error=state", cookie=[clear])
+        try:
+            login = ghauth.account_for((q.get("code") or [""])[0], redirect_uri).lower()   # names ignore case
+        except ghauth.AuthError as ex:
+            print(f"{plain.NAME}: GitHub sign-in failed: {ex}", flush=True)
+            return self._send(302, "", "text/plain", location="/login?error=github", cookie=[clear])
+        if login not in ghauth.allowed():
+            print(f"{plain.NAME}: GitHub sign-in refused for an account not on the list", flush=True)
+            return self._send(403, login_page(refused=login), cookie=[clear])
+        return self._send(302, "", "text/plain", location=nxt, cookie=[
+            clear, f"da_session={ghauth.make_session(login)}; HttpOnly; SameSite=Lax; Path=/; Max-Age={ghauth.SESSION_S}{self._secure()}"])
 
     def _token_ok(self) -> bool:
         return secrets.compare_digest(self.headers.get(TOKEN_HEADER) or "", TOKEN)
@@ -910,14 +953,16 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if parts == ["health"]:
                 return self._send(200, HEALTH.decode(), "text/plain")
-            if parts == ["login"]:
-                return self._send(200, login_page())
+            if parts in (["login"], ["logout"], ["auth", "github"], ["auth", "github", "callback"]):
+                return self._auth(parts, q)
             if parts == ["static", "app.css"]:
                 return self._send(200, (viewer.STATIC / "app.css").read_text(), STATIC_FILES["app.css"])
             if not self._signed_in():
-                return self._send(302, "", "text/plain", location="/login")
+                from urllib.parse import quote
+                nxt = u.path + (f"?{u.query}" if u.query else "")
+                return self._send(302, "", "text/plain", location="/login" if nxt == "/" else f"/auth/github?next={quote(nxt)}")
             if not parts:
-                return self._send(200, home_page())
+                return self._send(200, home_page(self.user()))
             if parts == ["checks"]:
                 return self._send(200, checks_page())
             if parts == ["how"]:
@@ -963,22 +1008,6 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as ex:  # never a traceback (with paths) in the page
             return self._send(500, f"viewer error: {type(ex).__name__}", "text/plain")
 
-    def _login(self):
-        from urllib.parse import parse_qs as qs
-        who = (self.headers.get("X-Forwarded-For") or self.client_address[0]).split(",")[0].strip()
-        now = time.time()
-        recent = [t for t in _failed_logins.get(who, []) if now - t < 60]
-        if len(recent) >= 5:
-            return self._send(429, login_page("Too many tries. Wait a minute."))
-        n = min(int(self.headers.get("Content-Length") or 0), 4096)
-        given = (qs(self.rfile.read(n).decode(errors="replace")).get("password") or [""])[0]
-        if not _password() or not secrets.compare_digest(given, _password()):
-            _failed_logins[who] = recent + [now]
-            return self._send(401, login_page("That password is not right."))
-        secure = "; Secure" if (self.headers.get("X-Forwarded-Proto") == "https" or _public_host()) else ""
-        return self._send(302, "", "text/plain", location="/",
-                          cookie=f"da_session={make_session()}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_S}{secure}")
-
     def _github_hook(self):
         """GitHub's webhook: no sign-in (GitHub can't), so only a delivery signed with the shared secret is read."""
         from . import autostart
@@ -996,14 +1025,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(500, {"error": f"could not queue it ({type(ex).__name__})"})
         return self._json(code, {"result": said})
 
-    def do_POST(self):  # sign in, start a run, connect a repo, or a GitHub webhook
+    def do_POST(self):  # start a run, connect a repo, your OK, ask an advisor, or a GitHub webhook
         self.server.last = time.monotonic()
         if getattr(self.server, "locked", ""):
             return self._send(503, f"{plain.NAME} is locked. {self.server.locked}", "text/plain; charset=utf-8")
-        if urlparse(self.path).path == "/login":
-            if not self._host_ok() or (self.headers.get("Origin") and not self._origin_ok()):
-                return self._send(403, "forbidden", "text/plain")
-            return self._login()
         if urlparse(self.path).path == "/hooks/github":
             return self._github_hook()
         if (not self._host_ok() or not self._token_ok() or not self._origin_ok() or not self._signed_in()
@@ -1019,7 +1044,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b"{}")
             if path == "/api/decide":
                 said = decide(str(body.get("run_id", "")), str(body.get("decision", "")), str(body.get("sha256", "")),
-                              str(body.get("commit_message", ""))[:12000])
+                              str(body.get("commit_message", ""))[:12000], by=self.user())
                 return self._json(200, {"said": said})
             if path == "/api/advisors-ask":
                 from .advisors import AdvisorError, ask, status
@@ -1056,19 +1081,26 @@ def make(port: int = PORT, host: str = "127.0.0.1") -> ThreadingHTTPServer:
 
 def locked_reason(host: str) -> str:
     """Why a public address must stay locked, in plain words; empty when it may open."""
+    from . import ghauth
     if host in ("127.0.0.1", "localhost"):
         return ""
-    if len(_password()) < 12:
-        return "APP_PASSWORD is missing or shorter than 12 characters. Set it in Render ▸ Environment, then redeploy."
+    if not ghauth.configured():
+        return (f"GitHub sign-in is not set up ({', '.join(ghauth.missing())} missing). Set it in Render ▸ Environment, "
+                "then redeploy.")
     if not _public_host():
         return "The public address is unknown. Set PUBLIC_HOST in Render ▸ Environment, then redeploy."
     return ""
 
 
+def _gh_on() -> bool:
+    from . import ghauth
+    return ghauth.configured()
+
+
 def serve(port: int = PORT, idle_s: int = IDLE_S, host: str = "127.0.0.1") -> None:
     why = locked_reason(host)
     print(f"{plain.NAME}: starting on {host}:{port}; public address {_public_host() or '(none)'}; "
-          + (f"LOCKED: {why}" if why else ("sign-in required" if _password() else "no sign-in (this Mac only)")), flush=True)
+          + (f"LOCKED: {why}" if why else ("GitHub sign-in required" if _gh_on() else "no sign-in (this Mac only)")), flush=True)
     httpd = make(port, host)
     httpd.locked = why
 

@@ -43,7 +43,11 @@ services:
         sync: false
       - key: ADVISORS_KEY           # the server's API key, from the advisors' team; never in chat
         sync: false
-      - key: APP_PASSWORD           # 12+ characters; the sign-in for this public address
+      - key: GITHUB_CLIENT_ID       # GitHub sign-in: the OAuth app's client ID (callback https://<address>/auth/github/callback)
+        sync: false
+      - key: GITHUB_CLIENT_SECRET   # the OAuth app's client secret
+        sync: false
+      - key: ALLOWED_GITHUB_USERS   # the GitHub accounts that may sign in, comma-separated
         sync: false
       - key: MONGODB_URI            # MongoDB Atlas connection string
         sync: false

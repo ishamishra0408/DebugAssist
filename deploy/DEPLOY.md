@@ -31,7 +31,7 @@ time it starts; update `LAYA_URL` in Render when it does (or set up a named tunn
 ## 4. Render
 New ▸ Blueprint ▸ this repo. Render reads `render.yaml` and asks for each key marked `sync: false`.
 Render tells the app its own address (`RENDER_EXTERNAL_HOSTNAME`), so there is no address to set.
-`APP_PASSWORD` is the sign-in for that address (12+ characters).
+Sign-in is with GitHub: `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` from a GitHub OAuth app whose callback is `https://<the address>/auth/github/callback`, and `ALLOWED_GITHUB_USERS`, the accounts that may sign in (comma-separated). Without all three the address stays locked.
 
 ## 5. Check
 Open the address, sign in, then on your Mac: `uv run debug-assist preflight <issue-url>` with the same environment, or

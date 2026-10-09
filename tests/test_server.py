@@ -2,6 +2,7 @@
 import json
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -132,63 +133,136 @@ def test_a_run_starts_like_the_terminal_starts_it_and_only_one_at_a_time(tmp_pat
         server.start_run("https://github.com/vercel/ai/issues/21439", "Made up", "standard")
 
 
-def test_a_hosted_address_needs_the_password(live, monkeypatch):
-    monkeypatch.setenv("APP_PASSWORD", "correct horse battery")
+def _gh(monkeypatch, users="isha-gh,devansh-gh"):
+    monkeypatch.setenv("GITHUB_CLIENT_ID", "Iv1.testclient")
+    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "test-secret-not-real")
+    monkeypatch.setenv("ALLOWED_GITHUB_USERS", users)
     monkeypatch.setenv("PUBLIC_HOST", "debugassist.onrender.com")
-    monkeypatch.setattr(server, "_status_of", lambda rid: ("vercel/ai #1", "Done."))
-    host = {"Host": "debugassist.onrender.com"}
-    req = urllib.request.Request(f"http://127.0.0.1:{live.server_address[1]}/", headers=host)
+    monkeypatch.delenv("RENDER_EXTERNAL_HOSTNAME", raising=False)
+
+
+def _raw(httpd, path, headers):
+    """One request, redirects not followed: (status, headers, body)."""
+    req = urllib.request.Request(f"http://127.0.0.1:{httpd.server_address[1]}{path}", headers=headers)
     opener = urllib.request.build_opener(type("NoRedirect", (urllib.request.HTTPRedirectHandler,), {"redirect_request": lambda *a: None}))
     try:
-        opener.open(req)
+        with opener.open(req, timeout=5) as r:
+            return r.status, r.headers, r.read().decode()
     except urllib.error.HTTPError as e:
-        assert e.code == 302 and e.headers["Location"] == "/login"
+        return e.code, e.headers, e.read().decode()
+
+
+def test_sign_in_is_with_github_and_only_for_the_accounts_on_the_list(live, monkeypatch):
+    """Isha 2026-10-08 (PM review): each person signs in with their own GitHub account; the shared password is gone."""
+    from debug_assist import ghauth
+    _gh(monkeypatch)
+    monkeypatch.setattr(server, "_status_of", lambda rid: ("vercel/ai #1", "Done."))
+    host = {"Host": "debugassist.onrender.com"}
+    code, h, _ = _raw(live, "/", host)
+    assert code == 302 and h["Location"] == "/login"
+    page = _get(live, "/login", "GET", host)[1]
+    assert "Sign in with GitHub" in page and 'href="/auth/github"' in page and "password" not in page.lower()
+    assert _get(live, "/login", "POST", {**host, "Content-Type": "application/x-www-form-urlencoded"}, b"password=x")[0] == 403
     assert _get(live, "/health", "GET", host)[0] == 200                              # Render's health check stays open
-    assert _get(live, "/", "GET", {"Host": "evil.example"})[0] == 403
-    body = b"password=nope"
-    code, page = _get(live, "/login", "POST", {**host, "Content-Type": "application/x-www-form-urlencoded"}, body)
-    assert code == 401 and "That password is not right." in page
-    req = urllib.request.Request(f"http://127.0.0.1:{live.server_address[1]}/login", method="POST",
-                                 data=b"password=correct+horse+battery",
-                                 headers={**host, "Content-Type": "application/x-www-form-urlencoded"})
-    try:
-        opener.open(req)
-    except urllib.error.HTTPError as e:
-        assert e.code == 302
-        cookie = e.headers["Set-Cookie"]
-    assert "HttpOnly" in cookie and "SameSite=Strict" in cookie and "Secure" in cookie
-    session = cookie.split(";")[0]
-    assert "Start a run" in _get(live, "/", "GET", {**host, "Cookie": session})[1]
-    tampered = session[:-1] + ("a" if session[-1] != "a" else "b")
-    for bad in (tampered, "da_session=9999999999.forged", ""):                       # each one lands on sign-in
-        page = _get(live, "/", "GET", {**host, "Cookie": bad})[1]
-        assert "Sign in" in page and "Start a run" not in page
+    # off to GitHub: our client id, our callback, a random state remembered in a short cookie; no permissions asked
+    code, h, _ = _raw(live, "/auth/github?next=/run/ai-1-x", host)
+    loc = urllib.parse.urlparse(h["Location"])
+    q = urllib.parse.parse_qs(loc.query)
+    assert code == 302 and loc.netloc == "github.com" and q["client_id"] == ["Iv1.testclient"] and "scope" not in q
+    assert q["redirect_uri"] == ["https://debugassist.onrender.com/auth/github/callback"]
+    oauth = h["Set-Cookie"]
+    assert oauth.startswith("da_oauth=") and "HttpOnly" in oauth and "Path=/auth" in oauth and "Secure" in oauth
+    state, jar = q["state"][0], oauth.split(";")[0]
+    # back from GitHub: a wrong state is refused before GitHub is asked anything
+    asked = []
+    monkeypatch.setattr(ghauth, "account_for", lambda code, uri: asked.append((code, uri)) or "Isha-GH")
+    code, h, _ = _raw(live, "/auth/github/callback?code=c1&state=forged", {**host, "Cookie": jar})
+    assert code == 302 and h["Location"] == "/login?error=state" and not asked
+    code, h, _ = _raw(live, f"/auth/github/callback?code=c1&state={state}", {**host, "Cookie": jar})
+    assert code == 302 and h["Location"] == "/run/ai-1-x" and asked == [("c1", "https://debugassist.onrender.com/auth/github/callback")]
+    session = [c for c in h.get_all("Set-Cookie") if c.startswith("da_session=")][0]
+    assert "HttpOnly" in session and "SameSite=Lax" in session and "Secure" in session
+    jar = session.split(";")[0]
+    home = _get(live, "/", "GET", {**host, "Cookie": jar})[1]
+    assert "Start a run" in home and "Sign out" in home and "isha-gh" in home
+    tampered = jar[:-1] + ("a" if jar[-1] != "a" else "b")
+    for bad in (tampered, "da_session=isha-gh.9999999999.forged", ""):              # each one goes back to sign-in
+        assert _raw(live, "/", {**host, "Cookie": bad})[0] == 302
+    monkeypatch.setenv("ALLOWED_GITHUB_USERS", "devansh-gh")                          # off the list: out at once
+    assert _raw(live, "/", {**host, "Cookie": jar})[0] == 302
+    # an account not on the list is refused by name; cancelling on GitHub says so
+    code, h, _ = _raw(live, "/auth/github?next=/", host)
+    state = urllib.parse.parse_qs(urllib.parse.urlparse(h["Location"]).query)["state"][0]
+    code, h, body = _raw(live, f"/auth/github/callback?code=c2&state={state}", {**host, "Cookie": h["Set-Cookie"].split(";")[0]})
+    assert code == 403 and "The GitHub account isha-gh is not on this site&#x27;s list" in body
+    assert "cancelled" in _raw(live, "/auth/github/callback?error=access_denied&state=x", host)[1]["Location"]
+    code, h, _ = _raw(live, "/logout", host)
+    assert code == 302 and h["Location"] == "/login" and "Max-Age=0" in h["Set-Cookie"]
 
 
-def test_sessions_expire_and_wrong_passwords_slow_down(live, monkeypatch):
-    monkeypatch.setenv("APP_PASSWORD", "correct horse battery")
-    assert server.session_ok(server.make_session()) and not server.session_ok(server.make_session(now=0))
-    server._failed_logins.clear()
-    codes = [_get(live, "/login", "POST", {"Content-Type": "application/x-www-form-urlencoded"}, b"password=x")[0] for _ in range(6)]
-    assert codes[:5] == [401] * 5 and codes[5] == 429
+def test_sessions_are_signed_expire_and_go_only_to_this_site(monkeypatch):
+    from debug_assist import ghauth
+    _gh(monkeypatch)
+    assert ghauth.session_user(ghauth.make_session("Isha-GH")) == "isha-gh"
+    assert ghauth.session_user(ghauth.make_session("isha-gh", now=0)) == ""                     # expired
+    assert ghauth.session_user(ghauth.make_session("stranger")) == ""                          # not on the list
+    for nxt, want in (("/run/x?y=1", "/run/x?y=1"), ("//evil.example", "/"), ("https://evil.example", "/"), ("/\\x", "/")):
+        state, cookie = ghauth.new_state(nxt)
+        assert ghauth.check_state(cookie, state) == want and ghauth.check_state(cookie, "other") is None
 
 
-def test_a_public_address_without_its_password_stays_locked_and_says_why(monkeypatch, tmp_path):
-    monkeypatch.delenv("APP_PASSWORD", raising=False)
+def test_github_is_asked_once_for_who_you_are_and_its_token_is_not_kept(monkeypatch):
+    from debug_assist import ghauth
+    _gh(monkeypatch)
+    seen = []
+
+    class Resp:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(self.body).encode()
+
+    def fake(req, timeout):
+        seen.append((req.full_url, req.get_method(), req.headers.get("Authorization"), req.data))
+        return Resp({"access_token": "gho_temp"} if "access_token" in req.full_url else {"login": "Isha-GH"})
+    monkeypatch.setattr(ghauth.urllib.request, "urlopen", fake)
+    assert ghauth.account_for("c1", "https://debugassist.onrender.com/auth/github/callback") == "isha-gh"
+    assert [x[:2] for x in seen] == [(ghauth.TOKEN, "POST"), (ghauth.USER, "GET")] and seen[1][2] == "Bearer gho_temp"
+    assert b"client_secret=test-secret-not-real" in seen[0][3]
+    monkeypatch.setattr(ghauth.urllib.request, "urlopen", lambda req, timeout: Resp({"error": "bad_verification_code"}))
+    with pytest.raises(ghauth.AuthError, match="bad_verification_code"):
+        ghauth.account_for("c1", "u")
+
+
+def test_a_public_address_without_github_sign_in_stays_locked_and_says_why(monkeypatch, tmp_path):
+    for k in ("GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "ALLOWED_GITHUB_USERS", "PUBLIC_HOST"):
+        monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("RENDER_EXTERNAL_HOSTNAME", "debugassistagent.onrender.com")
-    assert "APP_PASSWORD" in server.locked_reason("0.0.0.0") and server.locked_reason("127.0.0.1") == ""
+    why = server.locked_reason("0.0.0.0")
+    assert "GitHub sign-in is not set up" in why and "GITHUB_CLIENT_ID" in why and server.locked_reason("127.0.0.1") == ""
     httpd = server.make(0)
-    httpd.locked = server.locked_reason("0.0.0.0")
+    httpd.locked = why
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
         assert _get(httpd, "/health")[0] == 200                       # Render sees it alive, so the deploy finishes
         code, text = _get(httpd, "/")
-        assert code == 503 and "is locked" in text and "APP_PASSWORD" in text
+        assert code == 503 and "is locked" in text and "GITHUB_CLIENT_ID" in text
         assert _get(httpd, "/api/start", "POST", {"Content-Type": "application/json"}, b"{}")[0] == 503
     finally:
         httpd.shutdown()
-    monkeypatch.setenv("APP_PASSWORD", "correct horse battery")
+    _gh(monkeypatch)
+    monkeypatch.delenv("PUBLIC_HOST")
+    monkeypatch.setenv("RENDER_EXTERNAL_HOSTNAME", "debugassistagent.onrender.com")
     assert server.locked_reason("0.0.0.0") == ""                      # Render's own hostname counts as the address
+    monkeypatch.setenv("ALLOWED_GITHUB_USERS", "")
+    assert "ALLOWED_GITHUB_USERS" in server.locked_reason("0.0.0.0")  # nobody on the list: nobody gets in
 
 
 def test_the_system_check_shows_each_service_in_plain_words(live, monkeypatch):
@@ -377,7 +451,7 @@ def test_the_advisor_scenes_are_served_and_degrade_quietly():
     assert "/static/advisors.js" in page and "gsap/3.12.5/gsap.min.js" in page
 
 
-def test_your_ok_from_the_page_runs_the_terminals_command_bound_to_the_text_shown(tmp_path, monkeypatch):
+def test_your_ok_from_the_page_runs_the_terminals_command_bound_to_the_text_shown(scratch_db, tmp_path, monkeypatch):
     from debug_assist.guardrails import fingerprint
     (tmp_path / "ai-1-x").mkdir()
     pr = tmp_path / "ai-1-x" / "PR.md"
@@ -402,8 +476,10 @@ def test_your_ok_from_the_page_runs_the_terminals_command_bound_to_the_text_show
         server.decide("ai-1-x", "maybe", sha)
     with pytest.raises(server.Refused, match="changed since this page was opened"):
         server.decide("ai-1-x", "approve", "0" * 64)
-    assert "Approved" in server.decide("ai-1-x", "approve", sha)
+    assert "Approved" in server.decide("ai-1-x", "approve", sha, by="isha-gh")
     assert calls[-1][2:] == ["debug_assist", "approve", "ai-1-x", "--no-view"]           # exactly the terminal's command
+    got = scratch_db["events"].find_one({"run_id": "ai-1-x", "kind": "decision"})      # who gave the OK, from GitHub sign-in
+    assert got["by"] == "isha-gh" and got["decision"] == "approve" and got["step"] == "approval"
     assert "said no" in server.decide("ai-1-x", "reject", sha) and calls[-1][3] == "reject"
     pr.write_text("## Fix\nedited after you read it")
     with pytest.raises(server.Refused, match="not the text you were shown"):
