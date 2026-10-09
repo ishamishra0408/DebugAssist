@@ -422,3 +422,29 @@ def test_the_pull_request_opens_from_your_ok_row_not_spread_on_the_page():
         sheet = _sheet(done, "check-pr")
         assert f'gh-state {"open" if word == "Approved" else "closed"}">{word}</span>' in sheet and "data-decide" not in sheet
         assert "Nothing was posted to GitHub." in sheet
+
+
+
+def test_code_change_shows_the_code_at_fault_and_the_fix_git_style(tmp_path, monkeypatch):
+    """Isha 2026-10-09 (F32 part A, view only): Find the cause opens the file at fault with its lines highlighted, why
+    they are the cause and the plan; then the fix as a diff once Fix it has written it."""
+    import subprocess
+    monkeypatch.setattr(viewer, "_runs_dir", lambda: tmp_path)
+    co = tmp_path / "ai-1-x" / "checkout"
+    (co / "src").mkdir(parents=True)
+    (co / "src" / "iter.ts").write_text("".join(f"line {n}\n" for n in range(1, 61)))
+    for cmd in (["git", "init", "-q"], ["git", "add", "-A"], ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "b"]):
+        subprocess.run(cmd, cwd=co, check=True)
+    (co / "src" / "iter.ts").write_text("changed by the fix\n")       # the fix applied: the sheet still shows main
+    st = {**_data()["state"], "cause": {"status": "FOUND", "file": "src/iter.ts", "lines": [30, 33], "why": "The **length** arm drops results.",
+                                        "plan": "Pair the result with its call", "looked_up": ["addToolResultsToConversation"]}}
+    patch = "diff --git a/src/iter.ts b/src/iter.ts\n--- a/src/iter.ts\n+++ b/src/iter.ts\n@@ -30,1 +30,1 @@\n-line 30\n+line 30 fixed\n"
+    page = viewer.render(_data(state=st, patch=patch), mode="live", token="t")
+    assert 'popovertarget="codechange"><span>Code change</span>' in page
+    sh = _sheet(page, "codechange")
+    assert "found the cause in <code class=\"gh-ref\">iter.ts</code>, lines 30–33" in sh and 'data-md="The **length** arm drops results."' in sh
+    assert '<tr class="hit"><td class="ln">30</td><td class="code">line 30</td>' in sh and '<tr class=""><td class="ln">18</td>' in sh
+    assert "Pair the result with its call" in sh and "addToolResultsToConversation" in sh
+    assert 'class="ddel"' in sh and "line 30 fixed" in sh and "Files changed <span class=cnt>1</span>" in sh
+    none = viewer.render(_data(state={**st, "fix": {}}, patch=""), mode="live", token="t")
+    assert "No change yet: Fix it writes it next." in _sheet(none, "codechange")

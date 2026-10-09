@@ -376,6 +376,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
     proof_html = _proof(s, rid, ai_use(use, "reproduce"))
     pr_btn = '<button type="button" class="tbtn proof-btn" popovertarget="check-pr"><span>Check PR</span></button>'
     ctx_html = context_sheet(d.get("pack") or {}, s.get("context") or {})
+    change_html = code_change_sheet(s, rid, d.get("patch") or "", ai_use(use, "find_cause", "write_fix"))
     report_html, guard_html = report_sheet(s, ai_use(use, "why_it_shipped")), guard_sheet(s, ai_use(use, "lasting_guard"))
     def btn(target: str, label: str) -> str:
         return f'<button type="button" class="tbtn proof-btn" popovertarget="{target}"><span>{e(label)}</span></button>'
@@ -383,6 +384,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
                   if str(s.get("issue_url", "")).startswith("https://github.com/") else "")
     step_btns = {"read_issue": issue_link, "gather_context": btn("ctxinfo", "Context info") if ctx_html else "",
                  "reproduce": btn("proof", "Check proof") if proof_html else "",
+                 "find_cause": btn("codechange", "Code change") if change_html else "",
                  "why_it_shipped": btn("report", "Read report") if report_html else "",
                  "lasting_guard": btn("guardinfo", "Guard") if guard_html else ""}
     step_rows_html = []
@@ -535,6 +537,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
 </div>
 {_check_pr(d, rid, served and not is_replay, approve, reject, waiting=phase == "waiting" and not is_replay) if d["pr_text"] else ""}
 {_k("sheet-ctx", ctx_html or '<i id="ctxinfo" hidden></i>')}
+{_k("sheet-change", change_html or '<i id="codechange" hidden></i>')}
 {_k("sheet-report", report_html or '<i id="report" hidden></i>')}
 {_k("sheet-guard", guard_html or '<i id="guardinfo" hidden></i>')}
 <div id="acts" popover class="pop gh gh-menu" aria-label="Activity">
@@ -1057,6 +1060,50 @@ def context_sheet(pack: dict, c: dict) -> str:
     return _sheet("ctxinfo", "Context info", f'Context for issue <span class="gh-muted">#{e(iss.get("number", ""))}</span>', meta, panes,
                   [("conv", "Conversation", len(cs)), ("commits", "Commits", sum(len(h.get("changes") or []) for h in hist)),
                    ("code", "Code", len(ranking)), ("shared", "Shared code", len(rel))])
+
+
+def _file_at_fault(rid: str, path: str) -> str:
+    """The file as the pinned commit has it (before any fix), from the run's own copy of the code."""
+    import subprocess
+    co = _runs_dir() / rid / "checkout"
+    if not path or not (co / ".git").exists():
+        return ""
+    r = subprocess.run(["git", "-C", str(co), "show", f"HEAD:{path}"], capture_output=True, text=True, timeout=30)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def code_change_sheet(s: dict, rid: str, fix_patch: str, ai: str = "") -> str:
+    """Code change (Isha 2026-10-09, F32 part A, view only): the code at fault as GitHub shows a file, the lines named
+    highlighted, why they are the cause and the plan; then the fix, git style, once Fix it has written it."""
+    c = s.get("cause") or {}
+    if c.get("status") != "FOUND" or not c.get("file"):
+        return ""
+    a, b = (c.get("lines") or [0, 0])[:2]
+    text = _file_at_fault(rid, c["file"])
+    rows = ""
+    if text:
+        src = text.splitlines()
+        lo, hi = max(1, a - 12), min(len(src), b + 12)
+        rows = "".join(f'<tr class="{"hit" if a <= n <= b else ""}"><td class="ln">{n}</td><td class="code">{e(src[n - 1])}</td></tr>'
+                       for n in range(lo, hi + 1))
+    code = (f'<div class="dfile"><div class="dfile-head"><span class="dpath">{e(c["file"])}</span>'
+            f'<span class="dtag">lines {a}–{b} at fault, on main</span></div>'
+            + (f'<div class="dscroll"><table class="dtable blob">{rows}</table></div>' if rows else
+               '<p class="gh-muted gh-pad">The file is not on this host any more.</p>') + '</div>')
+    why = (f'<div class="gh-annot muted"><b>Why this is the cause</b>{_md(c.get("why", ""))}'
+           + (f'<p><span class="gh-muted">Plan for the fix:</span> {e(c["plan"])}</p>' if c.get("plan") else "")
+           + (f'<p><span class="gh-muted">Code it looked up:</span> {e(", ".join(c["looked_up"]))}</p>' if c.get("looked_up") else "")
+           + '</div>')
+    files = diffview.parse(fix_patch or "")
+    change = (diffview.html(fix_patch) if files else
+              '<p class="gh-muted">No change yet: Fix it writes it next.</p>' if not (s.get("fix") or {}).get("status") else
+              '<p class="gh-muted">No fix passed its tests, so there is no change to show.</p>')
+    meta = (f'<span class="Label Label--done">AI-generated</span><b>debugassist</b> found the cause in '
+            f'<code class="gh-ref">{e(Path(c["file"]).name)}</code>, lines {a}–{b}')
+    panes = (f'{ai}<div class="pr-pane" data-pane="cause">{why}{code}</div>'
+             f'<div class="pr-pane" data-pane="change" hidden>{change}</div>')
+    return _sheet("codechange", "Code change", "Code change", meta, panes,
+                  [("cause", "Cause", None), ("change", "Files changed", len(files) or None)])
 
 
 def report_sections(text: str) -> tuple[list, str]:
