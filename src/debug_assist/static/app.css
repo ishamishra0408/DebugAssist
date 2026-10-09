@@ -744,8 +744,6 @@ body.auth { min-height: 100vh; min-height: 100dvh; display: grid; place-items: c
 
 /* the account: only the name in the toolbar; Sign out in its menu (GitHub's wording: "Signed in as …") */
 .tbtn.acct svg { transform: rotate(90deg); opacity: .7; }
-.pop.acct-menu[popover] { width: 220px; padding: 6px; }
-.acct-who { margin: 0; padding: 8px 10px 10px; font-size: 13px; color: var(--label-2); border-bottom: 1px solid var(--hair); overflow-wrap: anywhere; }
-.acct-who b { color: var(--label); font-weight: 600; }
-.acct-item { display: block; margin-top: 6px; padding: 9px 10px; border-radius: 12px; color: var(--label); font-size: 14px; }
+.pop.acct-menu[popover] { width: max-content; min-width: 150px; padding: 6px; border-radius: 16px; }
+.acct-item { display: block; padding: 9px 12px; border-radius: 11px; color: var(--label); font-size: 14px; }
 .acct-item:hover, .acct-item:focus-visible { background: rgba(127, 127, 127, .16); text-decoration: none; }

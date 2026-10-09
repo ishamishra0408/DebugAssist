@@ -185,7 +185,7 @@ def test_sign_in_is_with_github_and_only_for_the_accounts_on_the_list(live, monk
     assert "HttpOnly" in session and "SameSite=Lax" in session and "Secure" in session
     jar = session.split(";")[0]
     home = _get(live, "/", "GET", {**host, "Cookie": jar})[1]
-    assert "Start a run" in home and 'popovertarget="acct"' in home and "Signed in as <b>isha-gh</b>" in home
+    assert "Start a run" in home and 'popovertarget="acct"' in home and "isha-gh" in home and "Signed in as" not in home
     assert 'href="/logout">Sign out</a>' in home.split('<div id="acct" popover')[1]          # Sign out sits in the menu
     tampered = jar[:-1] + ("a" if jar[-1] != "a" else "b")
     for bad in (tampered, "da_session=isha-gh.9999999999.forged", ""):              # each one goes back to sign-in

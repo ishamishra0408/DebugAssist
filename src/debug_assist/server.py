@@ -772,8 +772,7 @@ def home_page(user: str = "") -> str:
   {f'<div class="tgroup glass"><button type="button" class="tbtn acct" popovertarget="acct" aria-label="Account: {e(user)}">'
    f'<span>{e(user)}</span>{icons.chevron(12)}</button></div>' if user else ''}
 </nav>
-{f'<div id="acct" popover class="pop glass acct-menu" aria-label="Account"><p class="acct-who">Signed in as <b>{e(user)}</b></p>'
- f'<a class="acct-item" href="/logout">Sign out</a></div>' if user else ''}
+{f'<div id="acct" popover class="pop glass acct-menu" aria-label="Account"><a class="acct-item" href="/logout">Sign out</a></div>' if user else ''}
 <main>
 <header class="hero">
   <h1>Start a run</h1>
@@ -822,6 +821,14 @@ const fail = msg => {{ $("err").textContent = msg; }};
 const FOOT = {{ standard: "Cheaper. It often cannot fix the bug.", opus: "Stronger. About $0.70 a run, taken from your AI budget." }};
 document.querySelectorAll('input[name="ai"]').forEach(r => r.addEventListener("change", () => {{ $("aifoot").textContent = FOOT[r.value]; }}));
 $("link").addEventListener("keydown", ev => {{ if (ev.key === "Enter") $("check").click(); }});
+const acct = $("acct");
+if (acct) acct.addEventListener("toggle", ev => {{   // under the name, its right edge on the button's, kept on screen
+  if (ev.newState !== "open") return;
+  const r = document.querySelector(".tbtn.acct").closest(".tgroup").getBoundingClientRect();
+  acct.style.inset = "auto"; acct.style.top = (r.bottom + 8) + "px";
+  acct.style.left = Math.max(16, Math.min(innerWidth - acct.offsetWidth - 16, r.right - acct.offsetWidth)) + "px";
+}});
+addEventListener("resize", () => {{ if (acct && acct.matches(":popover-open")) acct.hidePopover(); }});
 $("auto-change").onclick = () => {{ $("auto").hidden = true; $("sections").hidden = false; }};
 $("check").onclick = async () => {{
   fail(""); $("more").hidden = true; $("card").hidden = true; $("check").disabled = true;
