@@ -327,3 +327,19 @@ def test_a_reproduction_the_issue_cannot_check_says_so(repo, monkeypatch):
     state["focus"] = "merge_chunks drops `args`"                                  # quotes code: checked, no note
     b = testwriter.attempt(state, ladder.RUNGS[0], 2, [], ctx, repo, PROFILE, run_cmd=run)
     assert b.outcome == ladder.RED and testwriter.NOT_CHECKED not in b.evidence
+
+
+def test_context_shows_what_really_ranked_each_file_and_flags_ties(repo):
+    """Review of run #22085 (2026-10-09), F36: the reasons shown were the first strings present, not what ranked a
+    file; version numbers were taken as code; a tie was broken by the file name, invisibly."""
+    for junk in ("`7.0.128,`", "`5.0.1,`", "`4.5.4. The same code is on`", "`v2.0.59`"):
+        assert testwriter.anchors(junk) == [], junk
+    assert testwriter.anchors("`merge_chunks`, `tool-call`") == ["merge_chunks", "tool-call"]
+    ctx = testwriter.locate(repo, "`merge_chunks` drops `args`", "`merge_chunks` drops `args`", PROFILE)
+    got = context.ranked(repo, ctx)
+    best = got[0]
+    assert best["reasons"] and best["reasons"] == sorted(best["reasons"], key=lambda r: -r[1])     # heaviest first
+    assert any("merge_chunks" in r[0] for r in best["reasons"]) and all(r[1] > 0 for r in best["reasons"])
+    assert all(isinstance(f["tied_with"], list) for f in got)
+    if len(got) > 1 and got[0]["score"] == got[1]["score"]:
+        assert got[1]["path"] in got[0]["tied_with"]

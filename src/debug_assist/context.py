@@ -98,7 +98,10 @@ def ranked(checkout: Path, ctx: testwriter.Context) -> list[dict]:
             for m in list(re.finditer(re.escape(a), text))[:4]:
                 hits.setdefault(text.count("\n", 0, m.start()) + 1, 1)
         lines = testwriter._snippets(text, hits, pad=4).splitlines()[:FILE_LINES] if hits else []
-        out.append({"path": path, "score": score, "matched": matched, "snippets": "\n".join(lines)})
+        out.append({"path": path, "score": score, "matched": matched, "snippets": "\n".join(lines),
+                    "reasons": (getattr(ctx, "reasons", {}) or {}).get(path, [])})
+    for f in out:   # review of run #22085: a 7-7 tie was broken by the file name, invisibly
+        f["tied_with"] = [g["path"] for g in out if g is not f and g["score"] == f["score"]]
     return out
 
 

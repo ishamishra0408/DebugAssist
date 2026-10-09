@@ -49,6 +49,7 @@ class Context:
     look_in_missing: list = field(default_factory=list)  # pointed-to files that are not source files in the code
     test_into: str = ""               # the unit test is added to this existing test file, as new cases at its end
     test_into_note: str = ""          # why a pointed-to test file was not used (not found, not a test file)
+    reasons: dict = field(default_factory=dict)  # file → [[why, weight], ...]: what really ranked it, heaviest first
 
 
 # ── locate: deterministic, $0 ────────────────────────────────────────────────────────────────────
@@ -59,8 +60,9 @@ def anchors(text: str) -> list[str]:
     """Exact strings worth searching for: code spans and quoted strings (error messages, names)."""
     out = []
     for m in _ANCHOR.finditer(text):
-        s = next(g for g in m.groups() if g).strip()
-        if re.fullmatch(r"[\d.\s]+", s) or s.startswith(("gen_", "http")) or re.fullmatch(r"\d+\.\d+\.\d+", s):
+        s = next(g for g in m.groups() if g).strip().rstrip(",;:")
+        if (re.fullmatch(r"[\d.\s]+", s) or s.startswith(("gen_", "http")) or re.fullmatch(r"v?\d+(\.\d+)+\.?", s)
+                or re.match(r"\d+(\.\d+)+\.?\s", s)):   # versions, and prose caught between two version numbers' backticks
             continue
         if s not in out:
             out.append(s)
@@ -93,10 +95,13 @@ def locate(checkout: Path, issue_text: str, focus: str, profile=None, hints: dic
     checkout, lang, hints = Path(checkout), langs.of(profile), hints or {}
     focus_anchors = anchors(focus)
     found = focus_anchors + [a for a in anchors(issue_text) if a not in focus_anchors]
-    score, lines = {}, {}
+    score, lines, why = {}, {}, {}
+    def because(path, text, w):
+        why.setdefault(path, []).append([text, w])
     for a in found:
         hits = _git_grep(checkout, a, lang)
-        weight = _specificity(len({p for p, _ in hits})) * (2 if a in focus_anchors else 1)
+        nf = len({p for p, _ in hits})
+        weight = _specificity(nf) * (2 if a in focus_anchors else 1)
         if not weight:
             continue
         for path, num in hits:
@@ -104,6 +109,7 @@ def locate(checkout: Path, issue_text: str, focus: str, profile=None, hints: dic
             lines.setdefault(path, {})[num] = min(pr, lines.get(path, {}).get(num, pr))
         for path in {p for p, _ in hits}:
             score[path] = score.get(path, 0) + weight
+            because(path, f"contains “{a}” (in {nf} file{'s' * (nf != 1)})", weight)
     pkgs = {Path(d).name: d for d in lang.package_dirs(checkout, need_marker=False) if d != "."}
     named = [pkgs[k] for k in pkgs if re.search(rf"\b{re.escape(k)}\b|\b{re.escape(k.replace('-', ' '))}\b", focus, re.I)]
     words = {w for w in re.findall(r"\b[a-z][a-zA-Z]{4,}\b", focus)}
@@ -115,6 +121,8 @@ def locate(checkout: Path, issue_text: str, focus: str, profile=None, hints: dic
             code = sum(1 for w in words if re.search(rf"\.{w}\b|\b{w}\(", text))
             if code or path in score:
                 score[path] = score.get(path, 0) + code
+                if code:
+                    because(path, f"uses {code} of the problem's words as code", code)
         score = {p: v for p, v in score.items() if lang.package_of(p) in named} or score
     # a function or class the focus names counts most where it is DEFINED, not where it is called (dry run on
     # langchain 2026-10-08: `merge_lists` tied across its four callers and lost to them on name order)
@@ -128,11 +136,13 @@ def locate(checkout: Path, issue_text: str, focus: str, profile=None, hints: dic
                     if path in score:
                         score[path] += 3
                         lines.setdefault(path, {})[int(num)] = 0
+                        because(path, f"defines “{a}”", 3)
     look_in, look_missing = [], []
     for p in hints.get("look_in") or []:
         if (checkout / p).is_file() and lang.is_source(p):
             score[p] = score.get(p, 0) + POINTED
             look_in.append(p)
+            because(p, "your directional input", POINTED)
         else:
             look_missing.append(p)
     if not score:
@@ -173,7 +183,8 @@ def locate(checkout: Path, issue_text: str, focus: str, profile=None, hints: dic
                    example_test=str(example), example_header=header.strip(),
                    example_case=lang.pattern_case(test_text, focus), fixtures=fixtures, fixture_best=best,
                    fixture_sample=sample, anchors=found, ranking=ranking[:5], package_dir=pkg_dir,
-                   look_in=look_in, look_in_missing=look_missing, test_into=test_into, test_into_note=into_note)
+                   look_in=look_in, look_in_missing=look_missing, test_into=test_into, test_into_note=into_note,
+                   reasons={p: sorted(why.get(p, []), key=lambda r: -r[1])[:4] for p, _ in ranking[:5]})
 
 
 def _snippets(text: str, hit_lines: dict, pad: int = 14) -> str:

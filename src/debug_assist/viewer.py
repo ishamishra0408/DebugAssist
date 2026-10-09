@@ -1039,10 +1039,14 @@ def context_sheet(pack: dict, c: dict) -> str:
     ranking = code.get("ranking") or []
     files = ""
     for i, f in enumerate(ranking):
-        why = ", ".join(f"“{a}”" for a in (f.get("matched") or [])[:4]) or "the problem's words"
+        reasons = [r[0] for r in (f.get("reasons") or [])[:3]]   # what really ranked it (F36), heaviest first
+        why = (" · ".join(reasons) if reasons else
+               "contains " + (", ".join(f"“{a}”" for a in (f.get("matched") or [])[:4]) or "the problem's words"))
+        if f.get("tied_with"):
+            why += f" · tied (score {f.get('score')}) with {', '.join(Path(x).name for x in f['tied_with'])}: ordered by file name"
         lines = ctx.get("snippets", "") if f["path"] == ctx.get("source") and ctx.get("snippets") else f.get("snippets", "")
         head = (f'<span class="dpath">{e(f["path"])}</span>'
-                f'<span class="dtag">{"best match · " if i == 0 else ""}contains {e(why)}</span>')
+                f'<span class="dtag">{"best match · " if i == 0 else ""}{e(why)}</span>')
         files += (f'<details class="dfile"{" open" if i == 0 else ""}><summary>{head}</summary>{_blob(lines, f.get("matched") or [])}</details>'
                   if lines else   # nothing kept to show: a plain row, not one that looks like it opens
                   f'<div class="dfile"><div class="dfile-head">{head}</div></div>')
