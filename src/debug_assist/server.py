@@ -43,33 +43,29 @@ def _public_host() -> str:
     return (os.environ.get("PUBLIC_HOST") or os.environ.get("RENDER_EXTERNAL_HOSTNAME") or "").strip().lower()
 
 
-LOGIN_ERRORS = {"state": "That sign-in took too long or came from another tab. Try again.",
-                "github": "GitHub did not answer. Try again in a minute.",
-                "cancelled": "Sign-in was cancelled on GitHub.",
-                "off": "GitHub sign-in is not set up on this address yet."}
+LOGIN_ERRORS = {"state": "Sign-in timed out. Try again.", "github": "Couldn't reach GitHub. Try again.",
+                "cancelled": "Sign-in was canceled.", "off": "Sign-in isn't set up yet."}
+GITHUB_MARK = ('<svg width="20" height="20" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 '
+               '8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94'
+               '-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64'
+               '-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 '
+               '2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73'
+               '.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>')
 
 
 def login_page(error: str = "", refused: str = "") -> str:
-    """Sign in with GitHub (Isha 2026-10-08): one button; only the accounts on this site's list get in."""
+    """Sign in, GitHub's way (Isha 2026-10-08: clean, GitHub's wording): the mark, "Sign in to …", one button."""
     from . import icons
     e = viewer.e
-    msg = (f"The GitHub account {refused} is not on this site's list. Ask the owner to add it." if refused
-           else LOGIN_ERRORS.get(error, ""))
-    gh = ('<svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 '
-          '8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94'
-          '-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64'
-          '-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 '
-          '2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73'
-          '.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>')
+    msg = f"{refused} doesn't have access." if refused else LOGIN_ERRORS.get(error, "")
+    flash = f'<p class="auth-flash" role="alert">{e(msg)}</p>' if msg else ""
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sign in · {plain.NAME}</title><meta name="color-scheme" content="dark light"><link rel="stylesheet" href="/static/app.css">
-</head><body><div class="ambient s-idle" aria-hidden="true"></div>
-<main style="max-width:440px;width:100%"><header class="hero"><p class="eyebrow">{icons.mark(20)} {plain.NAME}</p><h1>Sign in</h1>
-<p class="lede">Runs started here spend money, so each person signs in with their own GitHub account.</p></header>
-<section class="group"><a class="btn glass prominent gh-signin" href="/auth/github">{gh}<span>Sign in with GitHub</span></a>
-<p class="err" role="alert">{e(msg)}</p>
-<p class="foot">GitHub tells {plain.NAME} who you are, nothing else: it gets no access to your repositories and keeps no GitHub token.</p>
-</section></main></body></html>"""
+<title>Sign in to {plain.NAME}</title><meta name="color-scheme" content="dark light"><link rel="stylesheet" href="/static/app.css">
+</head><body class="auth"><div class="auth-glow" aria-hidden="true"></div>
+<main class="auth-wrap"><div class="auth-mark">{icons.mark(28)}</div>
+<h1>Sign in to {plain.NAME}</h1>
+<div class="auth-card">{flash}<a class="auth-btn" href="/auth/github">{GITHUB_MARK}<span>Continue with GitHub</span></a></div>
+</main></body></html>"""
 
 
 _plans: dict = {}

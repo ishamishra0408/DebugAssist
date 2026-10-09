@@ -161,7 +161,8 @@ def test_sign_in_is_with_github_and_only_for_the_accounts_on_the_list(live, monk
     code, h, _ = _raw(live, "/", host)
     assert code == 302 and h["Location"] == "/login"
     page = _get(live, "/login", "GET", host)[1]
-    assert "Sign in with GitHub" in page and 'href="/auth/github"' in page and "password" not in page.lower()
+    assert "Sign in to DebugAssistAgent" in page and "Continue with GitHub" in page and 'href="/auth/github"' in page
+    assert "password" not in page.lower()
     assert _get(live, "/login", "POST", {**host, "Content-Type": "application/x-www-form-urlencoded"}, b"password=x")[0] == 403
     assert _get(live, "/health", "GET", host)[0] == 200                              # Render's health check stays open
     # off to GitHub: our client id, our callback, a random state remembered in a short cookie; no permissions asked
@@ -194,7 +195,7 @@ def test_sign_in_is_with_github_and_only_for_the_accounts_on_the_list(live, monk
     code, h, _ = _raw(live, "/auth/github?next=/", host)
     state = urllib.parse.parse_qs(urllib.parse.urlparse(h["Location"]).query)["state"][0]
     code, h, body = _raw(live, f"/auth/github/callback?code=c2&state={state}", {**host, "Cookie": h["Set-Cookie"].split(";")[0]})
-    assert code == 403 and "The GitHub account isha-gh is not on this site&#x27;s list" in body
+    assert code == 403 and "isha-gh doesn&#x27;t have access." in body
     assert "cancelled" in _raw(live, "/auth/github/callback?error=access_denied&state=x", host)[1]["Location"]
     code, h, _ = _raw(live, "/logout", host)
     assert code == 302 and h["Location"] == "/login" and "Max-Age=0" in h["Set-Cookie"]

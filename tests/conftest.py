@@ -28,6 +28,14 @@ def no_inherited_git_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def sign_in_off(monkeypatch):
+    """Tests start with GitHub sign-in off and no public address, whatever .env says (2026-10-08: with the GitHub
+    settings in .env for a local try, every page test landed on sign-in). A test that needs them sets its own."""
+    for k in ("GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "ALLOWED_GITHUB_USERS", "PUBLIC_HOST", "RENDER_EXTERNAL_HOSTNAME"):
+        monkeypatch.delenv(k, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def advisors_off(monkeypatch, tmp_path):
     """Tests never reach the real advisors or write to the real bundle, whatever .env says (2026-10-08: with the
     advisors switched on in .env, a test could have asked the live server). A test that needs them sets its own."""
