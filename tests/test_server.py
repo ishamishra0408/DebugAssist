@@ -75,7 +75,7 @@ def _ok_headers(httpd):
 
 def test_only_the_home_page_can_start_a_run(live, monkeypatch):
     started = []
-    monkeypatch.setattr(server, "start_run", lambda u, h, a, *p: started.append((u, h, a)) or "ai-2-y")
+    monkeypatch.setattr(server, "start_run", lambda u, h, a, *p, **k: started.append((u, h, a)) or "ai-2-y")
     body = json.dumps({"url": "https://github.com/vercel/ai/issues/2", "heading": "", "ai": "standard"}).encode()
     good = _ok_headers(live)
     for drop in (server.TOKEN_HEADER, "Origin", "Content-Type"):
@@ -86,7 +86,7 @@ def test_only_the_home_page_can_start_a_run(live, monkeypatch):
     assert _get(live, "/", "GET", {"Host": "evil.example"})[0] == 403
     code, out = _get(live, "/api/start", "POST", good, body)
     assert code == 200 and json.loads(out)["page"] == "/run/ai-2-y" and len(started) == 1
-    monkeypatch.setattr(server, "start_run", lambda u, h, a, *p: (_ for _ in ()).throw(server.Refused("A run is already going (x).")))
+    monkeypatch.setattr(server, "start_run", lambda u, h, a, *p, **k: (_ for _ in ()).throw(server.Refused("A run is already going (x).")))
     code, out = _get(live, "/api/start", "POST", good, body)
     assert code == 409 and "already going" in json.loads(out)["error"]
 

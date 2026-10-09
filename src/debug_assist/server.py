@@ -114,6 +114,37 @@ def _runs() -> list[str]:
     return sorted((p.name for p in d.iterdir() if p.is_dir() and RUN_ID.match(p.name)), key=started, reverse=True)
 
 
+def visible_runs(user: str) -> list[str]:
+    """Isha 2026-10-09: runs are private to the person who started them. Sign-in off (this Mac): every run.
+    Sign-in on and the database unreachable: none (whose they are can't be told)."""
+    from . import ghauth, owners
+    from .store import reachable
+    rids = _runs()
+    if not ghauth.configured():
+        return rids
+    if not user or not reachable():
+        return []
+    owners.claim_older(rids, user)
+    mine = owners.owners_of(rids)
+    return [r for r in rids if mine[r] == user]
+
+
+def owns(user: str, run_id: str) -> bool:
+    from . import ghauth, owners
+    if not ghauth.configured():
+        return True
+    try:
+        return bool(user) and owners.owner_of(run_id) == user
+    except Exception:
+        return False
+
+
+def spend_line(user: str) -> tuple[float, float]:
+    """(spent this month, this person's monthly limit)."""
+    from . import owners
+    return owners.spent_this_month(user, _runs()), owners.cap_for(user)
+
+
 # ── the issue, checked before anything starts ────────────────────────────────────────────────────────────────────
 class Refused(Exception):
     """A plain-English reason the home page shows the operator."""
@@ -217,12 +248,27 @@ def pointers(look_in: str, test_in: str) -> tuple[list[str], str]:
     return list(dict.fromkeys(files)), test
 
 
-def start_run(link: str, heading: str, ai: str, look_in: str = "", test_in: str = "") -> str:
+def start_run(link: str, heading: str, ai: str, look_in: str = "", test_in: str = "", by: str = "") -> str:
     with _start_lock:
-        return _start_run(link, heading, ai, look_in, test_in)
+        return _start_run(link, heading, ai, look_in, test_in, by)
 
 
-def _start_run(link: str, heading: str, ai: str, look_in: str = "", test_in: str = "") -> str:
+def _within_limit(by: str, ai: str) -> None:
+    """Isha 2026-10-09: a spending limit per person. A run may spend up to its own cap ($0.50 Standard, $2.50 Opus),
+    so it starts only when that much is left of this month's limit."""
+    from .config import CFG as cfg
+    if not by:
+        return
+    spent, cap = spend_line(by)
+    run_cap = cfg.demo_budget_usd if ai == "opus" else cfg.run_budget_usd
+    if spent + run_cap > cap + 1e-9:
+        cheaper = cfg.run_budget_usd if ai == "opus" and spent + cfg.run_budget_usd <= cap else None
+        raise Refused(f"This run could cost up to ${run_cap:.2f}, and ${max(0.0, cap - spent):.2f} is left of your "
+                      f"${cap:.2f} this month." + (" Choose Standard AI, or ask" if cheaper else " Ask")
+                      + " the owner to raise your limit.")
+
+
+def _start_run(link: str, heading: str, ai: str, look_in: str = "", test_in: str = "", by: str = "") -> str:
     owner, repo, number = _issue_parts(link)
     files, test = pointers(look_in, test_in)
     _ready_repo(owner, repo)
@@ -233,10 +279,14 @@ def _start_run(link: str, heading: str, ai: str, look_in: str = "", test_in: str
         raise Refused("That section is not in the issue any more. Press Check again.")
     proc = _child["proc"]
     if proc is not None and proc.poll() is None:
-        raise Refused(f"A run is already going ({_child['run_id']}). Wait for it to finish, then start another.")
+        raise Refused("A run is already going. Wait for it to finish, then start another.")   # not whose: runs are private
+    _within_limit(by, ai)
     run_id = f"{repo}-{number}-{datetime.now():%Y%m%d-%H%M%S}"
     folder = CFG.runs_dir / run_id
     folder.mkdir(parents=True, exist_ok=True)
+    if by:
+        from . import owners
+        owners.record(run_id, by)
     argv = [sys.executable, "-m", "debug_assist", "run", f"https://github.com/{owner}/{repo}/issues/{number}",
             f"--run-id={run_id}", "--no-view"] + (["--demo"] if ai == "opus" else []) + \
            ([f"--focus-heading={heading}"] if heading else []) + \
@@ -740,7 +790,7 @@ def home_page(user: str = "") -> str:
     from .store import reachable
     e = viewer.e
     rows, db_up = [], reachable()
-    for rid in _runs():
+    for rid in (visible_runs(user) if user else _runs()):
         if db_up:
             got = _status_of(rid)
         else:  # each run's state is in the database: list the runs without it rather than wait on it
@@ -757,6 +807,12 @@ def home_page(user: str = "") -> str:
                     f'<span class="tr">{e(when)}{icons.chevron()}</span></a></li>')
         if len(rows) == 25:
             break
+    spend = ""
+    if user and db_up:   # yours alone: what your runs spent this month, against your limit
+        used, cap = spend_line(user)
+        spend = f'<p class="foot spend">This month you have used ${used:.2f} of your ${cap:.2f}.</p>'
+    from .owners import older_owner
+    queue = _label_queue() if (not user or user == older_owner()) else ""   # automatic runs are the repo owner's
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>{plain.NAME}</title><meta name="color-scheme" content="dark light">
 <link rel="stylesheet" href="/static/app.css">
@@ -797,7 +853,7 @@ def home_page(user: str = "") -> str:
       <label><input type="radio" name="ai" value="standard" checked>Standard<small>A few cents</small></label>
       <label><input type="radio" name="ai" value="opus">Claude Opus<small>About $0.70</small></label>
     </div>
-    <p class="foot" id="aifoot">Cheaper. It often cannot fix the bug.</p></section>
+    <p class="foot" id="aifoot">Cheaper. It often cannot fix the bug.</p>{spend}</section>
   <section class="group" aria-labelledby="h-ptr" style="margin-top:28px"><h2 id="h-ptr">Your pointers <span class="opt">Optional</span></h2>
     <div class="sect pointers">
       <label class="pfield"><b>Where to look for the cause</b>
@@ -809,7 +865,7 @@ def home_page(user: str = "") -> str:
     </div></section>
   <div class="start" style="margin-top:22px"><button type="button" class="btn glass prominent" id="start">{icons.play(16)}<span>Start the run</span></button></div>
 </div>
-{_label_queue()}
+{queue}
 <section class="group" id="runs" aria-labelledby="h-runs"><h2 id="h-runs">Runs</h2>
   <div class="sect"><ul class="rows">{''.join(rows) or '<li class="row pending"><span class="ic"></span><span class="t"><span>No runs yet</span></span></li>'}</ul></div></section>
 </main>
@@ -1010,10 +1066,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(400, {"error": str(r)})
             if len(parts) == 2 and parts[0] in ("run", "replay"):
                 rid = parts[1]
-                if rid == "latest" and _runs():
-                    return self._send(302, "", "text/plain", location=f"/{parts[0]}/{_runs()[0]}")
-                if not RUN_ID.match(rid) or not (CFG.runs_dir / rid).is_dir():
-                    return self._send(404, "no such run", "text/plain")
+                if rid == "latest" and visible_runs(self.user()):
+                    return self._send(302, "", "text/plain", location=f"/{parts[0]}/{visible_runs(self.user())[0]}")
+                if not RUN_ID.match(rid) or not (CFG.runs_dir / rid).is_dir() or not owns(self.user(), rid):
+                    return self._send(404, "no such run", "text/plain")   # someone else's run: as if it did not exist
                 from .store import reachable
                 if not reachable():
                     return self._send(503, "The database is off, so this run can't be read. On this Mac it runs in "
@@ -1071,6 +1127,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
             if path == "/api/decide":
+                if not owns(self.user(), str(body.get("run_id", ""))):
+                    raise Refused("No such run.")
                 said = decide(str(body.get("run_id", "")), str(body.get("decision", "")), str(body.get("sha256", "")),
                               str(body.get("commit_message", ""))[:12000], by=self.user())
                 return self._json(200, {"said": said})
@@ -1091,7 +1149,7 @@ class Handler(BaseHTTPRequestHandler):
                 repo = start_connect(str(body.get("url", "")), again=bool(body.get("again")))
                 return self._json(200, {"repo": repo, "page": f"/connect?repo={repo}"})
             rid = start_run(str(body.get("url", "")), str(body.get("heading", "")), str(body.get("ai", "")),
-                            str(body.get("look_in", "")), str(body.get("test_in", "")))
+                            str(body.get("look_in", "")), str(body.get("test_in", "")), by=self.user())
             return self._json(200, {"run_id": rid, "page": f"/run/{rid}"})
         except Refused as r:
             return self._json(409 if "already going" in str(r) or "being connected" in str(r) else 400, {"error": str(r)})
@@ -1143,7 +1201,8 @@ def serve(port: int = PORT, idle_s: int = IDLE_S, host: str = "127.0.0.1") -> No
     from . import autostart
     if autostart.enabled() and not why:
         ai = os.environ.get("AUTO_RUN_AI", "standard")
-        threading.Thread(target=autostart.worker, args=(lambda link: start_run(link, "", ai), run_going,
+        from .owners import older_owner   # automatic runs belong to the repo's owner (the older-runs owner)
+        threading.Thread(target=autostart.worker, args=(lambda link: start_run(link, "", ai, by=older_owner()), run_going,
                                                          threading.Event()), daemon=True).start()
         print(f"{plain.NAME}: automatic runs ON: issues labelled '{autostart.LABEL}' in connected repos start a run "
               f"({ai} AI, at most {autostart.MAX_PER_DAY} a day)", flush=True)

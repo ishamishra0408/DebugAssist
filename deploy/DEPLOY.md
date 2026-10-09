@@ -31,7 +31,7 @@ time it starts; update `LAYA_URL` in Render when it does (or set up a named tunn
 ## 4. Render
 New ▸ Blueprint ▸ this repo. Render reads `render.yaml` and asks for each key marked `sync: false`.
 Render tells the app its own address (`RENDER_EXTERNAL_HOSTNAME`), so there is no address to set.
-Sign-in is with GitHub: `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` from a GitHub OAuth app whose callback is `https://<the address>/auth/github/callback`, and `ALLOWED_GITHUB_USERS`, the accounts that may sign in (comma-separated). Without all three the address stays locked.
+Sign-in is with GitHub: `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` from a GitHub OAuth app whose callback is `https://<the address>/auth/github/callback`, and `ALLOWED_GITHUB_USERS`, the accounts that may sign in (comma-separated). Without all three the address stays locked. Each person sees only their own runs. Runs from before that are the first listed account's (or `OLDER_RUNS_OWNER`'s). Each person may spend `SPEND_CAP_USD` a month on AI (default $10); `SPEND_CAPS="name=dollars, …"` sets a different limit for named people. Connected repos are shared.
 
 ## 5. Check
 Open the address, sign in, then on your Mac: `uv run debug-assist preflight <issue-url>` with the same environment, or
