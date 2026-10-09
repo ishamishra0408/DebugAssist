@@ -353,14 +353,18 @@ def test_the_steps_open_their_own_sheets_github_style():
     issue's strings marked); Read report (folded, GitHub-style) instead of the report on the page; Guard in plain words;
     tokens and cost on each AI step; metrics at the top; the problem section gone."""
     pack, st = _rich_state()
-    calls = [{"step": "reproduce", "input_tokens": 9500, "output_tokens": 3500, "actual_micro": 107700, "model": "anthropic/claude-opus-5.5", "at": "2026-10-08T21:13:20"},
-             {"step": "reproduce", "input_tokens": 500, "output_tokens": 500, "actual_micro": 2300, "model": "anthropic/claude-opus-5.5", "at": "2026-10-08T21:13:56"}]
+    calls = [{"step": "why_it_shipped", "input_tokens": 9500, "output_tokens": 3500, "actual_micro": 107700, "model": "anthropic/claude-opus-5.5", "at": "2026-10-08T21:13:20"},
+             {"step": "why_it_shipped", "input_tokens": 500, "output_tokens": 500, "actual_micro": 2300, "model": "anthropic/claude-opus-5.5", "at": "2026-10-08T21:13:56"}]
     page = viewer.render(_data(state=st, pack=pack, calls=calls), mode="live", token="t")
     assert 'href="https://github.com/vercel/ai/issues/7" target="_blank" rel="noopener noreferrer"><span>Open issue</span>' in page
-    for target, label in (("ctxinfo", "Context info"), ("report", "Read report"), ("guardinfo", "Guard"), ("costs", "Cost details")):
+    for target, label in (("ctxinfo", "Context info"), ("report", "Read report"), ("guardinfo", "Guard")):
         assert f'popovertarget="{target}"><span>{label}</span>' in page and f'<div id="{target}" popover' in page, target
-    assert '<span class="tokchip" title="2 AI calls: 10,000 tokens in, 4,000 out">14.0k tokens · $0.11</span>' in page
     assert page.index('class="metrics"') < page.index("<h2>Steps</h2>")                   # metrics beside the steps, at the top
+    # Isha 2026-10-09: no Cost details; Last event beside the issue, not a tile; tokens inside each sheet, not on the rows
+    assert "Cost details" not in page and 'id="costs"' not in page and "tokchip" not in page
+    assert "Issue #1 · Standard AI · Last event" in page and "<span>Last event</span>" not in page
+    assert ('<span class="gh-state ai">AI use</span>14.0k tokens · $0.11 · 2 AI calls <span class="gh-muted">(10,000 in, 4,000 out)</span>'
+            in _sheet(page, "report"))
     assert "The problem it is fixing" not in page and "<h2>What it read</h2>" not in page and 'id="story"' not in page
     ctx = _sheet(page, "ctxinfo")
     assert "Collected by code, no AI" in ctx and 'data-md="Still happens on **7.0.1**"' in ctx and "Comment 1" in ctx

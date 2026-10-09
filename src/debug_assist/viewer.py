@@ -356,6 +356,8 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
     who = f"{issue.get('owner', '')}/{issue.get('repo', '')}".strip("/")
     model = "Claude Opus" if s.get("demo") else "Standard AI"
     running_since = d.get("since") if cur is not None and states[cur] == "running" else None
+    last_ev = d["events"][-1]["at"] if d["events"] else None   # Isha 2026-10-09: beside the issue, not a tile
+    last_seen = f' · Last event {_since(d, last_ev, is_replay, " ago")}' if last_ev and issue else ""
     nodes = "".join(
         f'<li class="node {st}"><span class="bead">{icons.STATE[st](16) if st in icons.STATE else i + 1}</span>'
         f'<span class="nl">{e(r["label"])}</span></li>' for i, (r, st) in enumerate(zip(rows, states)))
@@ -363,17 +365,18 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
                   f'Nothing is running. {rp.get("elapsed", 0):.0f} of {rp.get("length", 0):.0f} s.</span></div>' if is_replay else "")
     hero = f"""<header class="hero">
   {replay_bar}
-  <p class="eyebrow">{f'{e(who)} · Issue #{e(issue.get("number"))} · {e(model)}' if issue else 'New run'}</p>
+  <p class="eyebrow">{f'{e(who)} · Issue #{e(issue.get("number"))} · {e(model)}' if issue else 'New run'}{last_seen}</p>
   <h1>{e(issue.get('title') or ('Getting ready' if not s else 'Run ' + rid))}</h1>
   <p class="status {cls}" role="status"><span class="dot"></span><span>{e(headline(phase, cur, rows))}</span>{f'<span class="sub">· {_since(d, running_since, is_replay)}</span>' if running_since else ''}</p>
   <ol class="track" style="--n:{len(rows)}" aria-label="The {len(rows)} steps">{nodes}</ol>
 </header>"""
 
     # ── the steps, one row each: what it gave, or what is happening in it ──
-    proof_html = _proof(s, rid)
-    pr_btn = '<button type="button" class="tbtn proof-btn" popovertarget="check-pr"><span>Check PR</span></button>'
     use = usage_by_step(d)
-    ctx_html, report_html, guard_html = context_sheet(d.get("pack") or {}, s.get("context") or {}), report_sheet(s), guard_sheet(s)
+    proof_html = _proof(s, rid, ai_use(use, "reproduce"))
+    pr_btn = '<button type="button" class="tbtn proof-btn" popovertarget="check-pr"><span>Check PR</span></button>'
+    ctx_html = context_sheet(d.get("pack") or {}, s.get("context") or {})
+    report_html, guard_html = report_sheet(s, ai_use(use, "why_it_shipped")), guard_sheet(s, ai_use(use, "lasting_guard"))
     def btn(target: str, label: str) -> str:
         return f'<button type="button" class="tbtn proof-btn" popovertarget="{target}"><span>{e(label)}</span></button>'
     issue_link = (f'<a class="tbtn proof-btn" href="{e(s["issue_url"])}" target="_blank" rel="noopener noreferrer"><span>Open issue</span></a>'
@@ -388,19 +391,19 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
         if st == "done":
             sub = plain.result(r["key"], s) or (chips[-1] if chips else "Done")
             trail = e(plain.duration(secs[r["key"]])) if secs.get(r["key"]) is not None else ""
-            trail = step_btns.get(r["key"], "") + _tok_chip(use.get(r["key"])) + trail
+            trail = step_btns.get(r["key"], "") + trail
             if r["key"] == "approval" and d["pr_text"]:
                 trail = pr_btn + trail
         elif st == "running":
             sub = " · ".join(chips[-2:] + ([cnt] if cnt else [])) or "Starting this step"
-            trail = _tok_chip(use.get(r["key"])) + _since(d, d.get("since"), is_replay)
+            trail = _since(d, d.get("since"), is_replay)
         elif st == "waiting":
             sub = ("Check the pull request, then approve it or close it" if served and not is_replay else
                    "Check the pull request, then approve or say no in your terminal")
             trail = pr_btn if d["pr_text"] else ""
         elif st == "stopped":
             sub = plain.exit_text(outcome.get("exit")).removeprefix("Stopped. ") if outcome else "Stopped here"
-            trail = step_btns.get(r["key"], "") + _tok_chip(use.get(r["key"])) + "Stopped"
+            trail = step_btns.get(r["key"], "") + "Stopped"
         elif st == "skipped":
             sub, trail = "Not in this run. This step was added after it ran.", ""
         else:
@@ -430,13 +433,12 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
         proven, note = "Not started", ""
     spent, cap = m.get("spent_usd", 0) or 0, m.get("cap_usd", 0) or 0
     last_at = d["events"][-1]["at"] if d["events"] else None
-    calls = d.get("calls") or [x for x in d["events"] if x.get("kind") == "model_call"]   # the metered calls, as Cost details
+    calls = d.get("calls") or [x for x in d["events"] if x.get("kind") == "model_call"]   # the metered calls
     tok_in, tok_out = (sum(int(x.get(k) or 0) for x in calls) for k in ("input_tokens", "output_tokens"))
     tiles = [("Time to fix", proven, note),
              ("LLM cost", f"${spent:.4f}" if 0 < spent < 0.1 else f"${spent:.2f}", f"Budget ${cap:.2f}" if cap else ""),
              ("Tokens", f"{_k_fmt(tok_in)} in · {_k_fmt(tok_out)} out", f"{len(calls)} model call{'s' * (len(calls) != 1)}"),
-             ("Compute time", f"{m.get('sandbox_used_s', 0) or 0} s", f"Quota {int(m.get('sandbox_cap_s') or 1800) // 60} min"),
-             ("Last event", _since(d, last_at, is_replay, " ago") if last_at else "None yet", "")]
+             ("Compute time", f"{m.get('sandbox_used_s', 0) or 0} s", f"Quota {int(m.get('sandbox_cap_s') or 1800) // 60} min")]
     tiles_html = "".join(_k(f"stat-{i}", f'<div class="tile"><span>{e(a)}</span><b>{b}</b>{f"<small>{e(c)}</small>" if c else ""}</div>')
                          for i, (a, b, c) in enumerate(tiles))
 
@@ -518,8 +520,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
 {nav}
 <main>
 {_k("hero", hero)}
-<section class="metrics" aria-label="Usage and cost"><div class="tiles">{tiles_html}</div>
-  <button type="button" class="tbtn proof-btn" popovertarget="costs"><span>Cost details</span></button></section>
+<section class="metrics" aria-label="Usage and cost"><div class="tiles">{tiles_html}</div></section>
 {_k("dock", dock)}
 {_k("notice", notice)}
 <section class="group"><h2>Steps</h2><div class="sect"><ul class="rows">{"".join(step_rows_html)}</ul></div></section>
@@ -535,7 +536,6 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
 {_k("sheet-ctx", ctx_html or '<i id="ctxinfo" hidden></i>')}
 {_k("sheet-report", report_html or '<i id="report" hidden></i>')}
 {_k("sheet-guard", guard_html or '<i id="guardinfo" hidden></i>')}
-{_k("sheet-costs", costs_sheet(d, rows))}
 <div id="acts" popover class="pop glass" aria-label="Latest activity">
   <div class="pop-head"><b>Latest activity</b><button type="button" class="tbtn" popovertarget="acts" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>
   {_k("log", f'<ul class="rows acts-list">{acts or "<li class=row><span></span><span class=t><span>Nothing yet</span></span></li>"}</ul>')}
@@ -757,6 +757,7 @@ def _check_pr(d: dict, rid: str, can_decide: bool, approve_cmd: str, reject_cmd:
             f'<p class="gh-meta">{badge}<b>{who}</b> wants to merge 1 commit into '
             f'<code class="gh-ref">main</code> from <code class="gh-ref">{e(head)}</code>'
             f'<span class="gh-diffstat"><span class="plus">+{add}</span> <span class="minus">−{rem}</span></span></p>'
+            f'{ai_use(usage_by_step(d), "find_cause", "write_fix", what=" for the cause and the fix")}'
             f'<nav class="gh-tabs" role="tablist">'
             f'<button type="button" role="tab" class="on" data-tab="conv" aria-selected="true">Conversation</button>'
             f'<button type="button" role="tab" data-tab="commits" aria-selected="false">Commits <span class="cnt">1</span></button>'
@@ -777,7 +778,7 @@ def _gh_row(dot: str, name: str, word: str, detail: str, extra: str = "") -> str
             f'<span class="gh-muted">{e(detail)}</span>{extra}</span><span class="gh-st {dot}">{e(word)}</span></div>')
 
 
-def _proof(s: dict, rid: str) -> str:
+def _proof(s: dict, rid: str, ai: str = "") -> str:
     """Proof the bug happens, as GitHub shows a workflow run (Isha 2026-10-08: "check proof should also have git style
     format", in GitHub's words and colours): a Summary of checks (a test already in the repo failing for this issue?
     then unit, integration, automation), then every try as a job, turned to by number: its annotation (the failing
@@ -936,13 +937,13 @@ def _proof(s: dict, rid: str) -> str:
     title = (f'<h3 class="gh-title">Reproduce issue <span class="gh-muted">#{e(issue.get("number", ""))}</span></h3>'
              f'<p class="gh-meta"><span class="gh-state failure">Bug shown</span> on <code class="gh-ref">main</code>'
              + (f' at <code class="gh-ref">{e(base)}</code>' if base else "")
-             + (f' · try {shown} of {len(tries)}' if shown else "") + ' · run by DebugAssistAgent, internet off</p>')
+             + (f' · try {shown} of {len(tries)}' if shown else "") + ' · run by DebugAssistAgent, internet off</p>' + ai)
     return (f'<div class="proof gh-proof">{title}<h4 class="gh-h">Summary</h4>{summary}{pager}<p class="gh-muted gh-fp">The code '
             'was the repository as it is, with only the test added. A test that fails for a different reason does not count '
             'as showing the bug.</p></div>')
 
 
-# ── sheets that open from the steps (Isha 2026-10-09): Context info, Read report, Guard, Cost details ─────────────
+# ── sheets that open from the steps (Isha 2026-10-09): Context info, Read report, Guard ─────────────────────────
 def usage_by_step(d: dict) -> dict:
     """{step: {calls, in, out, usd}} from the run's metered AI calls."""
     out = {}
@@ -955,11 +956,14 @@ def usage_by_step(d: dict) -> dict:
     return out
 
 
-def _tok_chip(u: dict | None) -> str:
-    if not u or not u["calls"]:
+def ai_use(use: dict, *steps: str, what: str = "") -> str:
+    """The AI this step used, under its sheet's title (Isha 2026-10-09: inside the dialog, not on the step row)."""
+    us = [use[k] for k in steps if k in use]
+    calls, tin, tout, usd = (sum(u[k] for u in us) for k in ("calls", "in", "out", "usd"))
+    if not calls:
         return ""
-    return (f'<span class="tokchip" title="{u["calls"]} AI call{"s" * (u["calls"] != 1)}: {u["in"]:,} tokens in, '
-            f'{u["out"]:,} out">{_k_fmt(u["in"] + u["out"])} tokens · ${u["usd"]:.2f}</span>')
+    return (f'<p class="gh-ai"><span class="gh-state ai">AI use{e(what)}</span>{_k_fmt(tin + tout)} tokens · ${usd:.2f} · '
+            f'{calls} AI call{"s" * (calls != 1)} <span class="gh-muted">({tin:,} in, {tout:,} out)</span></p>')
 
 
 def _sheet(sid: str, label: str, title: str, meta: str, body: str, tabs: list | None = None) -> str:
@@ -1063,7 +1067,7 @@ def report_sections(text: str) -> tuple[list, str]:
     return out, cond
 
 
-def report_sheet(s: dict) -> str:
+def report_sheet(s: dict, ai: str = "") -> str:
     """Why the bug slipped through, as a GitHub-style report (Isha 2026-10-09: collapsible, GitHub-intuitive): the
     short answer first, then each question folded."""
     text = (s.get("second_story") or {}).get("text", "")
@@ -1082,10 +1086,10 @@ def report_sheet(s: dict) -> str:
     meta = ('<span class="gh-state ai">Written by AI</span>from the run\'s evidence: the history of the code at fault, its '
             'review and release, and the issue · conditions, never people')
     return _sheet("report", "Why the bug slipped through", f'Why the bug slipped through <span class="gh-muted">#{e(issue.get("number", ""))}</span>',
-                  meta, body)
+                  meta, ai + body)
 
 
-def guard_sheet(s: dict) -> str:
+def guard_sheet(s: dict, ai: str = "") -> str:
     """Guard similar bugs, in plain words (Isha 2026-10-09: "I don't know exactly what happens here")."""
     g = s.get("guard") or {}
     of = g.get("on_fixed")
@@ -1109,32 +1113,7 @@ def guard_sheet(s: dict) -> str:
             + (f'<p class="gh-muted gh-fp">File <code>{e(g.get("repo_path", ""))}</code> · kept with the run, not added to the pull request.</p>'))
     meta = (f'<span class="gh-state ai">Written by AI</span>{len(passed)} of {total} cases covered by the fix'
             + (f' · {len(opened)} still open' if opened else ""))
-    return _sheet("guardinfo", "Guard similar bugs", "Guard for similar bugs", meta, body)
-
-
-def costs_sheet(d: dict, rows: list) -> str:
-    """Cost details (PM review: the cost and token panel as a side panel): per step, then call by call."""
-    use = usage_by_step(d)
-    label = {k: lab for k, lab, _ in plain.STEPS}
-    steps = "".join(f'<tr><td>{e(label.get(k, k))}</td><td>{u["calls"]}</td><td>{u["in"]:,}</td><td>{u["out"]:,}</td><td>${u["usd"]:.4f}</td></tr>'
-                    for k, u in sorted(use.items(), key=lambda kv: [r["key"] for r in rows].index(kv[0]) if kv[0] in [r["key"] for r in rows] else 99))
-    tot = {"calls": sum(u["calls"] for u in use.values()), "in": sum(u["in"] for u in use.values()),
-           "out": sum(u["out"] for u in use.values()), "usd": sum(u["usd"] for u in use.values())}
-    calls = "".join(f'<tr><td>{e(str(c.get("at", ""))[11:19])}</td><td>{e(label.get(c.get("step"), c.get("step") or ""))}</td>'
-                    f'<td>{e(str(c.get("model", "")).split("/")[-1])}</td><td>{int(c.get("input_tokens") or 0):,}</td>'
-                    f'<td>{int(c.get("output_tokens") or 0):,}</td><td>${(c.get("actual_micro") or 0) / 1e6:.4f}</td></tr>'
-                    for c in d.get("calls") or [])
-    body = (f'<div class="gh-box"><div class="gh-box-head"><span>By step</span></div><div class="dscroll"><table class="gh-table">'
-            f'<tr><th>Step</th><th>AI calls</th><th>Tokens in</th><th>Tokens out</th><th>Cost</th></tr>{steps}'
-            f'<tr class="tot"><td>Total</td><td>{tot["calls"]}</td><td>{tot["in"]:,}</td><td>{tot["out"]:,}</td><td>${tot["usd"]:.4f}</td></tr>'
-            f'</table></div></div>'
-            f'<details class="gh-fold"><summary>Call by call</summary><div class="dscroll"><table class="gh-table">'
-            f'<tr><th>At</th><th>Step</th><th>Model</th><th>In</th><th>Out</th><th>Cost</th></tr>{calls}</table></div></details>'
-            if tot["calls"] else '<p class="gh-muted">No AI calls yet.</p>')
-    m = d.get("meter") or {}
-    meta = (f'${tot["usd"]:.2f} of the ${m.get("cap_usd", 0) or 0:.2f} budget · {_k_fmt(tot["in"])} tokens in, '
-            f'{_k_fmt(tot["out"])} out · compute {m.get("sandbox_used_s", 0) or 0} s')
-    return (_sheet("costs", "Cost details", "Cost details", meta, body).replace('class="pop sheet gh"', 'class="pop sheet gh side"'))
+    return _sheet("guardinfo", "Guard similar bugs", "Guard for similar bugs", meta, ai + body)
 
 
 def full_answer(raw: dict) -> str:
