@@ -72,9 +72,19 @@ def test_four_attempts_without_red_stops_never_reproduced():
 
 
 def test_running_out_of_rungs_stops_never_reproduced():
-    fn, asked = scripted(GREEN, GREEN, GREEN)
+    fn, asked = scripted(GREEN, GREEN, GREEN, GREEN)
     r = climb(list(RUNGS), fn)
-    assert r.status == NEVER_REPRODUCED and len(asked) == 3
+    assert r.status == NEVER_REPRODUCED and [a[0] for a in asked] == ["unit", "integration", "end_to_end", "end_to_end"]
+
+
+def test_a_passing_test_on_the_only_rung_is_tried_again():
+    """#22085 run 2026-10-09: the issue allowed only the unit rung; its one test passed and the step ended after 1 of 4
+    tries, though the reporter's repro fails on the same code. A passing test there missed the bug: try again."""
+    fn, asked = scripted(GREEN, GREEN, RED)
+    r = climb([RUNGS[0]], fn)
+    assert r.status == REPRODUCED and [a[:2] for a in asked] == [("unit", 1), ("unit", 2), ("unit", 3)]
+    fn, asked = scripted(GREEN, GREEN, GREEN, GREEN, GREEN)
+    assert climb([RUNGS[0]], fn).status == NEVER_REPRODUCED and len(asked) == 4          # still within the cap of 4
 
 
 def test_resume_counts_earlier_attempts_and_skips_rungs_already_green():

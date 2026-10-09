@@ -232,11 +232,30 @@ RUNG_RULES = {
 }
 
 
+ISSUE_BUDGET = 12_000
+
+
+def issue_for_writer(text: str) -> str:
+    """The whole issue when it fits; else the start of its prose and its code blocks (the reproduction) whole.
+    #22085 run 2026-10-09: the issue was 4,861 characters and the writer saw 3,000; the repro was cut just before the
+    lines that show the bug, so its test missed it."""
+    from .issue_text import SECRET_VALUE
+    text = SECRET_VALUE.sub("[REDACTED-KEY]", text or "")
+    if len(text) <= ISSUE_BUDGET:
+        return text
+    code = "\n\n".join(re.findall(r"```.*?```", text, re.S))[: ISSUE_BUDGET - 3000]
+    return text[: ISSUE_BUDGET - len(code) - 60] + "\n…(cut)\n\nCODE FROM THE ISSUE, WHOLE:\n" + code
+
+
 def messages(issue_title: str, issue_text: str, focus: str, rung: ladder.Rung, history: list, ctx: Context,
              lang: langs.Lang | None = None) -> list:
     past = ""
     for a in history:
         past += f"\n- attempt {a.n} ({a.rung}): {a.outcome}. {a.evidence[:600]}"
+        if a.outcome == ladder.GREEN:
+            past += ("\n  That test PASSED on the current code, so it did not trigger the bug. Follow the issue's own "
+                     "reproduction step by step (the same inputs, the same calls, the same check), then assert the "
+                     "correct behaviour.")
     fixture = (f"\n\nRecorded fixtures beside it: {', '.join(Path(f).name for f in ctx.fixtures)}\n"
                f"The most relevant, first lines (pick one; the setup above has a helper for each format):\n"
                f"{ctx.fixture_sample}"
@@ -249,7 +268,7 @@ def messages(issue_title: str, issue_text: str, focus: str, rung: ladder.Rung, h
 {rule}
 
 BACKGROUND, the whole issue "{issue_title}" (any other problem in it is OUT OF SCOPE):
-{issue_text[:3000]}
+{issue_for_writer(issue_text)}
 
 {('CONTEXT GATHERED BEFORE THIS STEP:' + chr(10) + ctx.extra[:12000] + chr(10) + chr(10)) if ctx.extra else ''}MOST RELEVANT SOURCE: {ctx.source} (lines around the issue's exact strings)
 {ctx.snippets}

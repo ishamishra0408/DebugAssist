@@ -166,3 +166,15 @@ def test_the_symptom_can_sit_in_the_received_side_of_the_diff():
     expected_only = ("AssertionError: expected { a: 1 } to strictly equal { b: 2 }\n\n- Expected\n+ Received\n\n"
                      "-   \"type\": \"tool-call\",\n+   \"other\": 1,\n")
     assert testwriter.right_reason(FOCUS, expected_only) is False  # the symptom must be in what was RECEIVED
+
+
+
+def test_the_writer_sees_the_whole_issue_with_its_reproduction_whole():
+    """#22085 run 2026-10-09: the writer saw the first 3,000 of 4,861 characters; the repro was cut before the bug."""
+    from debug_assist.testwriter import ISSUE_BUDGET, issue_for_writer
+    body = "Prose. " * 300 + "\n```js\nconst result = await agent.stream();\nassert.deepEqual(unpaired, []);\n```\n"
+    assert issue_for_writer(body) == body                                                 # 4,861 characters fit whole
+    long = "x" * 20_000 + "\n```js\nassert.deepEqual(unpaired, []);\n```\n"
+    got = issue_for_writer(long)
+    assert len(got) <= ISSUE_BUDGET and "assert.deepEqual(unpaired, []);" in got and "CODE FROM THE ISSUE, WHOLE" in got
+    assert "[REDACTED-KEY]" in issue_for_writer("key sk-or-v1-" + "a" * 30)

@@ -7,7 +7,9 @@
 Climbed BEFORE any fix: the first test that fails for the issue's reason becomes the oracle, and later proves the fix.
 Each attempt ends one of three ways:
   RED    the test failed on the unfixed code → reproduced; stop climbing
-  GREEN  the test ran and passed → this rung did not reproduce it; climb to the next rung
+  GREEN  the test ran and passed → this rung did not reproduce it; climb to the next rung. On the last rung the issue
+         allows, it is tried again instead (the test missed the bug; #22085 run 2026-10-09: one passing unit test
+         ended the step after 1 of 4 tries, though the reporter's own repro fails on the same code)
   ERROR  the test itself didn't run (syntax, import, compile, timeout) → retry the same rung
 Confirmation (ruled 2026-10-07): a RED on rung 1 (made-up data) is re-run on the recorded-format rung when the repo has
 one, because a real stream's format is what makes "simulated broken stream" credible. RED there → confirmed; GREEN →
@@ -119,17 +121,17 @@ def climb(rungs: list[Rung], attempt: Callable[[Rung, int, list], Attempt], alre
     red = next((a for a in history if a.outcome == RED), None)  # a RED before the crash still counts
     if red is None:
         i = 0
-        for a in history:  # resume where the record left off: past every rung that already went GREEN
+        for a in history:  # resume where the record left off: past every rung that already went GREEN (never past the last)
             if a.outcome == GREEN:
-                i = max(i, next((k + 1 for k, r in enumerate(rungs) if r.name == a.rung), i))
+                i = max(i, next((min(k + 1, len(rungs) - 1) for k, r in enumerate(rungs) if r.name == a.rung), i))
         while i < len(rungs) and len(history) < cap:
             a = attempt(rungs[i], len(history) + 1, list(history))
             history.append(a)
             if a.outcome == RED:
                 red = a
                 break
-            if a.outcome == GREEN:
-                i += 1  # this rung can't see it; climb
+            if a.outcome == GREEN and i + 1 < len(rungs):
+                i += 1  # this rung can't see it; climb (on the last rung: try it again, the test missed the bug)
             # ERROR: retry the same rung (the writer gets the error back via history)
     if red is None:
         return done
