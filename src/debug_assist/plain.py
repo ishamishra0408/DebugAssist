@@ -137,12 +137,21 @@ def result(key: str, s: dict) -> str | None:
     if key == "why_it_shipped" and (s.get("second_story") or {}).get("text"):
         return "Report written"
     if key == "lasting_guard" and (g := s.get("guard") or {}).get("on_fixed") is not None:
+        # Isha 2026-10-09: "New check with 66 cases -- I don't know exactly what happens here"
         of = g["on_fixed"]
-        n = sum(len(of.get(k, [])) for k in ("passed", "failed", "broken"))
+        covered, still_open = len(of.get("passed", [])), len(of.get("failed", []))
+        n = covered + still_open + len(of.get("broken", []))
         sib = len(g.get("siblings") or [])
-        return f"New check with {n} cases" + (f"; the same code is in {sib} other files" if sib else "")
+        return (f"A {n}-case test for bugs like this one: {covered} covered by the fix"
+                + (f", {still_open} still open" if still_open else "") + (f"; the same code is in {sib} other files" if sib else ""))
     if key == "test_past_bugs" and (b := (s.get("backtest") or {}).get("detail") or {}).get("false_alarms"):
         return f"Tested {b['false_alarms'].get('commits_covered', b['false_alarms'].get('window', '?'))} older versions"
+    if key == "test_past_bugs" and (b := s.get("backtest")):
+        # Isha 2026-10-09: "Saved, so similar bugs can be found later -- I don't know exactly what happens here"
+        found = len(b.get("candidates") or [])
+        return ("Saved how this bug slipped through, for finding similar bugs"
+                + (f"; {found} similar past bug{'s' * (found != 1)} found" if found else "")
+                + ". Older versions were not checked: that works on the Mac only for now")
     if key == "approval" and (a := s.get("approval") or {}).get("status"):
         return "You approved" if a["status"] == "APPROVED" else "You said no"
     if key == "open_pr" and s.get("published"):

@@ -854,7 +854,7 @@ def home_page(user: str = "") -> str:
       <label><input type="radio" name="ai" value="opus">Claude Opus<small>About $0.70</small></label>
     </div>
     <p class="foot" id="aifoot">Cheaper. It often cannot fix the bug.</p>{spend}</section>
-  <section class="group" aria-labelledby="h-ptr" style="margin-top:28px"><h2 id="h-ptr">Your pointers <span class="opt">Optional</span></h2>
+  <section class="group" aria-labelledby="h-ptr" style="margin-top:28px"><h2 id="h-ptr">Directional input <span class="opt">Optional</span></h2>
     <div class="sect pointers">
       <label class="pfield"><b>Where to look for the cause</b>
         <input id="look-in" type="text" placeholder="packages/ai/src/ui/chat.ts" autocomplete="off" spellcheck="false" autocapitalize="off">
@@ -886,8 +886,10 @@ if (acct) acct.addEventListener("toggle", ev => {{   // under the name, its righ
 }});
 addEventListener("resize", () => {{ if (acct && acct.matches(":popover-open")) acct.hidePopover(); }});
 $("auto-change").onclick = () => {{ $("auto").hidden = true; $("sections").hidden = false; }};
+const busy = (b, on, text) => {{ b.disabled = on; b.classList.toggle("busy", on); const l = b.querySelector("span") || b;
+  if (on) {{ b.dataset.was = l.textContent; l.textContent = text; }} else if (b.dataset.was) l.textContent = b.dataset.was; }};
 $("check").onclick = async () => {{
-  fail(""); $("more").hidden = true; $("card").hidden = true; $("check").disabled = true;
+  fail(""); $("more").hidden = true; $("card").hidden = true; busy($("check"), true, "Checking…");
   try {{
     const r = await fetch("/api/issue?url=" + encodeURIComponent($("link").value.trim()), {{ headers: H }});
     const j = await r.json();
@@ -913,19 +915,19 @@ $("check").onclick = async () => {{
     if (one) {{ $("auto-text").textContent = j.auto.preview; $("auto-from").textContent = "Picked from " + j.auto.from; }}
     $("more").hidden = false;
   }} catch (ex) {{ fail("Could not reach {plain.NAME}. Is it still running?"); }}
-  finally {{ $("check").disabled = false; }}
+  finally {{ busy($("check"), false); }}
 }};
 $("start").onclick = async () => {{
-  fail(""); $("start").disabled = true;
+  fail(""); busy($("start"), true, "Starting…");
   const sec = document.querySelector('input[name="sec"]:checked'), ai = document.querySelector('input[name="ai"]:checked');
   try {{
     const r = await fetch("/api/start", {{ method: "POST", headers: {{ ...H, "Content-Type": "application/json" }},
       body: JSON.stringify({{ url: $("link").value.trim(), heading: sec ? sec.value : "", ai: ai ? ai.value : "",
                              look_in: $("look-in").value, test_in: $("test-in").value }}) }});
     const j = await r.json();
-    if (!r.ok) {{ $("start").disabled = false; return fail(j.error || "Something went wrong."); }}
+    if (!r.ok) {{ busy($("start"), false); return fail(j.error || "Something went wrong."); }}
     location.href = j.page;
-  }} catch (ex) {{ $("start").disabled = false; fail("Could not reach {plain.NAME}. Is it still running?"); }}
+  }} catch (ex) {{ busy($("start"), false); fail("Could not reach {plain.NAME}. Is it still running?"); }}
 }};
 </script></body></html>"""
 

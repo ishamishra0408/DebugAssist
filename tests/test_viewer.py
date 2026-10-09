@@ -1,4 +1,5 @@
 """The run viewer: read-only, escapes everything from outside, refreshes only while a run is live."""
+import json
 import re
 from debug_assist import viewer
 
@@ -284,7 +285,7 @@ def test_check_pr_binds_your_ok_to_the_text_shown_and_a_saved_file_cannot_decide
     decide = sheet.split('class="decide gh-merge"')[1]
     assert "<span>Approve</span>" in decide and "<span>Close pull request</span>" in decide and "No checks ran" in decide
     assert "icon" not in decide and "<svg" not in decide and "✓" not in sheet
-    assert 'fetch("/api/decide"' in live and "commit_message:" in live and live.count("fetch(") == 2
+    assert 'fetch("/api/decide"' in live and "commit_message:" in live and live.count("fetch(") == 3
     saved = viewer.render(d)
     assert "fetch(" not in saved and "data-decide" not in saved and "uv run debug-assist approve ai-1-x" in saved
 
@@ -324,14 +325,70 @@ def test_diffs_read_like_git():
     assert diffview.kind_of_test("packages/x/da-repro-1-integration-3.test.ts") == "integration" and diffview.kind_of_test("x.test.ts") == "unit"
 
 
-def test_what_it_read_names_your_pointers():
-    pack = {"issue": {"comments": []}, "code": {"ranking": [], "ctx": {
-        "look_in": ["packages/ai/src/ui/chat.ts"], "look_in_missing": ["packages/ai/src/nope.ts"],
-        "test_into": "packages/ai/src/ui/chat.test.ts"}}}
-    html = viewer._what_it_read(pack, {})
-    assert "Your pointers for the cause" in html and "looked in first: packages/ai/src/ui/chat.ts" in html
-    assert "not found in the code: packages/ai/src/nope.ts" in html
-    assert "The unit test is added to packages/ai/src/ui/chat.test.ts, as new cases at its end" in html
+def _rich_state():
+    pack = {"issue": {"number": 7, "comments": [{"at": "2026-10-05T10:00:00Z", "text": "Still happens on **7.0.1**"}],
+                      "linked": [{"repo": "vercel/ai", "number": 9, "title": "Fix resume", "state": "open", "pull_request": True, "merged": False}],
+                      "errors": {"errors": ["TypeError: x is undefined"], "frames": []}},
+            "code": {"best": "packages/ai/src/ui/chat.ts",
+                     "ranking": [{"path": "packages/ai/src/ui/chat.ts", "score": 9, "matched": ["resumeStream"]},
+                                 {"path": "packages/ai/src/ui/x.ts", "score": 2, "matched": []}],
+                     "ctx": {"source": "packages/ai/src/ui/chat.ts", "snippets": "  881  const a = 1;\n  883  this.resumeStream();\n   …",
+                             "look_in": ["packages/ai/src/ui/chat.ts"], "look_in_missing": ["packages/ai/src/nope.ts"],
+                             "test_into": "packages/ai/src/ui/chat.test.ts"}},
+            "related": [{"name": "processUIMessageStream", "module": "ai", "definition": "--- a.ts\n  1  export function p() {}", "used_in": 6}],
+            "history": [{"path": "packages/ai/src/ui/chat.ts", "changes": [{"sha": "abc1234567", "date": "2026-09-30", "title": "feat: resume"}]}],
+            "counts": {"comments": 1, "files": 2, "related": 1, "changes": 1}}
+    story = ("### What broke?\nText parts were doubled after a resume.\n### Why didn't the tests catch it?\nNo test resumed twice.\n"
+             "CONDITION: resume reused retained state")
+    st = {**_data()["state"], "issue_url": "https://github.com/vercel/ai/issues/7", "context": {"sha256": "44b296c220e8aa"},
+          "second_story": {"text": story},
+          "guard": {"status": "CATCHES THE BUG", "covers": "every way a resumed stream can repeat a part",
+                    "repo_path": "packages/ai/src/ui/da-guard-7.test.ts", "siblings": ["packages/react/src/x.ts:12"],
+                    "on_fixed": {"passed": ["resume after text-start", "resume after text-delta"], "failed": ["resume twice"], "broken": []}}}
+    return pack, st
+
+
+def test_the_steps_open_their_own_sheets_github_style():
+    """Isha 2026-10-09: Open issue on Read the issue; Context info (comments as comments, a commit list, code with the
+    issue's strings marked); Read report (folded, GitHub-style) instead of the report on the page; Guard in plain words;
+    tokens and cost on each AI step; metrics at the top; the problem section gone."""
+    pack, st = _rich_state()
+    calls = [{"step": "reproduce", "input_tokens": 9500, "output_tokens": 3500, "actual_micro": 107700, "model": "anthropic/claude-opus-5.5", "at": "2026-10-08T21:13:20"},
+             {"step": "reproduce", "input_tokens": 500, "output_tokens": 500, "actual_micro": 2300, "model": "anthropic/claude-opus-5.5", "at": "2026-10-08T21:13:56"}]
+    page = viewer.render(_data(state=st, pack=pack, calls=calls), mode="live", token="t")
+    assert 'href="https://github.com/vercel/ai/issues/7" target="_blank" rel="noopener noreferrer"><span>Open issue</span>' in page
+    for target, label in (("ctxinfo", "Context info"), ("report", "Read report"), ("guardinfo", "Guard"), ("costs", "Cost details")):
+        assert f'popovertarget="{target}"><span>{label}</span>' in page and f'<div id="{target}" popover' in page, target
+    assert '<span class="tokchip" title="2 AI calls: 10,000 tokens in, 4,000 out">14.0k tokens · $0.11</span>' in page
+    assert page.index('class="metrics"') < page.index("<h2>Steps</h2>")                   # metrics beside the steps, at the top
+    assert "The problem it is fixing" not in page and "<h2>What it read</h2>" not in page and 'id="story"' not in page
+    ctx = _sheet(page, "ctxinfo")
+    assert "Collected by code, no AI" in ctx and 'data-md="Still happens on **7.0.1**"' in ctx and "Comment 1" in ctx
+    assert "Commits on <code>packages/ai/src/ui/chat.ts</code>" in ctx and ">abc1234</code>" in ctx and "feat: resume" in ctx
+    assert '<tr class="hit"><td class="ln">883</td>' in ctx and '<tr class=""><td class="ln">881</td>' in ctx
+    assert "Your directional input" in ctx and "Not found in the code: packages/ai/src/nope.ts" in ctx and "processUIMessageStream" in ctx
+    rep = _sheet(page, "report")
+    assert "Written by AI" in rep and '<details class="gh-fold" open><summary>What broke?</summary>' in rep
+    assert "<summary>Why didn&#x27;t the tests catch it?</summary>" in rep and "resume reused retained state" in rep
+    g = _sheet(page, "guardinfo")
+    assert "3 cases on the fixed code" in g and "2 covered · 1 still open · 0 broken" in g and "Still open" in g
+    assert "not changed by this fix" in g and "kept with the run, not added to the pull request" in g
+    from debug_assist import plain
+    assert plain.result("lasting_guard", st) == "A 3-case test for bugs like this one: 2 covered by the fix, 1 still open; the same code is in 1 other files"
+    assert plain.result("test_past_bugs", {"backtest": {"state": "NO PAST SIBLING FOUND", "candidates": []}}).startswith(
+        "Saved how this bug slipped through, for finding similar bugs. Older versions were not checked")
+
+
+def test_a_stopped_run_can_run_again_with_the_same_choices():
+    st = {**_data()["state"], "issue_url": "https://github.com/vercel/ai/issues/7", "demo": True, "focus_heading": "Repro",
+          "hints": {"look_in": ["a.ts"], "test_in": "a.test.ts"}, "outcome": {"exit": "NEVER REPRODUCED", "why": "w"}}
+    page = viewer.render(_data(state=st, interrupt={}, next=[]), mode="live", token="t")
+    m = re.search(r'data-again="([^"]+)"', page)
+    import html as _h
+    assert m and json.loads(_h.unescape(m.group(1))) == {"url": "https://github.com/vercel/ai/issues/7", "heading": "Repro",
+                                                        "ai": "opus", "look_in": "a.ts", "test_in": "a.test.ts"}
+    assert "Run again" in page and 'fetch("/api/start"' in page
+    assert "data-again" not in viewer.render(_data(state=st, interrupt={}, next=[]))     # a saved page can't start runs
 
 
 def test_checks_on_main_and_with_the_change():

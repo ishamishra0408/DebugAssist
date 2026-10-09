@@ -747,3 +747,59 @@ body.auth { min-height: 100vh; min-height: 100dvh; display: grid; place-items: c
 .pop.acct-menu[popover] { width: max-content; min-width: 150px; padding: 6px; border-radius: 16px; }
 .acct-item { display: block; padding: 9px 12px; border-radius: 11px; color: var(--label); font-size: 14px; }
 .acct-item:hover, .acct-item:focus-visible { background: rgba(127, 127, 127, .16); text-decoration: none; }
+
+/* the run page (Isha 2026-10-09, PM review): metrics at the top beside the steps; tokens on each AI step; sheets that
+   open from the steps, GitHub's way */
+.metrics { display: flex; align-items: stretch; gap: 10px; margin: 0 0 18px; }
+.metrics .tiles { flex: 1; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.metrics .proof-btn { align-self: center; white-space: nowrap; }
+@media (max-width: 760px) { .metrics { flex-direction: column; } .metrics .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.tokchip { display: inline-flex; align-items: center; height: 24px; padding: 0 9px; margin-right: 8px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; white-space: nowrap; color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 14%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--blue) 30%, transparent); }
+.gh-state.neutral { background: transparent; color: var(--gh-fg); box-shadow: inset 0 0 0 1px var(--gh-border); padding: 3px 10px; font-size: 12px; }
+.gh-state.ai { background: color-mix(in srgb, #a371f7 22%, transparent); color: #d2a8ff; padding: 3px 10px; font-size: 12px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #a371f7 45%, transparent); }
+@media (prefers-color-scheme: light) { .gh-state.ai { color: #8250df; } }
+.gh-commit-row { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--gh-border-muted); }
+.gh-box-head + .gh-commit-row { border-top: 0; }
+.gh-sha { margin-left: auto; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--gh-border); color: var(--gh-accent-fg); font-size: 12px; }
+.gh-pad { padding: 10px 16px; margin: 0; }
+.gh .dtable.blob tr.hit td { background: color-mix(in srgb, #d29922 16%, transparent); }
+.gh .dtable.blob tr.hit td.ln { color: var(--gh-fg); }
+.gh .dtable.blob tr.gap td { color: var(--gh-muted); background: var(--gh-subtle); }
+.gh .dfile .dtag { margin-left: auto; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", sans-serif; font-size: 12px; color: var(--gh-muted); }
+.gh-fold { border: 1px solid var(--gh-border); border-radius: 6px; }
+.gh-fold + .gh-fold { margin-top: -9px; border-top-left-radius: 0; border-top-right-radius: 0; }
+.gh-fold > summary { display: flex; align-items: center; gap: 8px; padding: 12px 16px; cursor: pointer; font-weight: 600; list-style: none; }
+.gh-fold > summary::-webkit-details-marker { display: none; }
+.gh-fold > summary::before { content: ""; border-left: 5px solid var(--gh-muted); border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent; transition: transform .15s; }
+.gh-fold[open] > summary::before { transform: rotate(90deg); }
+.gh-fold[open] > summary { border-bottom: 1px solid var(--gh-border-muted); }
+.gh-fold > .md, .gh-fold > .dscroll { padding: 12px 16px; }
+.gh-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.gh-table th, .gh-table td { padding: 8px 16px; text-align: left; border-top: 1px solid var(--gh-border-muted); white-space: nowrap; }
+.gh-table th { border-top: 0; color: var(--gh-muted); font-weight: 600; background: var(--gh-subtle); }
+.gh-table tr.tot td { font-weight: 600; }
+.gh-annot .md { padding: 0; }
+.gh-annot .md p:last-child { margin-bottom: 0; }
+/* Cost details: a panel from the right */
+.pop.sheet.gh.side[popover] { inset: 0 0 0 auto; margin: 0; width: min(560px, 100vw); max-height: none; height: 100vh;
+  border-radius: 0; border-width: 0 0 0 1px; }
+@media (prefers-reduced-motion: no-preference) { .pop.sheet.gh.side:popover-open { animation: side-in .25s cubic-bezier(.2, .7, .2, 1); } }
+@keyframes side-in { from { transform: translateX(24px); opacity: 0; } }
+
+/* a button at work (Check, Start, Run again): a quiet spinner beside its words */
+.btn.busy { opacity: .8; } .btn.busy::before { content: ""; width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid currentColor; border-right-color: transparent; animation: spin .8s linear infinite; }
+
+/* Check proof: the checks box folds like GitHub's; the setup line sits folded inside a run log */
+.gh-box-fold > summary { list-style: none; cursor: pointer; justify-content: space-between; }
+.gh-box-fold > summary::-webkit-details-marker { display: none; }
+.gh-box-fold > summary span:first-child::before { content: ""; display: inline-block; margin-right: 8px; vertical-align: middle;
+  border-left: 5px solid var(--gh-muted); border-top: 4px solid transparent; border-bottom: 4px solid transparent; transition: transform .15s; }
+.gh-box-fold[open] > summary span:first-child::before { transform: rotate(90deg); }
+.gh-box-fold:not([open]) > summary { border-bottom: 0; }
+.gh-log .ran-full { padding: 4px 24px 6px; } .gh-log .ran-full > summary { cursor: pointer; font-size: 12px; color: #8b949e; }
+.gh-log .ran-full code { display: block; margin-top: 4px; font-size: 12px; color: #8b949e; overflow-wrap: anywhere; }

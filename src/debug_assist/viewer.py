@@ -314,6 +314,17 @@ def _copy(text: str, label: str, prominent: bool = False) -> str:
             f'data-done="Copied">{icons.copy()}<span>{e(label)}</span></button>')
 
 
+def _again(s: dict) -> str:
+    """Run again (PM review 2026-10-08): the same issue with the same choices, started as a new run."""
+    if not str(s.get("issue_url", "")).startswith("https://github.com/"):
+        return ""
+    h = s.get("hints") or {}
+    again = {"url": s["issue_url"], "heading": s.get("focus_heading") or "", "ai": "opus" if s.get("demo") else "standard",
+             "look_in": ",".join(h.get("look_in") or []), "test_in": h.get("test_in") or ""}
+    return (f'<button type="button" class="btn glass prominent" data-again="{e(json.dumps(again))}">{icons.play(16)}'
+            f'<span>Run again</span></button>')
+
+
 def _link(href: str, label: str, icon: str = "", prominent: bool = False) -> str:
     return f'<a class="btn glass{" prominent" if prominent else ""}" href="{e(href)}">{icon}<span>{e(label)}</span></a>'
 
@@ -361,25 +372,35 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
     # ── the steps, one row each: what it gave, or what is happening in it ──
     proof_html = _proof(s, rid)
     pr_btn = '<button type="button" class="tbtn proof-btn" popovertarget="check-pr"><span>Check PR</span></button>'
+    use = usage_by_step(d)
+    ctx_html, report_html, guard_html = context_sheet(d.get("pack") or {}, s.get("context") or {}), report_sheet(s), guard_sheet(s)
+    def btn(target: str, label: str) -> str:
+        return f'<button type="button" class="tbtn proof-btn" popovertarget="{target}"><span>{e(label)}</span></button>'
+    issue_link = (f'<a class="tbtn proof-btn" href="{e(s["issue_url"])}" target="_blank" rel="noopener noreferrer"><span>Open issue</span></a>'
+                  if str(s.get("issue_url", "")).startswith("https://github.com/") else "")
+    step_btns = {"read_issue": issue_link, "gather_context": btn("ctxinfo", "Context info") if ctx_html else "",
+                 "reproduce": btn("proof", "Check proof") if proof_html else "",
+                 "why_it_shipped": btn("report", "Read report") if report_html else "",
+                 "lasting_guard": btn("guardinfo", "Guard") if guard_html else ""}
     step_rows_html = []
     for i, (r, st) in enumerate(zip(rows, states)):
         chips, cnt = inside(r["key"], d["events"])
         if st == "done":
             sub = plain.result(r["key"], s) or (chips[-1] if chips else "Done")
             trail = e(plain.duration(secs[r["key"]])) if secs.get(r["key"]) is not None else ""
-            if r["key"] == "reproduce" and proof_html:
-                trail = '<button type="button" class="tbtn proof-btn" popovertarget="proof"><span>Check proof</span></button>' + trail
+            trail = step_btns.get(r["key"], "") + _tok_chip(use.get(r["key"])) + trail
             if r["key"] == "approval" and d["pr_text"]:
                 trail = pr_btn + trail
         elif st == "running":
             sub = " · ".join(chips[-2:] + ([cnt] if cnt else [])) or "Starting this step"
-            trail = _since(d, d.get("since"), is_replay)
+            trail = _tok_chip(use.get(r["key"])) + _since(d, d.get("since"), is_replay)
         elif st == "waiting":
             sub = ("Check the pull request, then approve it or close it" if served and not is_replay else
                    "Check the pull request, then approve or say no in your terminal")
             trail = pr_btn if d["pr_text"] else ""
         elif st == "stopped":
-            sub, trail = plain.exit_text(outcome.get("exit")).removeprefix("Stopped. ") if outcome else "Stopped here", "Stopped"
+            sub = plain.exit_text(outcome.get("exit")).removeprefix("Stopped. ") if outcome else "Stopped here"
+            trail = step_btns.get(r["key"], "") + _tok_chip(use.get(r["key"])) + "Stopped"
         elif st == "skipped":
             sub, trail = "Not in this run. This step was added after it ran.", ""
         else:
@@ -409,7 +430,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
         proven, note = "Not started", ""
     spent, cap = m.get("spent_usd", 0) or 0, m.get("cap_usd", 0) or 0
     last_at = d["events"][-1]["at"] if d["events"] else None
-    calls = [x for x in d["events"] if x.get("kind") == "model_call"]
+    calls = d.get("calls") or [x for x in d["events"] if x.get("kind") == "model_call"]   # the metered calls, as Cost details
     tok_in, tok_out = (sum(int(x.get(k) or 0) for x in calls) for k in ("input_tokens", "output_tokens"))
     tiles = [("Time to fix", proven, note),
              ("LLM cost", f"${spent:.4f}" if 0 < spent < 0.1 else f"${spent:.2f}", f"Budget ${cap:.2f}" if cap else ""),
@@ -438,7 +459,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
             "waiting": ("Your OK is needed", "Check the pull request, then approve it or close it. Nothing is posted to GitHub.",
                         '<button type="button" class="btn glass prominent" popovertarget="check-pr"><span>Check PR</span></button>'),
             "stopped": ("Stopped", plain.exit_text(outcome.get("exit")).removeprefix("Stopped. "),
-                        _link("/", "New run", icons.plus(16), True) if served else ""),
+                        (_again(s) + _link("/", "New run", icons.plus(16))) if served else ""),
             "done": ("Done", "The pull request text is saved. Nothing has been posted to GitHub.",
                      _copy(str(_runs_dir() / rid / "PR.md"), "Copy file path", True)),
             "idle": ("Not running", "", ""),
@@ -466,16 +487,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
     else:
         notice = '<section hidden></section>'
 
-    problem = (s.get("focus") or issue.get("title") or "").strip()
-    context = (f'<section class="group"><h2>The problem it is fixing</h2><div class="sect prose"><p>{e(problem[:700])}</p></div></section>'
-               if problem else '<section hidden></section>')
     story = (s.get("second_story") or {}).get("text", "")
-    results = '<div class="results">'
-    if story:
-        results += '<section class="group"><h2>Why the bug slipped through</h2><div class="sect"><div class="md story" id="story"></div></div></section>'
-    results += "</div>"
-
-    read = _what_it_read(d.get("pack") or {}, s.get("context") or {})
     adv = _advisors(s)
     eng = _engineer_details(d, s, rows, live)
     md = json.dumps({"story": story, "pr": d["pr_text"]}).replace("</", "<\\/")
@@ -506,14 +518,12 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
 {nav}
 <main>
 {_k("hero", hero)}
+<section class="metrics" aria-label="Usage and cost"><div class="tiles">{tiles_html}</div>
+  <button type="button" class="tbtn proof-btn" popovertarget="costs"><span>Cost details</span></button></section>
 {_k("dock", dock)}
 {_k("notice", notice)}
 <section class="group"><h2>Steps</h2><div class="sect"><ul class="rows">{"".join(step_rows_html)}</ul></div></section>
-{_k("read", read)}
 {_k("advisors", adv)}
-{_k("results", results)}
-<section class="group"><h2>Usage and cost</h2><div class="sect"><div class="tiles">{tiles_html}</div></div></section>
-{_k("context", context)}
 {_k("final", f'<i hidden data-final="{int(final)}"></i>')}
 {eng}
 </main>
@@ -522,6 +532,10 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
   <div class="gh-body">{_k("proof", proof_html or '<div class="proof gh-proof"><p class="gh-muted">Not shown yet.</p></div>')}</div>
 </div>
 {_check_pr(d, rid, served and not is_replay, approve, reject, waiting=phase == "waiting" and not is_replay) if d["pr_text"] else ""}
+{_k("sheet-ctx", ctx_html or '<i id="ctxinfo" hidden></i>')}
+{_k("sheet-report", report_html or '<i id="report" hidden></i>')}
+{_k("sheet-guard", guard_html or '<i id="guardinfo" hidden></i>')}
+{_k("sheet-costs", costs_sheet(d, rows))}
 <div id="acts" popover class="pop glass" aria-label="Latest activity">
   <div class="pop-head"><b>Latest activity</b><button type="button" class="tbtn" popovertarget="acts" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>
   {_k("log", f'<ul class="rows acts-list">{acts or "<li class=row><span></span><span class=t><span>Nothing yet</span></span></li>"}</ul>')}
@@ -538,6 +552,12 @@ const show = (id, text) => {{
   else {{ const pre = document.createElement("pre"); pre.textContent = text; el.appendChild(pre); }}
 }};
 const renderMd = () => {{ const MD = JSON.parse(document.getElementById("md").textContent); show("story", MD.story); show("pr", MD.pr); show("pr-sheet", MD.pr); }};
+// a sheet's markdown (comments, the report) is drawn when the sheet opens
+const mdIn = root => root.querySelectorAll("[data-md]").forEach(el => {{
+  if (el.dataset.done) return; el.dataset.done = "1"; const t = el.dataset.md;
+  if (window.marked && window.DOMPurify) el.innerHTML = DOMPurify.sanitize(marked.parse(t)); else el.textContent = t;
+}});
+document.addEventListener("toggle", ev => {{ if (ev.newState === "open" && ev.target.classList && ev.target.classList.contains("gh")) mdIn(ev.target); }}, true);
 {_DECIDE_JS.replace('__TOKEN__', json.dumps(token)) if served else ''}
 const fmt = s => s < 90 ? Math.round(s) + " s" : s < 5400 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h";
 const tick = () => document.querySelectorAll("[data-since]").forEach(el => {{
@@ -656,15 +676,26 @@ def _gh_checks(rows: list[dict]) -> str:
 _LOG_BAD = re.compile(r"AssertionError|\w*Error\b|\bFAIL\b|\bfailed\b|×|✗|^\s*not ok|^\s*E\s{2,}")
 
 
+def short_cmd(ran: str) -> tuple[str, str]:
+    """(the command that runs the tests, the setup before it): "cd packages/ai && pnpm test:node", "export …"."""
+    if ran.startswith("cd ") or " && " not in ran:   # already the short form
+        return ran, ""
+    short = ("cd " + ran.split(" && cd ", 1)[1]) if " && cd " in ran else ran.rsplit(" && ", 1)[-1]
+    return short, ran[: len(ran) - len(short)].rstrip(" &") if short != ran else ""
+
+
 def _actions_log(cmd: str, output: str, opened: bool = True) -> str:
-    """A test run as GitHub Actions shows a step: `Run <command>`, then the log with numbered lines, errors red."""
+    """A test run as GitHub Actions shows a step: `Run <command>`, then the log with numbered lines, errors red. The
+    setup before the command is folded under the title (Isha 2026-10-09: the long command made the proof hard to read)."""
+    cmd, setup = short_cmd(cmd)
     all_lines = (output or "").splitlines()
     lines, skip = all_lines[-400:], max(0, len(all_lines) - 400)
     rows = "".join(f'<tr class="{"err" if _LOG_BAD.search(l) else ""}"><td class="ln">{i}</td><td>{e(l)}</td></tr>'
                    for i, l in enumerate(lines, skip + 1))
     more = f'<p class="gh-muted gh-cut">The first {skip} lines are in the proof file.</p>' if skip else ""
+    fold = (f'<details class="ran-full"><summary>Setup</summary><code>{e(setup)}</code></details>' if setup else "")
     return (f'<details class="gh-step"{" open" if opened else ""}><summary>Run {e(cmd)}</summary>'
-            f'<div class="gh-log">{more}<table>{rows}</table></div></details>')
+            f'<div class="gh-log">{fold}{more}<table>{rows}</table></div></details>')
 
 
 def _check_pr(d: dict, rid: str, can_decide: bool, approve_cmd: str, reject_cmd: str, waiting: bool = True) -> str:
@@ -818,7 +849,18 @@ def _proof(s: dict, rid: str) -> str:
         else:
             ans, dot, why = "Not needed", "muted", "The bug was already shown and confirmed."
         rows.append(_gh_row(dot, f"{label} failing for this issue?", ans, why, extra))
-    summary = f'<div class="gh-box"><div class="gh-box-head"><span>Checks</span></div>{"".join(rows)}</div>'
+    found = [x for x in tries if x.get("outcome") == "RED"]
+    first = found[0] if found else None
+    gist = ""
+    if first:
+        kind = plain.TEST_KIND.get(first.get("rung", ""), "test")
+        aw, _ = after_fix(first.get("test_path", ""))
+        before = ("The repo's own tests already include one that fails for this issue. " if ex.get("status") == "FOUND" else
+                  f"All {total:,} of the repo's own tests pass on main, so none of them catches this bug. " if ex.get("status") == "NONE FAIL" and total else "")
+        gist = (f'<div class="gh-annot muted"><b>In short</b><p>{e(before)}A new {e(kind)} written for this issue (try {first["n"]}) '
+                f'fails on main for the reason the issue describes. With the fix: {e(aw[0].lower() + aw[1:])}.</p></div>')
+    summary = (f'{gist}<details class="gh-box gh-box-fold" open><summary class="gh-box-head"><span>Checks</span>'
+               f'<span class="gh-muted">{len(rows)} questions</span></summary>{"".join(rows)}</details>')
 
     # 2. every try, one job each
     pages, nums, start = [], [], None   # opens on the first try that showed the bug (try 1 counts: index 0)
@@ -864,8 +906,7 @@ def _proof(s: dict, rid: str) -> str:
             aw, at_ = after_fix(path)
             after_html = f'<div class="gh-annot {at_}"><b>{e(aw)}</b></div>'
         ran = pf.get("ran", "")
-        short = ("cd " + ran.split(" && cd ", 1)[1]) if " && cd " in ran else ran.rsplit(" && ", 1)[-1]
-        setup = ran[: len(ran) - len(short)].rstrip(" &") if ran and short != ran else ""
+        short, setup = short_cmd(ran) if ran else ("", "")
         steps = ""
         if ran:
             setup_lines = [f"Runner: {pf.get('where', '')}", f"Code: {pf.get('code', '')}", f"Started: {pf.get('when', '')}"]
@@ -899,6 +940,201 @@ def _proof(s: dict, rid: str) -> str:
     return (f'<div class="proof gh-proof">{title}<h4 class="gh-h">Summary</h4>{summary}{pager}<p class="gh-muted gh-fp">The code '
             'was the repository as it is, with only the test added. A test that fails for a different reason does not count '
             'as showing the bug.</p></div>')
+
+
+# ── sheets that open from the steps (Isha 2026-10-09): Context info, Read report, Guard, Cost details ─────────────
+def usage_by_step(d: dict) -> dict:
+    """{step: {calls, in, out, usd}} from the run's metered AI calls."""
+    out = {}
+    for c in d.get("calls") or []:
+        u = out.setdefault(c.get("step") or "", {"calls": 0, "in": 0, "out": 0, "usd": 0.0})
+        u["calls"] += 1
+        u["in"] += int(c.get("input_tokens") or 0)
+        u["out"] += int(c.get("output_tokens") or 0)
+        u["usd"] += (c.get("actual_micro") or 0) / 1e6
+    return out
+
+
+def _tok_chip(u: dict | None) -> str:
+    if not u or not u["calls"]:
+        return ""
+    return (f'<span class="tokchip" title="{u["calls"]} AI call{"s" * (u["calls"] != 1)}: {u["in"]:,} tokens in, '
+            f'{u["out"]:,} out">{_k_fmt(u["in"] + u["out"])} tokens · ${u["usd"]:.2f}</span>')
+
+
+def _sheet(sid: str, label: str, title: str, meta: str, body: str, tabs: list | None = None) -> str:
+    """A GitHub-style sheet: title, one meta line, optional underline tabs, then the body (panes when tabs)."""
+    nav = ""
+    if tabs:
+        nav = ('<nav class="gh-tabs" role="tablist">' + "".join(
+            f'<button type="button" role="tab" data-tab="{k}" class="{"on" if i == 0 else ""}" aria-selected="{str(i == 0).lower()}">'
+            f'{e(name)}{f" <span class=cnt>{n}</span>" if n is not None else ""}</button>' for i, (k, name, n) in enumerate(tabs))
+            + '</nav>')
+    return (f'<div id="{sid}" popover class="pop sheet gh" aria-label="{e(label)}"><div class="gh-top">'
+            f'<button type="button" class="gh-close" popovertarget="{sid}" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button>'
+            f'<h3 class="gh-title">{title}</h3><p class="gh-meta">{meta}</p>{nav}</div><div class="gh-body">{body}</div></div>')
+
+
+def _md(text: str) -> str:
+    """Markdown rendered in the browser (marked + DOMPurify) when its sheet opens."""
+    return f'<div class="md gh-md" data-md="{e(text or "")}"></div>'
+
+
+def _blob(snippets: str, marks: list) -> str:
+    """Numbered source lines (from the context pack) as GitHub shows a file, the lines with the issue's strings marked."""
+    rows = []
+    for line in (snippets or "").splitlines():
+        m = re.match(r"^\s*(\d+)  (.*)$", line)
+        if not m:
+            rows.append('<tr class="gap"><td class="ln"></td><td class="code">…</td></tr>')
+            continue
+        hit = any(a and a in m.group(2) for a in marks)
+        rows.append(f'<tr class="{"hit" if hit else ""}"><td class="ln">{m.group(1)}</td><td class="code">{e(m.group(2))}</td></tr>')
+    return f'<div class="dscroll"><table class="dtable blob">{"".join(rows)}</table></div>'
+
+
+def context_sheet(pack: dict, c: dict) -> str:
+    """Everything Gather context read, GitHub's way (Isha 2026-10-09): the comments as comments, the history as a
+    commit list, the code as files with the issue's strings marked, the shared code. Collected by code, not AI."""
+    if not pack:
+        return ""
+    iss, code = pack.get("issue") or {}, pack.get("code") or {}
+    ctx = code.get("ctx") or {}
+    cs, links = iss.get("comments") or [], iss.get("linked") or []
+    conv = "".join(f'<div class="gh-comment"><div class="gh-comment-head"><b>Comment {i}</b> · commented on {e(str(x.get("at") or "")[:10])}</div>'
+                   f'{_md(x.get("text", ""))}</div>' for i, x in enumerate(cs, 1)) or '<p class="gh-muted">The issue has no comments.</p>'
+    if links:
+        conv += ('<div class="gh-box"><div class="gh-box-head"><span>Linked issues and pull requests</span></div>'
+                 + "".join(f'<div class="gh-check"><span class="gh-dot {"ok" if x.get("merged") else "muted"}"></span>'
+                           f'<span class="gh-cname"><b>{e(x.get("title", ""))}</b><span class="gh-muted">{e(x.get("repo", ""))}#{e(x.get("number", ""))} · '
+                           f'{"pull request" if x.get("pull_request") else "issue"} · {e(x.get("state", ""))}{" · merged" if x.get("merged") else ""}</span></span></div>'
+                           for x in links) + '</div>')
+    errs = (iss.get("errors") or {})
+    if errs.get("errors") or errs.get("frames"):
+        conv += f'<div class="gh-box"><div class="gh-box-head"><span>Errors quoted in the issue</span></div><pre class="gh-pre">{e(chr(10).join(errs.get("errors", []) + ["at " + f for f in errs.get("frames", [])]))}</pre></div>'
+    hist = pack.get("history") or []
+    commits = "".join(
+        f'<div class="gh-box"><div class="gh-box-head"><span>Commits on <code>{e(h["path"])}</code></span></div>'
+        + ("".join(f'<div class="gh-commit-row"><span class="gh-cname"><b>{e(x.get("title", ""))}</b>'
+                   f'<span class="gh-muted">committed on {e(x.get("date", ""))}</span></span><code class="gh-sha">{e(str(x.get("sha", ""))[:7])}</code></div>'
+                   for x in h.get("changes") or []) or '<p class="gh-muted gh-pad">No recent changes found.</p>') + '</div>'
+        for h in hist) or '<p class="gh-muted">No history was read.</p>'
+    ranking = code.get("ranking") or []
+    files = ""
+    for i, f in enumerate(ranking):
+        why = ", ".join(f"“{a}”" for a in (f.get("matched") or [])[:4]) or "the problem's words"
+        body = _blob(ctx.get("snippets", ""), f.get("matched") or []) if f["path"] == ctx.get("source") and ctx.get("snippets") else ""
+        files += (f'<details class="dfile"{" open" if i == 0 else ""}><summary><span class="dpath">{e(f["path"])}</span>'
+                  f'<span class="dtag">{"best match · " if i == 0 else ""}contains {e(why)}</span></summary>{body}</details>')
+    if ctx.get("look_in") or ctx.get("look_in_missing") or ctx.get("test_into") or ctx.get("test_into_note"):
+        files = (f'<div class="gh-annot muted"><b>Your directional input</b>'
+                 + (f'<p>Looked in first: {e(", ".join(ctx.get("look_in") or []))}</p>' if ctx.get("look_in") else "")
+                 + (f'<p>Not found in the code: {e(", ".join(ctx["look_in_missing"]))}</p>' if ctx.get("look_in_missing") else "")
+                 + (f'<p>Unit test written in: {e(ctx["test_into"])}</p>' if ctx.get("test_into") else "")
+                 + (f'<p>Test file not used: {e(ctx["test_into_note"])}</p>' if ctx.get("test_into_note") else "") + '</div>') + files
+    files = files or '<p class="gh-muted">No files matched.</p>'
+    rel = pack.get("related") or []
+    shared = "".join(f'<details class="dfile"><summary><span class="dpath">{e(r["name"])}</span><span class="dtag">from {e(r.get("module", ""))} · '
+                     f'used in {e(r.get("used_in", 0))} files</span></summary><pre class="gh-pre">{e(str(r.get("definition", ""))[:6000])}</pre></details>'
+                     for r in rel) or '<p class="gh-muted">No shared code was called near the problem.</p>'
+    n = pack.get("counts") or {}
+    def many(k, one, more):
+        return f"{k} {one if k == 1 else more}"
+    meta = (f'<span class="gh-state neutral">Collected by code, no AI</span>Read {many(n.get("comments", len(cs)), "comment", "comments")}, '
+            f'{many(n.get("files", len(ranking)), "file", "files")}, {many(n.get("related", len(rel)), "piece", "pieces")} of shared code and '
+            f'{many(n.get("changes", 0), "recent change", "recent changes")} · locked, fingerprint <code>{e(str(c.get("sha256", ""))[:12])}</code>')
+    panes = (f'<div class="pr-pane" data-pane="conv">{conv}</div><div class="pr-pane" data-pane="commits" hidden>{commits}</div>'
+             f'<div class="pr-pane" data-pane="code" hidden>{files}</div><div class="pr-pane" data-pane="shared" hidden>{shared}</div>'
+             f'<p class="gh-muted gh-fp">Show the bug, Find the cause and Fix it read this, and only this.</p>')
+    return _sheet("ctxinfo", "Context info", f'Context for issue <span class="gh-muted">#{e(iss.get("number", ""))}</span>', meta, panes,
+                  [("conv", "Conversation", len(cs)), ("commits", "Commits", sum(len(h.get("changes") or []) for h in hist)),
+                   ("code", "Code", len(ranking)), ("shared", "Shared code", len(rel))])
+
+
+def report_sections(text: str) -> tuple[list, str]:
+    """The report's questions and answers ("### question" headings), and its CONDITION line."""
+    cond = ""
+    m = re.search(r"^CONDITION:\s*(.+)$", text or "", re.M)
+    if m:
+        cond = m.group(1).strip()
+        text = text[:m.start()]
+    parts = re.split(r"^###\s+(.+?)\s*$", text or "", flags=re.M)
+    out = [(parts[i].strip(), parts[i + 1].strip()) for i in range(1, len(parts) - 1, 2)]
+    return out, cond
+
+
+def report_sheet(s: dict) -> str:
+    """Why the bug slipped through, as a GitHub-style report (Isha 2026-10-09: collapsible, GitHub-intuitive): the
+    short answer first, then each question folded."""
+    text = (s.get("second_story") or {}).get("text", "")
+    if not text or text.startswith("PLACEHOLDER"):
+        return ""
+    qa, cond = report_sections(text)
+    if not qa:
+        body = _md(text)
+    else:
+        first = qa[0][1]
+        body = (f'<div class="gh-annot muted"><b>In short</b>{_md(first)}'
+                + (f'<p><span class="gh-muted">The condition that let it ship:</span> {e(cond)}</p>' if cond else "") + '</div>'
+                + "".join(f'<details class="gh-fold"{" open" if i == 0 else ""}><summary>{e(q)}</summary>{_md(a)}</details>'
+                          for i, (q, a) in enumerate(qa)))
+    issue = s.get("issue") or {}
+    meta = ('<span class="gh-state ai">Written by AI</span>from the run\'s evidence: the history of the code at fault, its '
+            'review and release, and the issue · conditions, never people')
+    return _sheet("report", "Why the bug slipped through", f'Why the bug slipped through <span class="gh-muted">#{e(issue.get("number", ""))}</span>',
+                  meta, body)
+
+
+def guard_sheet(s: dict) -> str:
+    """Guard similar bugs, in plain words (Isha 2026-10-09: "I don't know exactly what happens here")."""
+    g = s.get("guard") or {}
+    of = g.get("on_fixed")
+    if of is None:
+        return ""
+    passed, opened, broken = of.get("passed") or [], of.get("failed") or [], of.get("broken") or []
+    total = len(passed) + len(opened) + len(broken)
+    def rows(names, dot, word):
+        return "".join(f'<div class="gh-check"><span class="gh-dot {dot}"></span><span class="gh-cname"><b>{e(str(n)[:200])}</b></span>'
+                       f'<span class="gh-st {dot}">{word}</span></div>' for n in names)
+    sib = g.get("siblings") or []
+    body = (f'<div class="gh-annot muted"><b>What it is</b><p>One extra test with {total} cases. Each case is a different way '
+            f'this kind of bug can happen. Every case failed on the old code, so the test would have caught this bug. On the '
+            f'fixed code, a passing case is covered by the fix; a failing one is a gap the fix leaves open.</p>'
+            f'<p><span class="gh-muted">What it checks:</span> {e(g.get("covers") or g.get("text") or "")}</p></div>'
+            f'<div class="gh-box"><div class="gh-box-head"><span>{total} cases on the fixed code</span>'
+            f'<span class="gh-muted">{len(passed)} covered · {len(opened)} still open · {len(broken)} broken</span></div>'
+            f'{rows(opened, "bad", "Still open")}{rows(broken, "warn", "Broken")}{rows(passed, "ok", "Covered")}</div>'
+            + (f'<div class="gh-box"><div class="gh-box-head"><span>The same code in {len(sib)} other file{"s" * (len(sib) != 1)}, not changed by this fix</span></div>'
+               + "".join(f'<div class="gh-check"><span class="gh-cname"><code>{e(x)}</code></span></div>' for x in sib) + '</div>' if sib else "")
+            + (f'<p class="gh-muted gh-fp">File <code>{e(g.get("repo_path", ""))}</code> · kept with the run, not added to the pull request.</p>'))
+    meta = (f'<span class="gh-state ai">Written by AI</span>{len(passed)} of {total} cases covered by the fix'
+            + (f' · {len(opened)} still open' if opened else ""))
+    return _sheet("guardinfo", "Guard similar bugs", "Guard for similar bugs", meta, body)
+
+
+def costs_sheet(d: dict, rows: list) -> str:
+    """Cost details (PM review: the cost and token panel as a side panel): per step, then call by call."""
+    use = usage_by_step(d)
+    label = {k: lab for k, lab, _ in plain.STEPS}
+    steps = "".join(f'<tr><td>{e(label.get(k, k))}</td><td>{u["calls"]}</td><td>{u["in"]:,}</td><td>{u["out"]:,}</td><td>${u["usd"]:.4f}</td></tr>'
+                    for k, u in sorted(use.items(), key=lambda kv: [r["key"] for r in rows].index(kv[0]) if kv[0] in [r["key"] for r in rows] else 99))
+    tot = {"calls": sum(u["calls"] for u in use.values()), "in": sum(u["in"] for u in use.values()),
+           "out": sum(u["out"] for u in use.values()), "usd": sum(u["usd"] for u in use.values())}
+    calls = "".join(f'<tr><td>{e(str(c.get("at", ""))[11:19])}</td><td>{e(label.get(c.get("step"), c.get("step") or ""))}</td>'
+                    f'<td>{e(str(c.get("model", "")).split("/")[-1])}</td><td>{int(c.get("input_tokens") or 0):,}</td>'
+                    f'<td>{int(c.get("output_tokens") or 0):,}</td><td>${(c.get("actual_micro") or 0) / 1e6:.4f}</td></tr>'
+                    for c in d.get("calls") or [])
+    body = (f'<div class="gh-box"><div class="gh-box-head"><span>By step</span></div><div class="dscroll"><table class="gh-table">'
+            f'<tr><th>Step</th><th>AI calls</th><th>Tokens in</th><th>Tokens out</th><th>Cost</th></tr>{steps}'
+            f'<tr class="tot"><td>Total</td><td>{tot["calls"]}</td><td>{tot["in"]:,}</td><td>{tot["out"]:,}</td><td>${tot["usd"]:.4f}</td></tr>'
+            f'</table></div></div>'
+            f'<details class="gh-fold"><summary>Call by call</summary><div class="dscroll"><table class="gh-table">'
+            f'<tr><th>At</th><th>Step</th><th>Model</th><th>In</th><th>Out</th><th>Cost</th></tr>{calls}</table></div></details>'
+            if tot["calls"] else '<p class="gh-muted">No AI calls yet.</p>')
+    m = d.get("meter") or {}
+    meta = (f'${tot["usd"]:.2f} of the ${m.get("cap_usd", 0) or 0:.2f} budget · {_k_fmt(tot["in"])} tokens in, '
+            f'{_k_fmt(tot["out"])} out · compute {m.get("sandbox_used_s", 0) or 0} s')
+    return (_sheet("costs", "Cost details", "Cost details", meta, body).replace('class="pop sheet gh"', 'class="pop sheet gh side"'))
 
 
 def full_answer(raw: dict) -> str:
@@ -973,48 +1209,6 @@ def _advisors(s: dict) -> str:
     return (f'<section class="group"><h2>Advisors</h2><div class="sect"><ul class="rows">{"".join(rows)}</ul></div>{"".join(sheets)}'
             '<p class="foot">Advice only. An advisor never changes the fix, the pull request text or your OK. They are '
             'switched on after the advisors\' server has been reviewed: <a href="/connect#advisors">how to connect them</a>.</p></section>')
-
-
-def _what_it_read(pack: dict, c: dict) -> str:
-    """The gathered context, in plain words: what the later steps were given to read."""
-    if not pack:
-        return '<section hidden></section>'
-    iss, rows = pack.get("issue") or {}, []
-
-    def row(title: str, sub: str) -> str:
-        return f'<li class="row"><span class="ic">{icons.list_(18)}</span><span class="t"><b>{e(title)}</b><span>{e(sub)}</span></span></li>'
-    cx = (pack.get("code") or {}).get("ctx") or {}
-    if cx.get("look_in") or cx.get("look_in_missing"):
-        rows.append(row("Your pointers for the cause", "; ".join(
-            [f"looked in first: {', '.join(cx.get('look_in') or [])}"] * bool(cx.get("look_in")) +
-            [f"not found in the code: {', '.join(cx['look_in_missing'])}"] * bool(cx.get("look_in_missing")))))
-    if cx.get("test_into"):
-        rows.append(row("Your test file", f"The unit test is added to {cx['test_into']}, as new cases at its end"))
-    elif cx.get("test_into_note"):
-        rows.append(row("Your test file", f"Not used ({cx['test_into_note']}); the test goes in a new file beside the code"))
-    n = len(iss.get("comments") or [])
-    rows.append(row(f"{n} comment{'s' * (n != 1)} on the issue",
-                    "All of them are saved; the most useful ones go to the AI first" if n else "The issue has no comments"))
-    if iss.get("linked"):
-        rows.append(row(f"{len(iss['linked'])} linked issue{'s' * (len(iss['linked']) != 1)} or pull request{'s' * (len(iss['linked']) != 1)}",
-                        "; ".join(f"#{x['number']} {x['title']}" for x in iss["linked"][:3])))
-    for i, f in enumerate((pack.get("code") or {}).get("ranking") or []):
-        name = Path(f["path"]).name
-        pkg = f["path"].split("/")[1] if f["path"].startswith("packages/") else ""
-        why = ", ".join(f'"{a}"' for a in f.get("matched", [])[:3]) or "words from the problem"
-        rows.append(row(("Best match: " if i == 0 else "") + name, f"{pkg + ' · ' if pkg else ''}contains {why}"))
-    for r in pack.get("related") or []:
-        rows.append(row(f"Shared code: {r['name']}", f"From {r['module']}, called near the problem, used in {r['used_in']} files"))
-    ch = sum(len(h.get("changes") or []) for h in pack.get("history") or [])
-    if ch:
-        last = next((h["changes"][0] for h in pack["history"] if h.get("changes")), {})
-        rows.append(row(f"{ch} recent changes to the best files", f"Latest: {last.get('date', '')} {last.get('title', '')}"))
-    if pack.get("missing"):
-        rows.append(row("Could not read everything", "; ".join(pack["missing"])))
-    foot = (f"Saved with the run and locked (fingerprint {str(c.get('sha256', ''))[:12]}). "
-            "Show the bug, Find the cause and Fix it all read this, and only this." if c.get("sha256") else "")
-    return (f'<section class="group"><h2>What it read</h2><div class="sect"><ul class="rows read-list">{"".join(rows)}</ul></div>'
-            f'{f"<p class=foot>{e(foot)}</p>" if foot else ""}</section>')
 
 
 def _engineer_details(d: dict, s: dict, rows: list[dict], live: bool) -> str:
@@ -1112,6 +1306,17 @@ document.addEventListener("click", ev => {
   document.getElementById("commit-title").dispatchEvent(new Event("input", { bubbles: true }));
 });
 const TOKEN = __TOKEN__;
+document.addEventListener("click", async ev => {   // Run again: the same issue, the same choices
+  const b = ev.target.closest("[data-again]"); if (!b) return;
+  b.disabled = true; const l = b.querySelector("span"); l.textContent = "Starting…";
+  try {
+    const r = await fetch("/api/start", { method: "POST", headers: { "X-DebugAssistAgent-Token": TOKEN, "Content-Type": "application/json" },
+      body: b.dataset.again });
+    const j = await r.json();
+    if (!r.ok) { l.textContent = j.error || "Could not start."; b.disabled = false; return; }
+    location.href = j.page;
+  } catch (e) { l.textContent = "Could not reach DebugAssistAgent."; b.disabled = false; }
+});
 document.addEventListener("click", async ev => {
   const b = ev.target.closest("[data-decide]"); if (!b) return;
   const box = b.closest(".decide"), msg = box.querySelector(".decide-msg");
@@ -1153,7 +1358,9 @@ async function poll() {
     doc.querySelectorAll("[data-k]").forEach(n => {
       const o = document.querySelector(`[data-k="${n.dataset.k}"]`);
       if (o && o.dataset.h !== n.dataset.h) {
-        o.replaceWith(document.importNode(n, true));
+        const open = o.matches && o.matches(":popover-open"), fresh = document.importNode(n, true);
+        o.replaceWith(fresh);
+        if (open && fresh.showPopover) { try { fresh.showPopover(); } catch (e) {} }
         if (["md", "results"].includes(n.dataset.k)) md = true;
         if (n.dataset.k === "chart") chartChanged = true;
       }
