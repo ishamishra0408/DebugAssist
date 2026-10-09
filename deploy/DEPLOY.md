@@ -21,12 +21,16 @@ E2B_API_KEY=... uv run python scripts/e2b_template.py vercel/ai --build
 It prints the template alias (`debugassist-vercel-ai-e7f55a4`); `render.yaml` already uses that name.
 
 ## 3. Laya on your Mac (whenever hosted runs should work)
-```bash
-cd ~/Projects/DebugAssist && LAYA_TOKEN=<a long random secret> uv run debug-assist laya-serve
-```
-In another terminal, a free tunnel: `cloudflared tunnel --url http://127.0.0.1:8790` (prints an https address).
-Hosted runs need the Mac awake, `laya-serve` running and the tunnel up. A quick tunnel's address changes every
-time it starts; update `LAYA_URL` in Render when it does (or set up a named tunnel once).
+Laya runs on the Mac as a login service and is reached at a fixed address through Tailscale Funnel (2026-10-09; the
+free Cloudflare quick tunnel changed address every time it dropped).
+1. `LAYA_TOKEN=<a long random secret>` in `.env` (the same value as `LAYA_TOKEN` in Render).
+2. Tailscale: sign in (the menu-bar app), then `tailscale funnel --bg 8790` once; enable Funnel when it asks. The address
+   is `https://<this Mac>.<tailnet>.ts.net` and never changes; put it in Render as `LAYA_URL`, once.
+3. The login service `~/Library/LaunchAgents/com.debugassist.laya.plist` runs `uv run --env-file .env debug-assist
+   laya-serve` from the project, starts at login and restarts if it stops (log: `~/Library/Logs/debugassist-laya.log`).
+   Load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.debugassist.laya.plist`; remove it with
+   `launchctl bootout gui/$(id -u)/com.debugassist.laya` and deleting the file.
+While the Mac sleeps Laya cannot answer; on wake it is back at the same address. Keep the Mac awake for demos.
 
 ## 4. Render
 New ▸ Blueprint ▸ this repo. Render reads `render.yaml` and asks for each key marked `sync: false`.
