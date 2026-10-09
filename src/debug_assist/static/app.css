@@ -690,30 +690,54 @@ h2 .opt { margin-left: 8px; padding: 2px 8px; border-radius: 999px; background: 
 .pfield input:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
 .pfield small { color: var(--label-2); font-size: 13px; line-height: 1.45; }
 
-/* sign in, GitHub's way: the mark, one line, one button; a slow living glow behind (still under Reduce Motion) */
-body.auth { min-height: 100vh; display: grid; place-items: center; margin: 0; overflow: hidden; }
-.auth-glow { position: fixed; inset: -25%; z-index: 0; pointer-events: none; filter: blur(48px); opacity: .5;
-  background: radial-gradient(32% 28% at 34% 36%, rgba(46, 160, 67, .55), transparent 70%),
-              radial-gradient(28% 26% at 66% 64%, rgba(31, 111, 235, .38), transparent 70%); }
-@media (prefers-color-scheme: light) { .auth-glow { opacity: .28; } }
-.auth-wrap { position: relative; z-index: 1; width: min(340px, calc(100vw - 32px)); display: grid; justify-items: center;
-  gap: 18px; padding: 24px 0; }
-.auth-mark { width: 52px; height: 52px; display: grid; place-items: center; border-radius: 14px; color: var(--label);
-  background: var(--surface); box-shadow: inset 0 0 0 1px var(--hair), 0 8px 28px rgba(0, 0, 0, .25); }
-.auth h1 { margin: 0; font-size: 22px; font-weight: 300; letter-spacing: -.01em; text-align: center; }
-.auth-card { width: 100%; box-sizing: border-box; display: grid; gap: 12px; padding: 16px; border-radius: 12px;
-  background: color-mix(in srgb, var(--surface) 82%, transparent); box-shadow: inset 0 0 0 1px var(--hair);
-  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
-.auth-btn { display: flex; align-items: center; justify-content: center; gap: 10px; height: 44px; border-radius: 10px;
-  background: var(--label); color: var(--bg); font-family: inherit; font-size: 15px; font-weight: 600; text-decoration: none;
-  transition: opacity .15s, transform .15s; }
-.auth-btn:hover { opacity: .9; text-decoration: none; } .auth-btn:active { transform: scale(.98); }
-.auth-btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-.auth-flash { margin: 0; padding: 10px 14px; border-radius: 8px; font-size: 13px; color: var(--label);
-  background: color-mix(in srgb, var(--red) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 40%, transparent); }
-@media (prefers-reduced-motion: no-preference) {
-  .auth-glow { animation: auth-drift 18s ease-in-out infinite alternate; }
-  .auth-wrap { animation: auth-in .45s cubic-bezier(.2, .7, .2, 1) both; }
+/* sign in (21st.dev's split sign-in, the app's Liquid Glass, GitHub's wording): a split glass card on the living topo
+   background; the brand side previews a run's steps lighting in turn; the form side has one button */
+body.auth { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; margin: 0; }
+.auth-wrap { position: relative; z-index: 2; width: min(860px, calc(100vw - 32px)); padding: 32px 0; }
+.auth-split { display: grid; grid-template-columns: 1.1fr 1fr; border-radius: 28px; overflow: hidden; }
+.auth-brand { position: relative; display: grid; align-content: start; gap: 18px; padding: 36px 34px;
+  border-right: 1px solid var(--hair);
+  background: radial-gradient(120% 90% at 0% 0%, color-mix(in srgb, var(--green) 16%, transparent), transparent 60%),
+              radial-gradient(100% 80% at 100% 100%, color-mix(in srgb, var(--blue) 14%, transparent), transparent 60%); }
+.auth-logo { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; font-weight: 600; color: var(--label); }
+.auth-brand h2 { margin: 6px 0 0; font-size: 26px; font-weight: 600; letter-spacing: -.025em; line-height: 1.15; }
+.auth-flow { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 4px; }
+.auth-flow li { display: flex; gap: 12px; align-items: flex-start; padding: 9px 12px; border-radius: 14px; }
+.auth-flow .d { flex: none; width: 10px; height: 10px; margin-top: 4px; border-radius: 50%; background: var(--label-3);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--label-3) 18%, transparent); }
+.auth-flow .t { display: grid; gap: 1px; } .auth-flow b { font-size: 14px; font-weight: 600; }
+.auth-flow small { font-size: 12.5px; color: var(--label-2); }
+.auth-proof { margin: auto 0 0; font-size: 13px; color: var(--label-2); }
+.auth-form { display: grid; align-content: center; justify-items: center; gap: 12px; padding: 44px 36px; text-align: center; }
+.auth-mark { width: 56px; height: 56px; display: grid; place-items: center; border-radius: 50%; color: var(--label);
+  background: rgba(255, 255, 255, .1); box-shadow: inset 0 1px 0 var(--rim), inset 0 0 0 1px rgba(255, 255, 255, .08); }
+.auth h1 { margin: 6px 0 0; font-size: 22px; font-weight: 600; letter-spacing: -.02em; line-height: 1.2; }
+.auth-sub { margin: 0 0 8px; font-size: 14px; color: var(--label-2); }
+.auth-btn { width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 10px;
+  height: 46px; border-radius: 999px; background: var(--label); color: var(--bg); font-family: inherit; font-size: 15px;
+  font-weight: 600; text-decoration: none; transition: opacity .15s, transform .15s; }
+.auth-btn:hover { opacity: .92; text-decoration: none; } .auth-btn:active { transform: scale(.98); }
+.auth-btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.auth-flash { width: 100%; box-sizing: border-box; margin: 0; padding: 10px 14px; border-radius: 14px; font-size: 13px;
+  color: var(--label); background: color-mix(in srgb, var(--red) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 40%, transparent); }
+.auth-foot { margin: 6px 0 0; font-size: 13px; color: var(--label-2); }
+@media (max-width: 720px) {
+  .auth-split { grid-template-columns: 1fr; }
+  .auth-brand { border-right: 0; border-bottom: 1px solid var(--hair); padding: 24px 22px; gap: 8px; }
+  .auth-brand h2 { font-size: 20px; } .auth-flow, .auth-proof { display: none; }
+  .auth-form { padding: 32px 22px; }
 }
-@keyframes auth-drift { to { transform: translate3d(5%, -4%, 0) rotate(10deg) scale(1.06); } }
-@keyframes auth-in { from { opacity: 0; transform: translateY(8px); } }
+/* the preview: each step lights in turn, then all rest; a 10 s loop (still and all lit under Reduce Motion) */
+@media (prefers-reduced-motion: no-preference) {
+  .auth-wrap { animation: auth-in .5s cubic-bezier(.2, .7, .2, 1) both; }
+  .auth-flow li { animation: auth-row 10s calc(var(--i) * 1.4s + .4s) infinite both; }
+  .auth-flow li .d { animation: auth-dot 10s calc(var(--i) * 1.4s + .4s) infinite both; }
+}
+@media (prefers-reduced-motion: reduce) { .auth-flow .d { background: var(--green); } }
+@keyframes auth-in { from { opacity: 0; transform: translateY(10px) scale(.99); } }
+@keyframes auth-row { 0% { background: transparent; } 4%, 12% { background: color-mix(in srgb, var(--blue) 12%, transparent); }
+  18%, 100% { background: transparent; } }
+@keyframes auth-dot { 0% { background: var(--label-3); } 4%, 12% { background: var(--blue); box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 28%, transparent); }
+  18%, 70% { background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 22%, transparent); }
+  85%, 100% { background: var(--label-3); } }

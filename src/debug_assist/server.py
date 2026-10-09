@@ -53,19 +53,41 @@ GITHUB_MARK = ('<svg width="20" height="20" viewBox="0 0 16 16" aria-hidden="tru
                '.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>')
 
 
+AUTH_FLOW = ("read_issue", "reproduce", "find_cause", "write_fix", "approval")   # the brand side's preview of a run
+
+
 def login_page(error: str = "", refused: str = "") -> str:
-    """Sign in, GitHub's way (Isha 2026-10-08: clean, GitHub's wording): the mark, "Sign in to …", one button."""
+    """Sign in (Isha 2026-10-08: GitHub's wording, the 21st.dev sign-in patterns, the app's Liquid Glass): a split glass
+    card on the app's living background; the brand side says what it does and previews a run's steps lighting in turn
+    (illustration only: nothing about real runs shows before sign-in); the form side has one button."""
     from . import icons
     e = viewer.e
     msg = f"{refused} doesn't have access." if refused else LOGIN_ERRORS.get(error, "")
     flash = f'<p class="auth-flash" role="alert">{e(msg)}</p>' if msg else ""
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    steps = {k: (label, gives) for k, label, gives in plain.STEPS}
+    flow = "".join(f'<li style="--i:{i}"><span class="d"></span><span class="t"><b>{e(steps[k][0])}</b>'
+                   f'<small>{e(steps[k][1])}</small></span></li>' for i, k in enumerate(AUTH_FLOW))
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Sign in to {plain.NAME}</title><meta name="color-scheme" content="dark light"><link rel="stylesheet" href="/static/app.css">
-</head><body class="auth"><div class="auth-glow" aria-hidden="true"></div>
-<main class="auth-wrap"><div class="auth-mark">{icons.mark(28)}</div>
-<h1>Sign in to {plain.NAME}</h1>
-<div class="auth-card">{flash}<a class="auth-btn" href="/auth/github">{GITHUB_MARK}<span>Continue with GitHub</span></a></div>
-</main></body></html>"""
+</head><body class="auth">
+<canvas id="topo" aria-hidden="true"></canvas><div class="ambient s-idle" aria-hidden="true"></div>
+<main class="auth-wrap"><div class="auth-split glass">
+<section class="auth-brand" aria-label="What {plain.NAME} does">
+  <p class="auth-logo">{icons.mark(20)}<span>{plain.NAME}</span></p>
+  <h2>From a GitHub issue to a proven fix.</h2>
+  <ol class="auth-flow">{flow}</ol>
+  <p class="auth-proof">Every fix passes 2 tests before you see it.</p>
+</section>
+<section class="auth-form">
+  <div class="auth-mark">{icons.mark(26)}</div>
+  <h1>Sign in to {plain.NAME}</h1>
+  <p class="auth-sub">Use your GitHub account to continue.</p>
+  {flash}<a class="auth-btn" href="/auth/github">{GITHUB_MARK}<span>Continue with GitHub</span></a>
+  <p class="auth-foot">New here? Ask the owner to add your GitHub account.</p>
+</section>
+</div></main>
+<script src="/static/topo.js" defer></script><script src="/static/glass.js" defer></script>
+</body></html>"""
 
 
 _plans: dict = {}
@@ -951,8 +973,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, HEALTH.decode(), "text/plain")
             if parts in (["login"], ["logout"], ["auth", "github"], ["auth", "github", "callback"]):
                 return self._auth(parts, q)
-            if parts == ["static", "app.css"]:
-                return self._send(200, (viewer.STATIC / "app.css").read_text(), STATIC_FILES["app.css"])
+            if len(parts) == 2 and parts[0] == "static" and parts[1] in STATIC_FILES:   # the app's own styles and scripts:
+                return self._send(200, (viewer.STATIC / parts[1]).read_text(), STATIC_FILES[parts[1]])  # open (sign-in uses them)
             if not self._signed_in():
                 from urllib.parse import quote
                 nxt = u.path + (f"?{u.query}" if u.query else "")
