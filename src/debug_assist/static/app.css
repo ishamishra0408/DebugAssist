@@ -823,3 +823,7 @@ body.auth { min-height: 100vh; min-height: 100dvh; display: grid; place-items: c
 .gh-activity li:first-child { border-top: 0; }
 .gh-activity .gh-dot { margin-top: 7px; } .gh-activity time { margin-left: auto; font-size: 12px; white-space: nowrap; }
 .gh-activity .gh-cname b { font-weight: 500; }
+
+/* a listed file with no lines kept: a plain row, not an opener */
+.gh .dfile > .dfile-head { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: var(--gh-subtle); color: var(--gh-fg);
+  font: 12px/1.3 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }

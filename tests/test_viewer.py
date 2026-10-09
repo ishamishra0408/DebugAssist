@@ -371,6 +371,8 @@ def test_the_steps_open_their_own_sheets_github_style():
     assert '<span class="Label">No AI</span><b>debugassist</b> read 1 comment, 2 files' in ctx and 'data-md="Still happens on **7.0.1**"' in ctx and "Comment 1" in ctx
     assert "Commits on <code>packages/ai/src/ui/chat.ts</code>" in ctx and ">abc1234</code>" in ctx and "feat: resume" in ctx
     assert '<tr class="hit"><td class="ln">883</td>' in ctx and '<tr class=""><td class="ln">881</td>' in ctx
+    # a listed file with no lines kept is a plain row, not one that looks like it opens (Isha 2026-10-09)
+    assert '<div class="dfile"><div class="dfile-head"><span class="dpath">packages/ai/src/ui/x.ts</span>' in ctx
     assert "Your directional input" in ctx and "Not found in the code: packages/ai/src/nope.ts" in ctx and "processUIMessageStream" in ctx
     rep = _sheet(page, "report")
     assert '<span class="Label Label--done">AI-generated</span>' in rep and '<details class="gh-fold" open><summary>What broke?</summary>' in rep

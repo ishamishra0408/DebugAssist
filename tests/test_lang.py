@@ -300,3 +300,14 @@ def test_your_pointers_lead_the_search_and_the_unit_test_goes_into_your_file(rep
     rdir = tmp_path_factory.mktemp("run")
     assert graph.shelve_drafts(repo, rdir, [mine], keep=None) == [mine]
     assert (repo / mine).read_text() == before and "def test_args_kept" in (rdir / "attempt-tests/test_messages.py").read_text()
+
+
+
+def test_every_listed_file_keeps_the_lines_around_the_issues_strings(repo):
+    """Isha 2026-10-09: in Context info only the best match could be opened; the others had no lines saved."""
+    ctx = testwriter.locate(repo, "merge_chunks drops `args`", "`merge_chunks` drops `args`", PROFILE)
+    got = context.ranked(repo, ctx)
+    assert got and all("snippets" in f for f in got)
+    chat = next((f for f in got if f["path"].endswith("acme_openai/chat.py")), None)
+    if chat:   # it uses merge_chunks: its numbered lines are kept
+        assert "merge_chunks" in chat["snippets"] and chat["snippets"].lstrip().split()[0].isdigit()

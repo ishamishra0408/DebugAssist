@@ -1028,9 +1028,12 @@ def context_sheet(pack: dict, c: dict) -> str:
     files = ""
     for i, f in enumerate(ranking):
         why = ", ".join(f"“{a}”" for a in (f.get("matched") or [])[:4]) or "the problem's words"
-        body = _blob(ctx.get("snippets", ""), f.get("matched") or []) if f["path"] == ctx.get("source") and ctx.get("snippets") else ""
-        files += (f'<details class="dfile"{" open" if i == 0 else ""}><summary><span class="dpath">{e(f["path"])}</span>'
-                  f'<span class="dtag">{"best match · " if i == 0 else ""}contains {e(why)}</span></summary>{body}</details>')
+        lines = ctx.get("snippets", "") if f["path"] == ctx.get("source") and ctx.get("snippets") else f.get("snippets", "")
+        head = (f'<span class="dpath">{e(f["path"])}</span>'
+                f'<span class="dtag">{"best match · " if i == 0 else ""}contains {e(why)}</span>')
+        files += (f'<details class="dfile"{" open" if i == 0 else ""}><summary>{head}</summary>{_blob(lines, f.get("matched") or [])}</details>'
+                  if lines else   # nothing kept to show: a plain row, not one that looks like it opens
+                  f'<div class="dfile"><div class="dfile-head">{head}</div></div>')
     if ctx.get("look_in") or ctx.get("look_in_missing") or ctx.get("test_into") or ctx.get("test_into_note"):
         files = (f'<div class="gh-annot muted"><b>Your directional input</b>'
                  + (f'<p>Looked in first: {e(", ".join(ctx.get("look_in") or []))}</p>' if ctx.get("look_in") else "")

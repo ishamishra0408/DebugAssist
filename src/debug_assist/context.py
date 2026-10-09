@@ -83,12 +83,22 @@ def errors_in(*texts: str) -> dict:
 
 
 # ── code ─────────────────────────────────────────────────────────────────────────────────────────
+FILE_LINES = 80  # numbered lines kept per listed file (the best match keeps its full snippets in ctx)
+
+
 def ranked(checkout: Path, ctx: testwriter.Context) -> list[dict]:
-    """The top files with the issue strings each one contains: why it was picked, in its own words."""
+    """The top files with the issue strings each one contains: why it was picked, in its own words, and the numbered
+    lines around those strings (Isha 2026-10-09: only the best match could be opened in Context info)."""
     out = []
     for path, score in ctx.ranking[:TOP_FILES]:
         text = (checkout / path).read_text(errors="ignore")
-        out.append({"path": path, "score": score, "matched": [a for a in ctx.anchors if a in text][:6]})
+        matched = [a for a in ctx.anchors if a in text][:6]
+        hits = {}
+        for a in matched:
+            for m in list(re.finditer(re.escape(a), text))[:4]:
+                hits.setdefault(text.count("\n", 0, m.start()) + 1, 1)
+        lines = testwriter._snippets(text, hits, pad=4).splitlines()[:FILE_LINES] if hits else []
+        out.append({"path": path, "score": score, "matched": matched, "snippets": "\n".join(lines)})
     return out
 
 
