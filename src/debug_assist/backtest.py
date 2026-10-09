@@ -99,7 +99,7 @@ def _tail(log: Path) -> str:
     return ((errs or lines or ["(empty log)"])[-1])[:220]
 
 
-def _verdict(hist: Path, profile, rel: str, content: str, focus: str, run_cmd) -> tuple[str, dict]:
+def _verdict(hist: Path, profile, rel: str, content: str, focus: str, run_cmd, evidence: str = "") -> tuple[str, dict]:
     (hist / rel).parent.mkdir(parents=True, exist_ok=True)
     (hist / rel).write_text(content)
     try:
@@ -107,12 +107,13 @@ def _verdict(hist: Path, profile, rel: str, content: str, focus: str, run_cmd) -
     finally:
         (hist / rel).unlink()
     text = (t.stdout or "") + (t.stderr or "")
-    j = judged(focus, text)
+    j = judged(focus, text, evidence=evidence)   # the one rule: focus, the reproducing test's failure, else an assertion
     # failed, but not with the bug's symptom: this test can't speak about this commit
-    return ("GREEN" if t.returncode == 0 else "RED" if j["symptom"] else "UNEVALUABLE"), {k: len(v) for k, v in j.items()}
+    return ("GREEN" if t.returncode == 0 else "RED" if j["symptom"] else "UNEVALUABLE"), {
+        k: len(v) for k, v in j.items() if isinstance(v, list)}
 
 
-def run_at(hist: Path, sha: str, profile, package_dir: str, files: dict, focus: str, run_cmd) -> dict:
+def run_at(hist: Path, sha: str, profile, package_dir: str, files: dict, focus: str, run_cmd, evidence: str = "") -> dict:
     """Checkout, install, build deps, then the guard, and the incident's own tests in turn until one can speak:
     files = {"guard": (repo_path, content), "judges": [(repo_path, content), ...]} (live run 2026-10-07: the
     recorded-stream judge read a fixture that did not exist yet, so every commit was unevaluable; the incident's
@@ -136,10 +137,10 @@ def run_at(hist: Path, sha: str, profile, package_dir: str, files: dict, focus: 
                 return {"state": "UNEVALUABLE", "why": "the guard package's dependencies did not build at this commit: "
                         + _tail(hist / ".da-logs/bt-build.txt")}
         out = {}
-        out["guard"], out["guard_cases"] = _verdict(hist, profile, *files["guard"], focus, run_cmd)
+        out["guard"], out["guard_cases"] = _verdict(hist, profile, *files["guard"], focus, run_cmd, evidence)
         out["judge"] = "UNEVALUABLE"
         for rel, content in files["judges"]:
-            v, _ = _verdict(hist, profile, rel, content, focus, run_cmd)
+            v, _ = _verdict(hist, profile, rel, content, focus, run_cmd, evidence)
             if v != "UNEVALUABLE":
                 out["judge"], out["judged_by"] = v, Path(rel).name
                 break
@@ -153,7 +154,8 @@ def run_at(hist: Path, sha: str, profile, package_dir: str, files: dict, focus: 
 
 
 def backtest(issue: dict, profile, base: Path, hist: Path, package_dir: str, judges: list, guard_file: tuple,
-             anchor_sha: str, focus: str, run_cmd=None, n: int = WINDOW, max_groups: int = MAX_GROUPS) -> dict:
+             anchor_sha: str, focus: str, run_cmd=None, n: int = WINDOW, max_groups: int = MAX_GROUPS,
+             evidence: str = "") -> dict:
     from .config import CFG
     from .sandbox import run_in_sandbox
     if CFG.sandbox_backend == "e2b" and run_cmd is None:
@@ -175,7 +177,7 @@ def backtest(issue: dict, profile, base: Path, hist: Path, package_dir: str, jud
     results = []
     for g in grouped[:max_groups]:
         rep = g["rep"]
-        res = run_at(hist, rep["sha"], profile, package_dir, files, focus, run_cmd)
+        res = run_at(hist, rep["sha"], profile, package_dir, files, focus, run_cmd, evidence)
         results.append({"commit": rep["sha"][:10], "date": rep["date"], "title": rep["title"],
                         "covers": len(g["members"]), **res})
         events.log("backtest", key=rep["sha"], commit=rep["sha"][:10], covers=len(g["members"]), state=res["state"],

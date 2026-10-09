@@ -644,7 +644,7 @@ def checks_of(s: dict) -> list[dict]:
     if ex:
         n = (ex.get("passed") or 0) + (ex.get("failed") or 0)
         out.append({"name": f"Existing tests / {ex.get('package', '')}", "main": "pass" if ex.get("status") == "NONE FAIL" else
-                    "fail" if ex.get("status") in ("FOUND", "OTHER FAILURES") else "none",
+                    "fail" if ex.get("status") in ("FOUND", "OTHER FAILURES", "CAN'T TELL") else "none",
                     "change": "pass" if validated else "wait",
                     "detail": f"{n} tests" + (f", {ex.get('failed')} failing" if ex.get("failed") else "")})
     judge = r.get("oracle_test") or r.get("failing_test")
@@ -824,6 +824,10 @@ def _proof(s: dict, rid: str, ai: str = "") -> str:
     elif ex.get("status") == "NONE FAIL":
         ans, dot, why = "Not found", "muted", (f"All {total} of the repo's own tests in {pkg} pass on main" if total else
                                                f"The repo's own tests in {pkg} all pass on main") + ", so none catches it. A test was written for it."
+    elif ex.get("status") == "CAN'T TELL":   # review of run #22085: said as such, never as "not for this issue"
+        ans, dot, why = "Can't tell", "muted", (f"{ex.get('failed', 'Some')} of the repo's own tests in {pkg} fail on main. The "
+                                                "issue quotes no code, so whether any of them fails for this issue can't be "
+                                                "told. A test was written for it.")
     elif ex.get("status") == "OTHER FAILURES":
         ans, dot, why = "Not found", "muted", (f"{ex.get('failed', 'Some')} of the repo's own tests in {pkg} fail on main, but "
                                                "none for this issue's reason. A test was written for it.")
@@ -862,8 +866,13 @@ def _proof(s: dict, rid: str, ai: str = "") -> str:
         aw, _ = after_fix(first.get("test_path", ""))
         before = ("The repo's own tests already include one that fails for this issue. " if ex.get("status") == "FOUND" else
                   f"All {total:,} of the repo's own tests pass on main, so none of them catches this bug. " if ex.get("status") == "NONE FAIL" and total else "")
+        from .testwriter import NOT_CHECKED
+        unchecked = NOT_CHECKED in (first.get("evidence") or "")
         gist = (f'<div class="gh-annot muted"><b>In short</b><p>{e(before)}A new {e(kind)} written for this issue (try {first["n"]}) '
-                f'fails on main for the reason the issue describes. With the fix: {e(aw[0].lower() + aw[1:])}.</p></div>')
+                + ("fails on main on an assertion. The issue quotes no code, so whether that failure is the issue's own "
+                   "symptom was judged by the failing assertion only." if unchecked else
+                   "fails on main for the reason the issue describes.")
+                + f' With the fix: {e(aw[0].lower() + aw[1:])}.</p></div>')
     summary = (f'{gist}<details class="gh-box gh-box-fold" open><summary class="gh-box-head"><span>Checks</span>'
                f'<span class="gh-muted">{len(rows)} questions</span></summary>{"".join(rows)}</details>')
 
@@ -1156,7 +1165,12 @@ def guard_sheet(s: dict, ai: str = "") -> str:
     body = (f'<div class="gh-annot muted"><b>What it is</b><p>One extra test with {total} cases. Each case is a different way '
             f'this kind of bug can happen. Every case failed on the old code, so the test would have caught this bug. On the '
             f'fixed code, a passing case is covered by the fix; a failing one is a gap the fix leaves open.</p>'
-            f'<p><span class="gh-muted">What it checks:</span> {e(g.get("covers") or g.get("text") or "")}</p></div>'
+            f'<p><span class="gh-muted">What it checks:</span> {e(g.get("covers") or g.get("text") or "")}</p>'
+            + (f'<p><span class="gh-muted">A failing case counts when its failure shows one of:</span> '
+               f'{", ".join(f"<code>{e(t)}</code>" for t in g["checked_against"])} (from the issue and the test that showed the bug)</p>'
+               if g.get("checked_against") else "")
+            + ('<p><span class="gh-muted">The issue quotes no code, so cases were judged by their failing assertion.</span></p>'
+               if g.get("symptom_checked") is False else "") + '</div>'
             f'<div class="gh-box"><div class="gh-box-head"><span>Test cases on the fixed code</span>'
             f'<span class="gh-muted">{len(passed)} passing · {len(opened)} failing · {len(broken)} errors</span></div>'
             f'{rows(opened, "bad", "Failing", "still open: the fix does not cover it")}{rows(broken, "warn", "Error", "the case did not run")}'

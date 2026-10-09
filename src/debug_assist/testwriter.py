@@ -316,14 +316,53 @@ def symptom_terms(focus: str) -> list[str]:
     return terms
 
 
-def right_reason(focus: str, output: str) -> bool | None:
-    """Does the failing assertion show the focus's symptom? Trial 2026-10-07: a test of the issue's OTHER problem
-    failed on a wrong expectation and read as RED. None = the focus gives nothing to check against."""
+ASSERT_WORDS = {"deeply", "strictly", "equal", "equals", "actual", "toequal", "tostrictequal", "tobe", "deepequal",
+                "strictequal", "assertionerror", "err_assertion", "length", "message", "name", "type", "value", "values"}
+_QUOTED = re.compile(r"""['"`]([^'"`\n]{3,60})['"`]""")
+_KEY = re.compile(r"(?<![\w.])([A-Za-z_][\w]{2,40})\s*:(?!:)")
+
+
+def evidence_terms(evidence: str) -> list[str]:
+    """What the reproducing test's own failure showed: the quoted values and object keys of its failed assertion,
+    assertion boilerplate left out. Review of run #22085 (2026-10-09): the issue quoted no code, so its words gave
+    nothing to check, while the test's failure said `unpaired: ['ws_1']`."""
+    terms = []
+    for a in assertion_text(evidence or ""):
+        for t in _QUOTED.findall(a) + _KEY.findall(a):
+            t = t.strip()
+            if len(t) >= 3 and t.lower() not in GENERIC | ASSERT_WORDS and not t.isdigit() and t not in terms:
+                terms.append(t)
+    return terms[:12]
+
+
+def check_terms(focus: str, evidence: str = "") -> list[str]:
+    """Everything a failure is checked against: the focus's own code strings, then what the reproducing test showed."""
     terms = symptom_terms(focus)
+    return terms + [t for t in evidence_terms(evidence) if t not in terms]
+
+
+def right_reason(focus: str, output: str, evidence: str = "") -> bool | None:
+    """Does the failing assertion show the bug? Checked against the focus's code strings and, once the bug has been
+    shown, against what the reproducing test's failure showed (`evidence`). Trial 2026-10-07: a test of the issue's
+    OTHER problem failed on a wrong expectation and read as RED. None = nothing to check against (can't tell)."""
+    terms = check_terms(focus, evidence)
     if not terms:
         return None
     said = [re.sub(r"AssertionError", "", a).lower() for a in assertion_text(output)]
     return any(t.lower() in a for a in said for t in terms)
+
+
+def shows_bug(focus: str, output: str, evidence: str = "") -> tuple[bool, bool]:
+    """One rule for every step (review of run #22085, 2026-10-09: "can't tell" counted as yes in Show the bug and as
+    no in the guard, which threw away a correct guard). → (shows the bug, whether that could be checked). When it
+    can't be checked, a failure on an assertion counts and a crash does not; the page says the check wasn't possible."""
+    rr = right_reason(focus, output, evidence)
+    if rr is None:
+        return bool(assertion_text(output)), False
+    return rr, True
+
+
+NOT_CHECKED = "symptom check: not possible (the issue quotes no code); counted because it failed on an assertion"
 
 
 def assertion_text(output: str) -> list[str]:
@@ -407,14 +446,21 @@ def attempt(state: dict, rung: ladder.Rung, n: int, history: list, ctx: Context,
         write_proof(Path(proof_dir), rel, written, cmd, r.returncode, out, outcome, line, profile, Path(checkout),
                     name=f"try-{n}-{Path(rel).name}" if into else None)
     detail = _detail(out)
-    if outcome == ladder.RED and right_reason(state.get("focus") or issue["title"], out) is False:
-        terms = ", ".join(symptom_terms(state.get("focus") or ""))
-        outcome, line = ladder.ERROR, (f"RED for another reason: the failure shows none of the focus's strings "
-                                       f"({terms}). A reproduction must fail with the FOCUS symptom. Got: {line}")
+    r0 = state.get("repro") or {}   # once the bug has been shown, a later test is checked against that failure too
+    known = "" if step == "reproduce" else (r0.get("oracle_evidence") or r0.get("evidence") or "")
+    focus_now = state.get("focus") or issue["title"]
+    checked = None
+    if outcome == ladder.RED:
+        shown, checked = shows_bug(focus_now, out, known)
+        if not shown:
+            terms = ", ".join(check_terms(focus_now, known))
+            outcome, line = ladder.ERROR, (f"RED for another reason: the failure shows none of these: {terms}. A "
+                                           f"reproduction must fail with the FOCUS symptom. Got: {line}")
     if into and outcome != ladder.RED:  # only cases that show the bug stay in the person's file
         (Path(checkout) / rel).write_text(base)
     return ladder.Attempt(rung=rung.name, n=n, outcome=outcome,
                           evidence=(f"{line}" + (f"\n{detail}" if detail else "") +
+                                    (f"\n{NOT_CHECKED}" if outcome == ladder.RED and checked is False else "") +
                                     (f"\nwriter's symptom: {symptom}" if symptom else ""))[:1500],
                           test_path=rel)
 

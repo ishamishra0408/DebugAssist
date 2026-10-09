@@ -333,3 +333,18 @@ def test_a_package_whose_own_tests_cannot_load_stops_before_any_test_is_written(
         res = graph.reproduce(s)
     assert res["outcome"]["exit"] == "TEST MACHINE NOT READY" and not wrote and res["repro"]["attempts_used"] == 0
     assert "packages/workflow" in res["outcome"]["why"] and graph._unless_stopped("find_cause")(res) == graph.END
+
+
+def test_the_repos_own_failing_tests_say_cant_tell_when_the_issue_quotes_no_code(scratch_db, tmp_path, monkeypatch):
+    """Review of run #22085 (2026-10-09): with nothing to check against, a failure was silently "not for this issue"."""
+    import subprocess
+    from debug_assist.profiles import PROFILES
+    out = (" FAIL  src/a.test.ts > a > b\nAssertionError: expected 1 to be 2\n"
+           " Test Files  1 failed | 17 passed (18)\n      Tests  1 failed | 332 passed (333)\n")
+    monkeypatch.setattr("debug_assist.sandbox.run_in_sandbox", lambda cmd, wd, **k: subprocess.CompletedProcess(cmd, 1, out, ""))
+    monkeypatch.setattr(graph, "CFG", dataclasses.replace(graph.CFG, runs_dir=tmp_path))
+    s = {"run_id": "ai-22085-y", "issue": {"title": "t"}, "focus": "WorkflowAgent keeps a call without its result"}
+    ctx = SimpleNamespace(source="packages/workflow/src/model-call-iterator.ts", package_dir="packages/workflow")
+    with events.bind("ai-22085-y", "reproduce"):
+        got = graph._existing_tests(s, tmp_path, ctx, PROFILES["vercel/ai"])
+    assert got["status"] == "CAN'T TELL" and got["failed"] == 1 and got["passed"] == 332

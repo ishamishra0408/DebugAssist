@@ -240,12 +240,15 @@ def _existing_tests(s: RunState, checkout: Path, ctx, prof) -> dict:
     out = (r.stdout or "") + (r.stderr or "")
     blocks = lang.failure_blocks(out)
     for_issue = [h[:200] for h, b in blocks.items() if testwriter.right_reason(focus, b)]
+    # review of run #22085 (2026-10-09): the issue quoted no code, so nothing could say whether a failure is this bug's
+    cant_tell = bool(blocks) and not testwriter.check_terms(focus)
     # none of the package's own tests could even load (#22085 run, 2026-10-08: @ai-sdk/workflow was not installed on the
     # test machine, every file failed on a missing config, and 4 tries were then spent on tests that could never run)
     cannot = (r.returncode not in (0, 124, 125) and not testwriter.counts(out).get("passed")
               and ladder.classify(prof.language, r.returncode, out)[0] == ladder.ERROR)
     status = ("FOUND" if for_issue else "NONE FAIL" if r.returncode == 0 else
-              "NOT CHECKED" if r.returncode in (124, 125) else "CANNOT RUN" if cannot else "OTHER FAILURES")
+              "NOT CHECKED" if r.returncode in (124, 125) else "CANNOT RUN" if cannot else
+              "CAN'T TELL" if cant_tell else "OTHER FAILURES")
     res = {"status": status, "package": pkg, "exit": r.returncode, **testwriter.counts(out), "for_issue": for_issue[:5],
            **({"why": ladder.classify(prof.language, r.returncode, out)[1][:300]} if cannot else {}),
            "other_failures": [h[:200] for h in blocks if h[:200] not in for_issue][:5],
@@ -646,7 +649,8 @@ def _backtest_guard(s: RunState) -> dict | None:
     return backtest.backtest(s["issue"], prof, base_path(prof), run_dir(s) / "history", langs.of(prof).package_of(g["repo_path"]),
                              judges=incident_tests(s),
                              guard_file=(g["repo_path"], Path(g["path"]).read_text()), anchor_sha=w["sha"],
-                             focus=s.get("focus") or s["issue"]["title"])
+                             focus=s.get("focus") or s["issue"]["title"],
+                             evidence=s["repro"].get("oracle_evidence") or s["repro"].get("evidence") or "")
 
 
 # ── Phase 3: Ship it ────────────────────────────────────────────────────────────────────────────

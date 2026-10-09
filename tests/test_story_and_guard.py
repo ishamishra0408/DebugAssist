@@ -222,3 +222,33 @@ def test_the_story_starts_from_the_oldest_of_all_lines_the_fix_changed(monkeypat
 
 def test_case_names_come_back_unescaped():
     assert guard.cases(" ✓ f.test.ts &gt; d &gt; case 2ms\n") == {"passed": ["f.test.ts > d > case"], "failed": []}
+
+
+
+def test_the_one_rule_for_whether_a_failure_shows_the_bug():
+    """Review of run #22085 (2026-10-09): the issue quoted no code, so the check said "can't tell", and the guard counted
+    that as broken: a correct guard (every case failing with the bug, an unpaired ws_1) was thrown away twice. Now: check
+    against the issue's code strings and what the reproducing test's failure showed; when nothing can be checked, a
+    failure on an assertion counts and a crash does not."""
+    from debug_assist import testwriter
+    title = "WorkflowAgent length continuation keeps a provider-executed tool call without its result"
+    case = (" FAIL  src/da-guard-22085.test.ts > pairs > single provider-executed call with result\n"
+            "AssertionError: expected { unpaired: [ 'ws_1' ], …(1) } to deeply equal { unpaired: [], …(1) }\n")
+    crash = " FAIL  src/da-guard-22085.test.ts > pairs > reads a fixture\nError: ENOENT: no such file or directory\n"
+    out = (" × single provider-executed call with result 4ms\n × reads a fixture 2ms\n" + case + crash
+           + " Test Files  1 failed (1)\n      Tests  2 failed (2)\n")
+    repro = "AssertionError: expected [ 'ws_1' ] to deeply equal []\n- Expected\n+ Received\n+ [ 'ws_1' ]"
+    assert testwriter.right_reason(title, case) is None                                   # the issue alone: can't tell
+    assert testwriter.evidence_terms(repro) == ["ws_1"]
+    assert sorted(testwriter.evidence_terms(case)) == ["unpaired", "ws_1"]
+    assert testwriter.shows_bug(title, case, repro) == (True, True)                         # checked against the repro
+    assert testwriter.shows_bug(title, case) == (True, False)                               # can't check: an assertion
+    assert testwriter.shows_bug(title, crash) == (False, False)                             # a crash never counts
+    assert testwriter.shows_bug(title, case.replace("ws_1", "call-9"), repro) == (False, True)   # shows none of: ws_1
+    assert testwriter.check_terms(title, repro) == ["ws_1"]                                 # what feedback names
+    j = guard.judged(title, out, evidence=repro)
+    assert j["symptom"] == ["single provider-executed call with result"] and len(j["broken"]) == 1 and j["checked"]
+    assert guard.judged(title, out)["symptom"] == ["single provider-executed call with result"]   # no repro: by assertion
+    assert guard.judged(title, out)["checked"] is False
+    other = "AssertionError: expected 'stop' to be 'length'\n"
+    assert testwriter.shows_bug(title, other, repro) == (False, True)                       # a different failure: no

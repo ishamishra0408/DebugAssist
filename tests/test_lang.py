@@ -137,7 +137,7 @@ def test_pytest_cases_and_failure_blocks():
     assert guard.cases(out, py) == {"passed": ["test_guard[empty]"], "failed": ["test_guard[no-args]"]}
     assert "assert {} == {'a': 1}" in guard.failure_blocks(out, py)["test_guard[no-args]"]
     j = guard.judged("merge_chunks drops `args`", out, py)
-    assert j == {"passed": ["test_guard[empty]"], "symptom": ["test_guard[no-args]"], "broken": []}
+    assert j == {"passed": ["test_guard[empty]"], "symptom": ["test_guard[no-args]"], "broken": [], "checked": True}
 
 
 def test_shared_code_is_found_through_python_imports(repo):
@@ -243,7 +243,7 @@ def test_node_test_tap_is_read_case_by_case():
     assert guard.cases(TAP, nl) == {"passed": ["clean control"], "failed": ["gzip blob"]}
     assert "Expected values to be strictly deep-equal" in guard.failure_blocks(TAP, nl)["gzip blob"]
     assert guard.judged("`scanArguments` returns `clean` for a `gzip` blob", TAP, nl) == \
-        {"passed": ["clean control"], "symptom": ["gzip blob"], "broken": []}
+        {"passed": ["clean control"], "symptom": ["gzip blob"], "broken": [], "checked": True}
     assert any("+   hit: 'clean'" in t for t in testwriter.assertion_text(TAP))       # the actual side, not expected
     assert not any("hit: 'gzip'" in t for t in testwriter.assertion_text(TAP))
 
@@ -311,3 +311,19 @@ def test_every_listed_file_keeps_the_lines_around_the_issues_strings(repo):
     chat = next((f for f in got if f["path"].endswith("acme_openai/chat.py")), None)
     if chat:   # it uses merge_chunks: its numbered lines are kept
         assert "merge_chunks" in chat["snippets"] and chat["snippets"].lstrip().split()[0].isdigit()
+
+
+def test_a_reproduction_the_issue_cannot_check_says_so(repo, monkeypatch):
+    """Review of run #22085: the issue quoted no code, so the failure could only be judged by its assertion; the run
+    now says that instead of implying the symptom was matched."""
+    ctx = testwriter.locate(repo, "drops `args`", "merge_chunks drops `args`", PROFILE)
+    reply = "SYMPTOM: args is empty\n```python\ndef test_args_kept():\n    assert merge_chunks([{'args': {'a': 1}}]).args == {'a': 1}\n```"
+    monkeypatch.setattr(testwriter, "write", lambda *a, **k: (SimpleNamespace(content=reply), None))
+    out = "E       AssertionError: assert {} == {'a': 1}\nFAILED tests/unit_tests/test_x.py::test_args_kept - AssertionError\n1 failed\n"
+    run = lambda cmd, wd, **k: subprocess.CompletedProcess(cmd, 1, out, "")  # noqa: E731
+    state = {"issue": {"number": 9, "title": "merge drops the arguments"}, "focus": "merge drops the arguments"}
+    a = testwriter.attempt(state, ladder.RUNGS[0], 1, [], ctx, repo, PROFILE, run_cmd=run)
+    assert a.outcome == ladder.RED and testwriter.NOT_CHECKED in a.evidence
+    state["focus"] = "merge_chunks drops `args`"                                  # quotes code: checked, no note
+    b = testwriter.attempt(state, ladder.RUNGS[0], 2, [], ctx, repo, PROFILE, run_cmd=run)
+    assert b.outcome == ladder.RED and testwriter.NOT_CHECKED not in b.evidence
