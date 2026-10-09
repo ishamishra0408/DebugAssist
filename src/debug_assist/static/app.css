@@ -799,3 +799,27 @@ body.auth { min-height: 100vh; min-height: 100dvh; display: grid; place-items: c
 /* the AI a step used, under its sheet's title */
 .gh-ai { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: -6px 0 16px; font-size: 13px; color: var(--gh-fg); }
 .gh-body > .gh-ai { margin-top: 0; }
+
+/* GitHub's Label (Primer): outline pills for metadata, coloured by meaning */
+.gh .Label { display: inline-flex; align-items: center; padding: 0 7px; border: 1px solid var(--gh-border); border-radius: 2em;
+  font-size: 12px; font-weight: 500; line-height: 18px; color: var(--gh-muted); white-space: nowrap; }
+.gh .Label--done { color: #a371f7; border-color: rgba(163, 113, 247, .4); }
+.gh .Label--accent { color: var(--gh-accent-fg); border-color: rgba(56, 139, 253, .4); }
+@media (prefers-color-scheme: light) {
+  .gh .Label--done { color: #8250df; border-color: #c297ff; } .gh .Label--accent { border-color: #54aeff; } }
+.gh-list { margin: 0; padding: 12px 16px 12px 36px; display: grid; gap: 6px; }
+/* an advisor's answer, GitHub's way, also inside the Connect page */
+.fa.gh { display: grid; gap: 12px; color: var(--gh-fg); }
+.fa-wrap .fa.gh { margin-top: 10px; padding: 12px; border-radius: 6px; background: var(--gh-canvas); border: 1px solid var(--gh-border); }
+/* Activity, GitHub's way: a small menu of the latest events */
+.pop.gh-menu[popover] { padding: 0; width: min(420px, calc(100vw - 32px)); border: 1px solid var(--gh-border); border-radius: 12px;
+  background: var(--gh-canvas); color: var(--gh-fg); box-shadow: var(--gh-shadow);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; font-size: 14px; }
+.gh-menu-head { position: sticky; top: 0; display: flex; align-items: center; justify-content: space-between; padding: 12px 16px;
+  background: var(--gh-subtle); border-bottom: 1px solid var(--gh-border); }
+.gh-menu-head .gh-close { position: static; width: 28px; height: 28px; }
+.gh-activity { list-style: none; margin: 0; padding: 0; }
+.gh-activity li { display: flex; align-items: flex-start; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--gh-border-muted); }
+.gh-activity li:first-child { border-top: 0; }
+.gh-activity .gh-dot { margin-top: 7px; } .gh-activity time { margin-left: auto; font-size: 12px; white-space: nowrap; }
+.gh-activity .gh-cname b { font-weight: 500; }

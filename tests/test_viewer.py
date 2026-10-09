@@ -153,7 +153,7 @@ def test_latest_activity_is_a_pop_up_and_usage_uses_standard_names():
     evs = [{"at": "2026-10-08T10:00:0%dZ" % i, "step": "reproduce", "kind": "model_call", "input_tokens": 1500,
             "output_tokens": 200} for i in range(3)]
     page = viewer.render(_data(events=evs, interrupt={}, next=["reproduce"]), mode="live")
-    assert 'popovertarget="acts"' in page and '<div id="acts" popover class="pop glass"' in page
+    assert 'popovertarget="acts"' in page and '<div id="acts" popover class="pop gh gh-menu"' in page   # GitHub's way
     body = page.split("<main>")[1].split("</main>")[0]
     assert "Latest activity" not in body and 'data-k="log"' not in body           # not a section on the page any more
     assert re.search(r'class="badge"[^>]*>3<', page)
@@ -251,8 +251,9 @@ def test_an_advisors_full_answer_opens_from_its_row_in_plain_sections():
     page = viewer.render(_data(state=st), mode="live")
     assert 'popovertarget="advfull-why_it_shipped"' in page and '<div id="advfull-why_it_shipped" popover' in page
     sheet = page.split('id="advfull-why_it_shipped"')[1]
-    for part in ("Verdict", "Checks it ran", "What it found", "Rules it applies", "How this answer will be tested",
-                 "Its record so far", "Everything it sent (JSON)", "blame scan", "3 answers, 0 checked"):
+    for part in ("Verdict", "Checks", "Findings", "Rules", "How this answer will be tested",
+                 "Track record", "Raw response (JSON)", "blame scan", "3 answers, 0 checked", "Failed", "Passed",
+                 '<span class="Label Label--accent">Advisor</span>'):
         assert part in sheet, part
     assert "<b>The reviewer" not in sheet and "&lt;b&gt;The reviewer" in sheet          # the server's text is escaped
     assert sheet.count("<details") >= 7                                                 # each section folds
@@ -363,19 +364,20 @@ def test_the_steps_open_their_own_sheets_github_style():
     # Isha 2026-10-09: no Cost details; Last event beside the issue, not a tile; tokens inside each sheet, not on the rows
     assert "Cost details" not in page and 'id="costs"' not in page and "tokchip" not in page
     assert "Issue #1 · Standard AI · Last event" in page and "<span>Last event</span>" not in page
-    assert ('<span class="gh-state ai">AI use</span>14.0k tokens · $0.11 · 2 AI calls <span class="gh-muted">(10,000 in, 4,000 out)</span>'
+    assert ('<span class="Label">AI usage</span>14.0k tokens · $0.11 · 2 requests <span class="gh-muted">· 10,000 input, 4,000 output</span>'
             in _sheet(page, "report"))
     assert "The problem it is fixing" not in page and "<h2>What it read</h2>" not in page and 'id="story"' not in page
     ctx = _sheet(page, "ctxinfo")
-    assert "Collected by code, no AI" in ctx and 'data-md="Still happens on **7.0.1**"' in ctx and "Comment 1" in ctx
+    assert '<span class="Label">No AI</span><b>debugassist</b> read 1 comment, 2 files' in ctx and 'data-md="Still happens on **7.0.1**"' in ctx and "Comment 1" in ctx
     assert "Commits on <code>packages/ai/src/ui/chat.ts</code>" in ctx and ">abc1234</code>" in ctx and "feat: resume" in ctx
     assert '<tr class="hit"><td class="ln">883</td>' in ctx and '<tr class=""><td class="ln">881</td>' in ctx
     assert "Your directional input" in ctx and "Not found in the code: packages/ai/src/nope.ts" in ctx and "processUIMessageStream" in ctx
     rep = _sheet(page, "report")
-    assert "Written by AI" in rep and '<details class="gh-fold" open><summary>What broke?</summary>' in rep
+    assert '<span class="Label Label--done">AI-generated</span>' in rep and '<details class="gh-fold" open><summary>What broke?</summary>' in rep
     assert "<summary>Why didn&#x27;t the tests catch it?</summary>" in rep and "resume reused retained state" in rep
     g = _sheet(page, "guardinfo")
-    assert "3 cases on the fixed code" in g and "2 covered · 1 still open · 0 broken" in g and "Still open" in g
+    assert "Test cases on the fixed code" in g and "2 passing · 1 failing · 0 errors" in g and ">Failing<" in g
+    assert "still open: the fix does not cover it" in g and "AI-generated" in g
     assert "not changed by this fix" in g and "kept with the run, not added to the pull request" in g
     from debug_assist import plain
     assert plain.result("lasting_guard", st) == "A 3-case test for bugs like this one: 2 covered by the fix, 1 still open; the same code is in 1 other files"

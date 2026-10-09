@@ -414,8 +414,9 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
 
     # ── latest activity ──
     label = {k: lab for k, lab, _ in plain.STEPS}
-    acts = "".join(f'<li class="row"><span class="when">{e(x["at"][11:19])}</span><span class="t"><span>{e(plain.activity(x))}</span>'
-                   f'<small>{e(label.get(x.get("step"), x.get("step") or ""))}</small></span></li>' for x in reversed(d["events"][-12:]))
+    acts = "".join(f'<li><span class="gh-dot muted"></span><span class="gh-cname"><b>{e(plain.activity(x))}</b>'
+                   f'<span class="gh-muted">{e(label.get(x.get("step"), x.get("step") or ""))}</span></span>'
+                   f'<time class="gh-muted">{e(x["at"][11:19])}</time></li>' for x in reversed(d["events"][-12:]))
 
     # ── usage and cost (Isha 2026-10-08: the words run dashboards use) ──
     clock = s.get("fix_clock") or {}
@@ -536,9 +537,9 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
 {_k("sheet-ctx", ctx_html or '<i id="ctxinfo" hidden></i>')}
 {_k("sheet-report", report_html or '<i id="report" hidden></i>')}
 {_k("sheet-guard", guard_html or '<i id="guardinfo" hidden></i>')}
-<div id="acts" popover class="pop glass" aria-label="Latest activity">
-  <div class="pop-head"><b>Latest activity</b><button type="button" class="tbtn" popovertarget="acts" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>
-  {_k("log", f'<ul class="rows acts-list">{acts or "<li class=row><span></span><span class=t><span>Nothing yet</span></span></li>"}</ul>')}
+<div id="acts" popover class="pop gh gh-menu" aria-label="Activity">
+  <div class="gh-menu-head"><b>Activity</b><button type="button" class="gh-close" popovertarget="acts" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>
+  {_k("log", f'<ul class="gh-activity">{acts or "<li><span class=gh-muted>Nothing yet</span></li>"}</ul>')}
 </div>
 {_k("md", f'<script type="application/json" id="md">{md}</script>')}
 {topo}
@@ -757,7 +758,7 @@ def _check_pr(d: dict, rid: str, can_decide: bool, approve_cmd: str, reject_cmd:
             f'<p class="gh-meta">{badge}<b>{who}</b> wants to merge 1 commit into '
             f'<code class="gh-ref">main</code> from <code class="gh-ref">{e(head)}</code>'
             f'<span class="gh-diffstat"><span class="plus">+{add}</span> <span class="minus">−{rem}</span></span></p>'
-            f'{ai_use(usage_by_step(d), "find_cause", "write_fix", what=" for the cause and the fix")}'
+            f'{ai_use(usage_by_step(d), "find_cause", "write_fix", what=": cause and fix")}'
             f'<nav class="gh-tabs" role="tablist">'
             f'<button type="button" role="tab" class="on" data-tab="conv" aria-selected="true">Conversation</button>'
             f'<button type="button" role="tab" data-tab="commits" aria-selected="false">Commits <span class="cnt">1</span></button>'
@@ -962,8 +963,8 @@ def ai_use(use: dict, *steps: str, what: str = "") -> str:
     calls, tin, tout, usd = (sum(u[k] for u in us) for k in ("calls", "in", "out", "usd"))
     if not calls:
         return ""
-    return (f'<p class="gh-ai"><span class="gh-state ai">AI use{e(what)}</span>{_k_fmt(tin + tout)} tokens · ${usd:.2f} · '
-            f'{calls} AI call{"s" * (calls != 1)} <span class="gh-muted">({tin:,} in, {tout:,} out)</span></p>')
+    return (f'<p class="gh-ai"><span class="Label">AI usage{e(what)}</span>{_k_fmt(tin + tout)} tokens · ${usd:.2f} · '
+            f'{calls} request{"s" * (calls != 1)} <span class="gh-muted">· {tin:,} input, {tout:,} output</span></p>')
 
 
 def _sheet(sid: str, label: str, title: str, meta: str, body: str, tabs: list | None = None) -> str:
@@ -1044,12 +1045,12 @@ def context_sheet(pack: dict, c: dict) -> str:
     n = pack.get("counts") or {}
     def many(k, one, more):
         return f"{k} {one if k == 1 else more}"
-    meta = (f'<span class="gh-state neutral">Collected by code, no AI</span>Read {many(n.get("comments", len(cs)), "comment", "comments")}, '
+    meta = (f'<span class="Label">No AI</span><b>debugassist</b> read {many(n.get("comments", len(cs)), "comment", "comments")}, '
             f'{many(n.get("files", len(ranking)), "file", "files")}, {many(n.get("related", len(rel)), "piece", "pieces")} of shared code and '
-            f'{many(n.get("changes", 0), "recent change", "recent changes")} · locked, fingerprint <code>{e(str(c.get("sha256", ""))[:12])}</code>')
+            f'{many(n.get("changes", 0), "recent change", "recent changes")} · locked at <code class="gh-ref">{e(str(c.get("sha256", ""))[:12])}</code>')
     panes = (f'<div class="pr-pane" data-pane="conv">{conv}</div><div class="pr-pane" data-pane="commits" hidden>{commits}</div>'
              f'<div class="pr-pane" data-pane="code" hidden>{files}</div><div class="pr-pane" data-pane="shared" hidden>{shared}</div>'
-             f'<p class="gh-muted gh-fp">Show the bug, Find the cause and Fix it read this, and only this.</p>')
+             f'<p class="gh-muted gh-fp">Show the bug, Find the cause and Fix it read only this context.</p>')
     return _sheet("ctxinfo", "Context info", f'Context for issue <span class="gh-muted">#{e(iss.get("number", ""))}</span>', meta, panes,
                   [("conv", "Conversation", len(cs)), ("commits", "Commits", sum(len(h.get("changes") or []) for h in hist)),
                    ("code", "Code", len(ranking)), ("shared", "Shared code", len(rel))])
@@ -1078,13 +1079,14 @@ def report_sheet(s: dict, ai: str = "") -> str:
         body = _md(text)
     else:
         first = qa[0][1]
-        body = (f'<div class="gh-annot muted"><b>In short</b>{_md(first)}'
+        body = (f'<div class="gh-annot muted"><b>Summary</b>{_md(first)}'
                 + (f'<p><span class="gh-muted">The condition that let it ship:</span> {e(cond)}</p>' if cond else "") + '</div>'
                 + "".join(f'<details class="gh-fold"{" open" if i == 0 else ""}><summary>{e(q)}</summary>{_md(a)}</details>'
-                          for i, (q, a) in enumerate(qa)))
+                          for i, (q, a) in enumerate(qa))
+                + '<p class="gh-muted gh-fp">It describes conditions in the code and the process, never people.</p>')
     issue = s.get("issue") or {}
-    meta = ('<span class="gh-state ai">Written by AI</span>from the run\'s evidence: the history of the code at fault, its '
-            'review and release, and the issue · conditions, never people')
+    meta = ('<span class="Label Label--done">AI-generated</span><b>debugassist</b> wrote this report from the history of '
+            'the code at fault, its review and release, and the issue')
     return _sheet("report", "Why the bug slipped through", f'Why the bug slipped through <span class="gh-muted">#{e(issue.get("number", ""))}</span>',
                   meta, ai + body)
 
@@ -1097,37 +1099,40 @@ def guard_sheet(s: dict, ai: str = "") -> str:
         return ""
     passed, opened, broken = of.get("passed") or [], of.get("failed") or [], of.get("broken") or []
     total = len(passed) + len(opened) + len(broken)
-    def rows(names, dot, word):
-        return "".join(f'<div class="gh-check"><span class="gh-dot {dot}"></span><span class="gh-cname"><b>{e(str(n)[:200])}</b></span>'
-                       f'<span class="gh-st {dot}">{word}</span></div>' for n in names)
+    def rows(names, dot, word, why):
+        return "".join(f'<div class="gh-check"><span class="gh-dot {dot}"></span><span class="gh-cname"><b>{e(str(n)[:200])}</b>'
+                       f'<span class="gh-muted">{why}</span></span><span class="gh-st {dot}">{word}</span></div>' for n in names)
     sib = g.get("siblings") or []
     body = (f'<div class="gh-annot muted"><b>What it is</b><p>One extra test with {total} cases. Each case is a different way '
             f'this kind of bug can happen. Every case failed on the old code, so the test would have caught this bug. On the '
             f'fixed code, a passing case is covered by the fix; a failing one is a gap the fix leaves open.</p>'
             f'<p><span class="gh-muted">What it checks:</span> {e(g.get("covers") or g.get("text") or "")}</p></div>'
-            f'<div class="gh-box"><div class="gh-box-head"><span>{total} cases on the fixed code</span>'
-            f'<span class="gh-muted">{len(passed)} covered · {len(opened)} still open · {len(broken)} broken</span></div>'
-            f'{rows(opened, "bad", "Still open")}{rows(broken, "warn", "Broken")}{rows(passed, "ok", "Covered")}</div>'
+            f'<div class="gh-box"><div class="gh-box-head"><span>Test cases on the fixed code</span>'
+            f'<span class="gh-muted">{len(passed)} passing · {len(opened)} failing · {len(broken)} errors</span></div>'
+            f'{rows(opened, "bad", "Failing", "still open: the fix does not cover it")}{rows(broken, "warn", "Error", "the case did not run")}'
+            f'{rows(passed, "ok", "Passing", "covered by the fix")}</div>'
             + (f'<div class="gh-box"><div class="gh-box-head"><span>The same code in {len(sib)} other file{"s" * (len(sib) != 1)}, not changed by this fix</span></div>'
                + "".join(f'<div class="gh-check"><span class="gh-cname"><code>{e(x)}</code></span></div>' for x in sib) + '</div>' if sib else "")
             + (f'<p class="gh-muted gh-fp">File <code>{e(g.get("repo_path", ""))}</code> · kept with the run, not added to the pull request.</p>'))
-    meta = (f'<span class="gh-state ai">Written by AI</span>{len(passed)} of {total} cases covered by the fix'
-            + (f' · {len(opened)} still open' if opened else ""))
+    meta = (f'<span class="Label Label--done">AI-generated</span><b>debugassist</b> wrote {total} test cases · '
+            f'{len(passed)} passing on the fixed code' + (f', {len(opened)} failing' if opened else ""))
     return _sheet("guardinfo", "Guard similar bugs", "Guard for similar bugs", meta, ai + body)
 
 
 def full_answer(raw: dict) -> str:
-    """The advisors' server's whole answer, in plain sections, each folded; the JSON itself last."""
+    """The advisors' server's whole answer, GitHub's way (Isha 2026-10-09): each part folded, its checks as GitHub
+    check rows (passed or failed in words and colour, never a tick), the raw response last."""
     mr = raw.get("machine_result") or {}
-    tick = lambda ok: f'<span class="ok">{icons.check(14)}</span>' if ok else f'<span class="no">{icons.cross(14)}</span>'  # noqa: E731
-    parts = [("Verdict", f'<p><b>{e(raw.get("verdict") or mr.get("state") or "none")}</b>'
+    parts = [("Verdict", f'<p class="gh-pad"><b>{e(raw.get("verdict") or mr.get("state") or "none")}</b>'
                          + (f' · {e(mr.get("reason"))}' if mr.get("reason") else "")
                          + (f'<br>Needs: {e(", ".join(mr.get("needs") or []))}' if mr.get("needs") else "") + "</p>")]
     checks = mr.get("checks") or []
     if checks:
-        parts.append(("Checks it ran", '<ul class="fa-list">' + "".join(
-            f'<li>{tick(c.get("passed"))}<span><b>{e(str(c.get("id", "")).replace("_", " "))}</b> {e(c.get("detail", ""))}</span></li>'
-            for c in checks) + "</ul>"))
+        parts.append(("Checks", "".join(
+            f'<div class="gh-check"><span class="gh-dot {"ok" if c.get("passed") else "bad"}"></span><span class="gh-cname">'
+            f'<b>{e(str(c.get("id", "")).replace("_", " "))}</b><span class="gh-muted">{e(c.get("detail", ""))}</span></span>'
+            f'<span class="gh-st {"ok" if c.get("passed") else "bad"}">{"Passed" if c.get("passed") else "Failed"}</span></div>'
+            for c in checks)))
     found = []
     if mr.get("blame_sentences") is not None:
         found.append(("Sentences read as blame", ", ".join(f'"{x}"' for x in mr["blame_sentences"]) or "none"))
@@ -1142,25 +1147,27 @@ def full_answer(raw: dict) -> str:
         found.append(("Missing fact to ask", f'{mr["question"]}' + (f' ({mr["answerer"]})' if mr.get("answerer") else "")))
     for k in ("is_defect", "confidence"):
         if k in mr:
-            found.append(({"is_defect": "Likelihood of a defect", "confidence": "How sure"}[k], str(mr[k])))
+            found.append(({"is_defect": "Likelihood of a defect", "confidence": "Confidence"}[k], str(mr[k])))
     if found:
-        parts.append(("What it found", "<dl class=\"fa-dl\">" + "".join(f"<dt>{e(a)}</dt><dd>{e(b)}</dd>" for a, b in found) + "</dl>"))
+        parts.append(("Findings", "".join(f'<div class="gh-check"><span class="gh-cname"><b>{e(a)}</b><span class="gh-muted">{e(b)}</span>'
+                                          f'</span></div>' for a, b in found)))
     if mr.get("rules"):
-        parts.append(("Rules it applies", '<ul class="fa-plain">' + "".join(f"<li>{e(x)}</li>" for x in mr["rules"]) + "</ul>"))
+        parts.append(("Rules", '<ul class="gh-list">' + "".join(f"<li>{e(x)}</li>" for x in mr["rules"]) + "</ul>"))
     ft = raw.get("falsifiable_test") or {}
     if ft:
-        parts.append(("How this answer will be tested", f'<p>{e(ft.get("statement", ""))}</p><p class="foot">{e(ft.get("resolve_rule", ""))}'
-                                                        f' · now: {e(ft.get("state", ""))} · test {e(ft.get("test_id", ""))}</p>'))
+        parts.append(("How this answer will be tested", f'<p class="gh-pad">{e(ft.get("statement", ""))}<br><span class="gh-muted">'
+                                                        f'{e(ft.get("resolve_rule", ""))} · now: {e(ft.get("state", ""))} · test '
+                                                        f'{e(ft.get("test_id", ""))}</span></p>'))
     cal = raw.get("calibration") or {}
     if cal:
-        parts.append(("Its record so far", f'<p>{e(cal.get("judgments", 0))} answers, {e(cal.get("resolved", 0))} checked against what '
-                                           f'happened ({e(cal.get("passed", 0))} right, {e(cal.get("failed", 0))} wrong). '
-                                           f'{e(cal.get("pass_rate_note") or "")}</p>'))
-    parts.append(("Everything it sent (JSON)", f'<pre class="out">{e(json.dumps(raw, indent=1, default=str)[:16000])}</pre>'))
+        parts.append(("Track record", f'<p class="gh-pad">{e(cal.get("judgments", 0))} answers, {e(cal.get("resolved", 0))} checked '
+                                      f'against what happened ({e(cal.get("passed", 0))} right, {e(cal.get("failed", 0))} wrong). '
+                                      f'{e(cal.get("pass_rate_note") or "")}</p>'))
+    parts.append(("Raw response (JSON)", f'<pre class="gh-pre">{e(json.dumps(raw, indent=1, default=str)[:16000])}</pre>'))
     ref = raw.get("judgment_id")
-    return ('<div class="fa">' + (f'<p class="foot">Reference {e(ref)} · seat {e(raw.get("seat", ""))}</p>' if ref else "")
-            + "".join(f'<details{" open" if i < 2 else ""}><summary>{e(t)}</summary>{body}</details>' for i, (t, body) in enumerate(parts))
-            + "</div>")
+    return ('<div class="fa gh">' + (f'<p class="gh-muted gh-fp">Reference <code class="gh-ref">{e(ref)}</code> · seat {e(raw.get("seat", ""))}</p>' if ref else "")
+            + "".join(f'<details class="gh-fold"{" open" if i < 2 else ""}><summary>{e(t)}</summary>{body}</details>'
+                      for i, (t, body) in enumerate(parts)) + "</div>")
 
 
 def _advisors(s: dict) -> str:
@@ -1181,10 +1188,11 @@ def _advisors(s: dict) -> str:
         rows.append(f'<li class="row {"done" if st == "ANSWERED" else "pending"}"><span class="ic">{ic}</span><span class="t">'
                     f'<b>{e(r["seat"])} reviews {e(r["what"])}</b><span>{e(sub)}</span></span><span class="tr">{btn}</span></li>')
         if raw:
-            sheets.append(f'<div id="{pid}" popover class="pop sheet glass" aria-label="{e(r["seat"])}: full answer">'
-                          f'<div class="pop-head"><b>{e(r["seat"])}: full answer</b><button type="button" class="tbtn" '
-                          f'popovertarget="{pid}" popovertargetaction="hide" aria-label="Close">{icons.cross(16)}</button></div>'
-                          f'{full_answer(raw)}</div>')
+            verdict = raw.get("verdict") or (raw.get("machine_result") or {}).get("state") or ""
+            sheets.append(_sheet(pid, f'{r["seat"]}: full answer', f'{e(r["seat"])} review',
+                                 f'<span class="Label Label--accent">Advisor</span><b>{e(r["seat"])}</b> reviewed {e(r["what"])} '
+                                 f'· via the Domain Expertise MCP server' + (f' · verdict <code class="gh-ref">{e(verdict)}</code>' if verdict else ""),
+                                 full_answer(raw)))
     return (f'<section class="group"><h2>Advisors</h2><div class="sect"><ul class="rows">{"".join(rows)}</ul></div>{"".join(sheets)}'
             '<p class="foot">Advice only. An advisor never changes the fix, the pull request text or your OK. They are '
             'switched on after the advisors\' server has been reviewed: <a href="/connect#advisors">how to connect them</a>.</p></section>')
