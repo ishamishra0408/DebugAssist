@@ -769,8 +769,11 @@ def home_page(user: str = "") -> str:
     <a class="tbtn" href="/connect" aria-label="Connect">{icons.link(16)}<span class="lbl">Connect</span></a>
     <a class="tbtn" href="/how" aria-label="How it works">{icons.play(16)}<span class="lbl">How it works</span></a>
     <a class="tbtn" href="/checks" aria-label="System check">{icons.check(16)}<span class="lbl">System check</span></a></div>
-  {f'<div class="tgroup glass"><a class="tbtn" href="/logout" title="Signed in with GitHub as {e(user)}" aria-label="Sign out ({e(user)})"><span class="lbl">{e(user)}</span><span>Sign out</span></a></div>' if user else ''}
+  {f'<div class="tgroup glass"><button type="button" class="tbtn acct" popovertarget="acct" aria-label="Account: {e(user)}">'
+   f'<span>{e(user)}</span>{icons.chevron(12)}</button></div>' if user else ''}
 </nav>
+{f'<div id="acct" popover class="pop glass acct-menu" aria-label="Account"><p class="acct-who">Signed in as <b>{e(user)}</b></p>'
+ f'<a class="acct-item" href="/logout">Sign out</a></div>' if user else ''}
 <main>
 <header class="hero">
   <h1>Start a run</h1>

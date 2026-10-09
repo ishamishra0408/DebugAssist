@@ -741,3 +741,11 @@ body.auth { min-height: 100vh; min-height: 100dvh; display: grid; place-items: c
 @keyframes auth-dot { 0% { background: var(--label-3); } 4%, 12% { background: var(--blue); box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 28%, transparent); }
   18%, 70% { background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 22%, transparent); }
   85%, 100% { background: var(--label-3); } }
+
+/* the account: only the name in the toolbar; Sign out in its menu (GitHub's wording: "Signed in as …") */
+.tbtn.acct svg { transform: rotate(90deg); opacity: .7; }
+.pop.acct-menu[popover] { width: 220px; padding: 6px; }
+.acct-who { margin: 0; padding: 8px 10px 10px; font-size: 13px; color: var(--label-2); border-bottom: 1px solid var(--hair); overflow-wrap: anywhere; }
+.acct-who b { color: var(--label); font-weight: 600; }
+.acct-item { display: block; margin-top: 6px; padding: 9px 10px; border-radius: 12px; color: var(--label); font-size: 14px; }
+.acct-item:hover, .acct-item:focus-visible { background: rgba(127, 127, 127, .16); text-decoration: none; }
