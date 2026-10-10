@@ -1396,12 +1396,8 @@ def _advisors(s: dict) -> str:
 
 
 def _engineer_details(d: dict, s: dict, rows: list[dict], live: bool) -> str:
-    """Everything an engineer needs to audit the run: folded away from the operator."""
-    timeline = "".join(
-        f'<li class="st"><b>{i + 1}. {e(r["label"])}</b>'
-        f'<span class="tag">{e("running" if live and r["status"] == "next" else r["status"])}</span>'
-        f'<span class="when">{e(r["span"])}</span>' + "".join(f"<p>{e(l[:260])}</p>" for l in r["lines"][-2:]) + "</li>"
-        for i, r in enumerate(rows))
+    """What an engineer needs to audit the run beyond the steps and Activity above: the ladder, the fix attempts, the
+    guard, the back-test and the spend. Folded away from the operator."""
     r = s.get("repro") or {}
     attempts = [a for a in s.get("attempts", []) if a.get("step") == "reproduce"]
     att_rows = "".join(f"<tr><td>{a['n']}</td><td>{e(a['rung'])}</td><td class='o {e(a['outcome'])}'>{e(a['outcome'])}</td>"
@@ -1431,8 +1427,6 @@ def _engineer_details(d: dict, s: dict, rows: list[dict], live: bool) -> str:
     calls = "".join(f"<tr><td>{e(x.get('at', '')[11:19])}</td><td>{e(x.get('step'))}</td><td>{e(x.get('model'))}</td>"
                     f"<td class='n'>{x.get('input_tokens') or 0:,}</td><td class='n'>{x.get('output_tokens') or 0:,}</td>"
                     f"<td class='n'>${(x.get('actual_micro') or 0) / 1e6:.4f}</td><td>{e(x.get('status'))}</td></tr>" for x in d["calls"])
-    evs = "".join(f"<tr><td>{e(x['at'][11:19])}</td><td>{e(x.get('step'))}</td><td>{e(x['kind'])}</td><td>{e(_event_text(x))}</td></tr>"
-                  for x in d["events"])
     trials = (f'<p class="note">Trials on this run (scripts that re-ran one step; never counted in the north stars):</p><ul class="cases">'
               + "".join(f"<li>{e(k)}: {v['n']} events ({e(', '.join(v['kinds']))})</li>" for k, v in sorted(d.get('trials', {}).items()))
               + '</ul>') if d.get('trials') else ''
@@ -1458,12 +1452,10 @@ def _engineer_details(d: dict, s: dict, rows: list[dict], live: bool) -> str:
     <p class="note">On the {e(fa.get('window', '?'))} commits before: false alarms {e(fa.get('fired', '?'))} · quiet {e(fa.get('quiet', '?'))} · bug already there {e(fa.get('bug_already_there', '?'))} · unevaluable {e(fa.get('unevaluable', '?'))}</p>
     <div class="scroll"><table><tr><th>commit</th><th>date</th><th>covers</th><th>result</th><th>judge</th><th>guard</th><th>title</th></tr>{groups}</table></div></div>
 </div>'''
-    spend = f'''<div class="grid2">
-  <div class="card"><h2>Spend, call by call</h2><div class="scroll"><table><tr><th>at</th><th>step</th><th>model</th><th>in</th><th>out</th><th>cost</th><th>status</th></tr>{calls}</table></div></div>
-  <div class="card"><h2>Event log</h2><details><summary>{len(d['events'])} events</summary><div class="scroll"><table>{evs}</table></div></details>{trials}</div>
-</div>'''
+    # Isha 2026-10-10: no step log or event log here; the steps and the Activity menu at the top already show them
+    spend = f'''<div class="card"><h2>Spend, call by call</h2><div class="scroll"><table><tr><th>at</th><th>step</th><th>model</th><th>in</th><th>out</th><th>cost</th><th>status</th></tr>{calls}</table></div>{trials}</div>'''
     return (f'<details class="eng"><summary>Details for engineers</summary><div class="eng-body">'
-            f'{_k("steps", f"<div><h2>Step log</h2><ol class=tl>{timeline}</ol></div>")}{_k("work", work)}{_k("lessons", lessons)}'
+            f'{_k("work", work)}{_k("lessons", lessons)}'
             f'{_k("spend", spend)}<p class="note">Read-only. Built from this run\'s MongoDB state, event log and spend meter.</p></div></details>')
 
 
@@ -1579,23 +1571,6 @@ async function poll() {
 }
 if (!document.querySelector('[data-final="1"]')) setTimeout(poll, MODE === "replay" ? 300 : 2000);
 """
-
-
-def _event_text(x: dict) -> str:
-    k = x["kind"]
-    if k == "model_call":
-        return f"{x.get('model')} in={x.get('input_tokens')} out={x.get('output_tokens')} ${x.get('cost_usd', x.get('charged_usd', 0)) or 0:.4f}"
-    if k == "sandbox":
-        return f"exit {x.get('exit')} · {x.get('seconds')} s · network {'on' if x.get('network') else 'off'}"
-    if k == "laya":
-        return ", ".join(f"{q}={a.get('choice', a.get('noul'))}" for q, a in (x.get("answers") or {}).items())
-    if k == "attempt":
-        return f"{x.get('rung')} #{x.get('n')} {x.get('outcome')}"
-    if k == "step":
-        return f"step finished in {x.get('seconds')} s ({x.get('ended')})"
-    if k == "fix_attempt":
-        return f"#{x.get('n')} {'validated' if x.get('ok') else 'not validated'}"
-    return json.dumps({a: b for a, b in x.items() if a not in ("run_id", "step", "kind", "at")}, default=str)[:160]
 
 
 def is_live(d: dict) -> bool:
