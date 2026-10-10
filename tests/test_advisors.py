@@ -227,7 +227,11 @@ def test_the_page_shows_both_plans_and_the_answer_goes_to_the_run(tmp_path, monk
     d = _data(interrupt=ask, next=["write_fix"], advisor_ask=ask)
     page = viewer.render(d, mode="live", token="t")
     assert "Waiting for you: an advisor disagrees" in page and 'id="advisorask"' in page
-    assert "The run's plan" in page and "Fix a/use-object.ts lines 1-2" in page and 'data-install="advisor"' in page
+    assert "Keep the run's plan" in page and "Fix a/use-object.ts lines 1-2" in page and 'data-install="advisor"' in page
+    sheet = page[page.index('<div id="advisorask"'):]
+    assert '<canvas class="sigil" data-seat="cause-locator" data-palette="violet"' in sheet   # its living identity
+    assert "Where it differs</span>It drops the file the run blamed" in sheet and ">+1 AI call<" in sheet
+    assert "Write fix waits" not in sheet and "Fix it waits for you" in sheet and "/static/advisors.js" in page
     assert "uv run debug-assist answer ai-1-x advisor" in viewer.render(d)                   # a saved page: the commands
     since = "2026-10-10T19:20:00+00:00"
     tapped = {"kind": "decision", "decision": "advisor run", "reviewed": "find_cause", "at": "2026-10-10T19:21:00+00:00"}

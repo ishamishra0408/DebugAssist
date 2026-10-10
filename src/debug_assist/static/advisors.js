@@ -74,8 +74,9 @@ void main(){
       canvas.width = Math.max(1, Math.round(r.width * dpr)); canvas.height = Math.max(1, Math.round(r.height * dpr));
       gl.viewport(0, 0, canvas.width, canvas.height);
     };
-    size(); new ResizeObserver(() => { size(); if (still) draw(s); }).observe(canvas);
-    const card = canvas.closest(".adv-tile, .adv-card");
+    // a resize clears the canvas: draw again at once, so it is never blank while the loop waits (or is paused)
+    size(); new ResizeObserver(() => { size(); draw(s); }).observe(canvas);
+    const card = canvas.closest(".adv-tile, .adv-card, .adv-hero") || canvas;
     card.addEventListener("pointermove", ev => {
       const r = canvas.getBoundingClientRect();
       s.ptr = [((ev.clientX - r.left) - r.width / 2) / r.height, (r.height / 2 - (ev.clientY - r.top)) / r.height];
@@ -96,17 +97,27 @@ void main(){
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
-  const scenes = [...document.querySelectorAll("canvas.sigil")].map(sigil).filter(Boolean);
+  const scenes = [], seen = new WeakSet();
   const bySeat = seat => scenes.find(s => s.canvas.dataset.seat === seat);
-  if (!scenes.length) return;
-
   // the loop runs only while a scene is on screen and the page is visible
   const io = new IntersectionObserver(es => es.forEach(e => {
     const s = scenes.find(x => x.canvas === e.target); if (s) s.visible = e.isIntersecting;
   }));
-  scenes.forEach(s => io.observe(s.canvas));
+  function adopt(root) {   // every canvas.sigil not drawn yet (the run page swaps its parts in as the run moves)
+    (root.querySelectorAll ? root.querySelectorAll("canvas.sigil") : []).forEach(c => {
+      if (seen.has(c)) return; seen.add(c);
+      const s = sigil(c); if (!s) return;
+      scenes.push(s); io.observe(c);
+      if (still || !window.gsap) s.scan = 1.1;
+      if (still) draw(s);
+    });
+  }
+  adopt(document);
+  new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => { if (n.nodeType === 1) adopt(n); })))
+    .observe(document.body, { childList: true, subtree: true });
   const ease = (from, to, k) => from + (to - from) * k;
   function frame() {
+    for (let i = scenes.length - 1; i >= 0; i--) if (!scenes[i].canvas.isConnected) scenes.splice(i, 1);
     if (!document.hidden) scenes.forEach(s => {
       if (!s.visible) return;
       s.energy = ease(s.energy, s.targetEnergy || 0, .06); s.glow = ease(s.glow, 0, .03);
@@ -114,7 +125,18 @@ void main(){
     });
     requestAnimationFrame(frame);
   }
-  if (still) scenes.forEach(draw); else requestAnimationFrame(frame);
+  if (!still) requestAnimationFrame(frame);
+  // a dialog with a living scene: drawn at once when it opens, glowing once and a little livelier while open; the
+  // reveal sweep is CSS (app.css, .adv-hero), so it plays even when animation frames are throttled (Isha 2026-10-10)
+  document.addEventListener("toggle", ev => {
+    if (!ev.target.querySelectorAll) return;
+    ev.target.querySelectorAll(".adv-hero canvas.sigil").forEach(c => {
+      const s = scenes.find(x => x.canvas === c); if (!s) return;
+      const open = ev.newState === "open";
+      s.scan = 1.1; s.targetEnergy = open ? .35 : 0; if (open && !still) s.glow = 1;
+      draw(s);
+    });
+  }, true);
 
   // the asking flow (the page's own script announces it): quicken while asked, glow when answered
   document.addEventListener("advisor-state", ev => {
@@ -126,9 +148,10 @@ void main(){
 
   // entrance and tilt: GSAP when it is there (and motion is welcome), plain otherwise
   const cards = [...document.querySelectorAll(".adv-tile, .adv-card")];
-  if (still || !window.gsap) { scenes.forEach(s => { s.scan = 1.1; }); return; }
+  if (still || !window.gsap || !cards.length) return;
   gsap.from(cards, { y: 28, opacity: 0, duration: .9, ease: "power3.out", stagger: .14, clearProps: "transform,opacity" });
-  scenes.forEach((s, i) => gsap.to(s, { scan: 1.1, duration: 1.4, ease: "power2.inOut", delay: .25 + i * .14 }));
+  scenes.filter(s => s.canvas.closest(".adv-tile, .adv-card"))
+    .forEach((s, i) => gsap.to(s, { scan: 1.1, duration: 1.4, ease: "power2.inOut", delay: .25 + i * .14 }));
   cards.forEach(card => {
     card.addEventListener("pointermove", ev => {
       if (ev.target.closest("input, textarea, button")) return;

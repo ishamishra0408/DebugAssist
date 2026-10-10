@@ -585,8 +585,9 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
     eng = _engineer_details(d, s, rows, live)
     md = json.dumps({"story": story, "pr": d["pr_text"]}).replace("</", "<\\/")
     css = f'<link rel="stylesheet" href="/static/app.css">' if served else f"<style>{(STATIC / 'app.css').read_text()}</style>"
-    topo = ('<script src="/static/topo.js" defer></script><script src="/static/glass.js" defer></script>' if served else
-            "".join(f"<script>{(STATIC / f).read_text()}</script>" for f in ("topo.js", "glass.js")))
+    topo = ('<script src="/static/topo.js" defer></script><script src="/static/glass.js" defer></script>'
+            '<script src="/static/advisors.js" defer></script>' if served else
+            "".join(f"<script>{(STATIC / f).read_text()}</script>" for f in ("topo.js", "glass.js", "advisors.js")))
     badge = _k("acount", f'<span class="badge">{min(len(d["events"]), 99)}</span>')
     activity_btn = (f'<div class="tgroup glass"><button type="button" class="tbtn" popovertarget="acts" aria-label="Latest activity">'
                     f'{icons.activity(16)}<span class="lbl">Activity</span>{badge}</button></div>')
@@ -1102,34 +1103,59 @@ def _blob(snippets: str, marks: list) -> str:
     return f'<div class="dscroll"><table class="dtable blob">{"".join(rows)}</table></div>'
 
 
+ADVISOR_COST = {"read_issue": "Stops the run", "find_cause": "+1 AI call", "why_it_shipped": "+1 AI call",
+                "lasting_guard": "+1 AI call, tests rerun"}   # what following the advisor costs
+
+
+def _who(seat: str) -> dict:
+    """An advisor's identity, as the Connect page draws it: role, motto, palette."""
+    from .advisors import ASK
+    w = ASK.get(seat) or {}
+    return {"role": w.get("role", "Advisor"), "motto": w.get("motto", ""), "palette": w.get("palette", "tide")}
+
+
+def _orb(seat: str) -> str:
+    return f'<span class="adv-orb pal-{e(_who(seat)["palette"])}" aria-hidden="true"></span>'
+
+
 def advisor_sheet(d: dict, rid: str, can_answer: bool) -> str:
-    """An advisor disagrees (Isha 2026-10-10): the run's plan and the advisor's, side by side; you choose, then it builds."""
+    """An advisor disagrees (Isha 2026-10-10): the run's plan and the advisor's, facing each other; you choose, then it
+    builds. Isha 2026-10-10, second pass: "too bland; take inspiration from the UI references" (21st.dev, GSAP,
+    tasteskill, ThreeUI Living Green): the advisor's living scene heads it, in its own colour, as on the Connect page."""
     a = d.get("advisor_ask") or {}
-    step_label = dict((k, v) for k, v, _ in plain.STEPS).get(a.get("step"), a.get("step"))
-    body = (f'<div class="gh-annot warn"><b>The {e(a.get("role"))} advisor disagrees with {e(step_label)}</b>'
-            f'<p>{e(str(a.get("why", ""))[:1].upper() + str(a.get("why", ""))[1:])}. Nothing more has been built: the run '
-            f'waits for your choice.</p></div>'
-            f'<div class="gh-box"><div class="gh-box-head"><span>The run\'s plan</span></div>'
-            f'<div class="gh-check"><span class="gh-cname"><b>{e(a.get("run_plan", ""))}</b>'
-            f'<span class="gh-muted">If you keep it, the run goes on as planned.</span></span></div></div>'
-            f'<div class="gh-box"><div class="gh-box-head"><span>The advisor\'s ({e(a.get("seat"))}, through the Domain '
-            f'Expertise MCP server)</span></div>'
-            f'<div class="gh-check"><span class="gh-cname"><b>{e(a.get("said", ""))}</b>'
-            f'<span class="gh-muted">If you go with it: {e(a.get("if_advisor", ""))}</span></span></div></div>')
-    if can_answer:
-        body += (f'<div class="decide gh-merge" data-run="{e(rid)}" data-api="/api/answer">'
-                 f'<div class="gh-merge-lines"><b>Whose plan should it follow?</b><span class="gh-muted">The advisor is a '
-                 f'rule check, not an AI; you decide.</span></div><div class="gh-merge-btns">'
-                 f'<button type="button" class="gh-btn" data-install="run" data-label="Keep the run\'s plan" '
-                 f'data-confirm="Confirm: keep the run\'s" data-busy="Going on…"><span>Keep the run\'s plan</span></button>'
-                 f'<button type="button" class="gh-btn primary" data-install="advisor" data-label="Go with the advisor" '
-                 f'data-confirm="Confirm: the advisor\'s" data-busy="Following the advisor…"><span>Go with the advisor</span></button></div>'
-                 f'<p class="decide-msg" role="status"></p></div>')
-    else:
-        body += (f'<div class="gh-box"><div class="cmd"><code>cd ~/Projects/DebugAssist && uv run debug-assist answer {e(rid)} advisor</code></div>'
-                 f'<div class="cmd"><code>cd ~/Projects/DebugAssist && uv run debug-assist answer {e(rid)} run</code></div></div>')
-    return _sheet("advisorask", "An advisor disagrees", f"The {e(a.get('role'))} advisor disagrees",
-                  f'<span class="Label Label--attention">Needs your choice</span>{e(step_label)} is reviewed; the next step waits', body)
+    steps = dict((k, v) for k, v, _ in plain.STEPS)
+    step_label = steps.get(a.get("step"), a.get("step"))
+    waits = steps.get((d.get("next") or [""])[0], "the next step")
+    w = _who(a.get("seat", ""))
+    why = str(a.get("why", ""))
+    hero = (f'<div class="adv-hero pal-{e(w["palette"])}"><canvas class="sigil" data-seat="{e(a.get("seat"))}" '
+            f'data-palette="{e(w["palette"])}" aria-hidden="true"></canvas>'
+            f'<div class="adv-hero-id"><span class="adv-role">{e(w["role"])} · after {e(step_label)}</span>'
+            f'<b>{e(a.get("seat"))}</b><span class="adv-hero-motto">\u201c{e(w["motto"])}\u201d</span></div>'
+            f'<span class="adv-verdict">Disagrees</span></div>')
+    point = (f'<blockquote class="adv-point"><span class="k">Where it differs</span>{e(why[:1].upper() + why[1:])}.'
+             f'</blockquote>')
+    def card(side: str, who: str, cost: str, plan: str, then: str, btn: str) -> str:
+        return (f'<article class="adv-choice {side}"><header><span class="adv-who"><i></i>{who}</span>'
+                f'<span class="adv-cost">{e(cost)}</span></header><p class="adv-plan">{e(plan)}</p>'
+                f'<p class="adv-then">{e(then)}</p>{btn}</article>')
+    run_btn = ('<button type="button" class="gh-btn" data-install="run" data-label="Keep the run\'s plan" '
+               'data-confirm="Tap again to keep it" data-busy="Going on…"><span>Keep the run\'s plan</span></button>'
+               if can_answer else f'<div class="cmd"><code>uv run debug-assist answer {e(rid)} run</code></div>')
+    adv_btn = ('<button type="button" class="gh-btn adv-go-btn" data-install="advisor" data-label="Go with the advisor" '
+               'data-confirm="Tap again to follow it" data-busy="Following the advisor…"><span>Go with the advisor</span></button>'
+               if can_answer else f'<div class="cmd"><code>uv run debug-assist answer {e(rid)} advisor</code></div>')
+    vs = (card("ours", "The run", "No extra cost", a.get("run_plan", ""), "If you keep it, the run goes on as planned.", run_btn)
+          + '<div class="adv-vs-mid" aria-hidden="true"><span>VS</span></div>'
+          + card("theirs", e(w["role"]) + " advisor", ADVISOR_COST.get(a.get("step"), "+1 AI call"), a.get("said", ""),
+                 f'If you go with it: {a.get("if_advisor", "")}', adv_btn))
+    body = (f'<div class="adv-dlg pal-{e(w["palette"])}">{hero}{point}'
+            + (f'<div class="decide adv-decide" data-run="{e(rid)}" data-api="/api/answer"><div class="adv-vs">{vs}</div>'
+               f'<p class="decide-msg" role="status"></p></div>' if can_answer else f'<div class="adv-vs">{vs}</div>')
+            + f'<p class="adv-dlg-foot">{e(waits)} waits for you. The advisor is a rule check on the Domain Expertise MCP '
+              f'server, not an AI; only our own files and sentences can come back from it.</p></div>')
+    return _sheet("advisorask", "An advisor disagrees", f"The {e(w['role'])} advisor disagrees",
+                  f'<span class="Label Label--attention">Needs your choice</span>{e(step_label)} is reviewed; {e(waits)} waits', body)
 
 
 def install_sheet(d: dict, rid: str, can_answer: bool) -> str:
@@ -1448,13 +1474,14 @@ def _advisors(s: dict) -> str:
         raw, pid = rec.get("raw"), f"advfull-{step}"
         btn = (f'<button type="button" class="tbtn proof-btn" popovertarget="{pid}">{icons.list_(14)}<span>Full answer</span></button>'
                if raw else "")
-        rows.append(f'<li class="row {"done" if st == "ANSWERED" else "pending"}"><span class="ic">{ic}</span><span class="t adv">'
+        ic = _orb(r["seat"]) if st == "ANSWERED" else ic   # its identity, as on the Connect page
+        rows.append(f'<li class="row adv-row {"done" if st == "ANSWERED" else "pending"}"><span class="ic">{ic}</span><span class="t adv">'
                     f'<b>{e(role)} advisor ({e(r["seat"])}) · after {e(step_name.get(step, step))}</b>{sub}</span>'
                     f'<span class="tr">{btn}</span></li>')
         if raw:
             verdict = raw.get("verdict") or (raw.get("machine_result") or {}).get("state") or ""
             sheets.append(_sheet(pid, f'{r["seat"]}: full answer', f'{e(r["seat"])} review',
-                                 f'<span class="Label Label--accent">Advisor</span><b>{e(r["seat"])}</b> reviewed {e(r["what"])} '
+                                 f'{_orb(r["seat"])}<span class="Label Label--accent">{e(_who(r["seat"])["role"])}</span><b>{e(r["seat"])}</b> reviewed {e(r["what"])} '
                                  f'· via the Domain Expertise MCP server' + (f' · verdict <code class="gh-ref">{e(verdict)}</code>' if verdict else ""),
                                  full_answer(raw)))
     return (f'<section class="group"><h2>Advisors</h2><div class="sect"><ul class="rows">{"".join(rows)}</ul></div>{"".join(sheets)}'
