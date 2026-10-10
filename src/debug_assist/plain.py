@@ -18,6 +18,7 @@ STEPS = [("read_issue", "Read the issue", "Decides whether it is a real bug"),
          ("approval", "Your OK", "Waits for you to approve"),
          ("open_pr", "PR ready", "Saves the pull request text for you")]
 LABEL = {k: label for k, label, _ in STEPS}
+INTRO = "(description)"   # the issue's opening text, before its first heading, as a section to prove (2026-10-10)
 
 # How a run ended, in words an operator can act on
 EXITS = {

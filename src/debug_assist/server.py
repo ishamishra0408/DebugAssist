@@ -173,17 +173,31 @@ ANOTHER = re.compile(r"\b(second(ary)?|another|also|other|separate|additional (b
                      r"(bug|issue|problem)\s*#?\s*[2-9]|follow[- ]up)\b", re.I)
 
 
-def pick_focus(title: str, sections: list[dict], texts: dict) -> dict:
-    """Which one problem to prove, picked from the issue's own headings (Isha 2026-10-08: don't ask when the issue
-    holds one problem). single: every heading is part of one report. The pick: the first section that describes the
-    problem and quotes code (its backticks are what the test's failure must show), else the title."""
+# a heading that states the problem itself (Isha 2026-10-10, #22543: "Current main and source" was taken for one: it is
+# where the reporter reproduced it)
+DESCRIBES = re.compile(r"^(the )?(description|summary|bug( description| report)?|what happened|problem|issue|"
+                       r"(actual|current|observed) behaviou?r|actual( result)?)\b", re.I)
+
+
+def preview(text: str, n: int = 600) -> str:
+    """The text whole when short; else cut at a word, never mid-word (Isha 2026-10-10: "control p")."""
+    t = re.sub(r"\s+", " ", text or "").strip()
+    return t if len(t) <= n else t[:n].rsplit(" ", 1)[0].rstrip(",;:") + " …"
+
+
+def pick_focus(title: str, sections: list[dict], texts: dict, intro: str = "") -> dict:
+    """Which one problem to prove (Isha 2026-10-08: don't ask when the issue holds one problem). single: every heading
+    is part of one report. The pick: a section that states the problem and quotes code (its backticks are what the
+    test's failure must show); else the issue's opening description; else the title."""
     single = not any(ANOTHER.search(s["heading"]) or not PART.search(s["heading"]) for s in sections)
-    describes = [s for s in sections if re.search(r"description|actual|current|what happened|summary|behaviou?r|bug|error",
-                                                   s["heading"], re.I) and not re.search(r"reproduc|steps|expected", s["heading"], re.I)]
+    describes = [s for s in sections if DESCRIBES.search(s["heading"].strip())]
     coded = [s for s in describes if "`" in texts.get(s["heading"], "") and not texts[s["heading"]].lstrip().startswith("```")]
-    best = (coded or [None])[0]
-    return {"single": single, "heading": best["heading"] if best else "",
-            "preview": best["preview"] if best else title, "from": f"the {best['heading']} section" if best else "the title"}
+    if coded:
+        return {"single": single, "heading": coded[0]["heading"], "preview": preview(texts[coded[0]["heading"]]),
+                "from": f"the {coded[0]['heading']} section"}
+    if intro.strip():
+        return {"single": single, "heading": plain.INTRO, "preview": preview(intro), "from": "the issue's description"}
+    return {"single": single, "heading": "", "preview": title, "from": "the title"}
 
 
 def read_issue(link: str) -> dict:
@@ -196,15 +210,16 @@ def read_issue(link: str) -> dict:
     except Exception as ex:
         raise Refused(f"Could not read the issue from GitHub ({type(ex).__name__}). Check the link and try again.")
     body = issue.get("body") or ""
+    intro = re.split(r"^#{1,6}[ \t]+", body, maxsplit=1, flags=re.M)[0].strip()   # the text before the first heading
     sections, texts = [], {}
     for h in dict.fromkeys(HEADING.findall(body)):  # each heading once, in order
         m = re.search(rf"^#+\s*{re.escape(h)}\s*#*\s*$\n(.*?)(?=^#+\s|\Z)", body, re.M | re.S)
         text = re.sub(r"\s+", " ", m.group(1)).strip() if m else ""
         if text:
-            sections.append({"heading": h, "preview": text[:180]})
+            sections.append({"heading": h, "preview": preview(text, 400)})
             texts[h] = m.group(1)
     return {"owner": owner, "repo": repo, "number": number, "title": issue["title"], "state": issue["state"],
-            "auto": pick_focus(issue["title"], sections, texts),
+            "auto": pick_focus(issue["title"], sections, texts, intro),
             "sections": sections}
 
 
@@ -275,7 +290,7 @@ def _start_run(link: str, heading: str, ai: str, look_in: str = "", test_in: str
     if ai not in ("standard", "opus"):
         raise Refused("Pick which AI to use.")
     heading = (heading or "").strip()
-    if heading and heading not in [s["heading"] for s in read_issue(link)["sections"]]:
+    if heading and heading != plain.INTRO and heading not in [s["heading"] for s in read_issue(link)["sections"]]:
         raise Refused("That section is not in the issue any more. Press Check again.")
     proc = _child["proc"]
     if proc is not None and proc.poll() is None:
@@ -875,7 +890,7 @@ def home_page(user: str = "") -> str:
 <div id="more" hidden>
   <section class="group" aria-labelledby="h-sec"><h2 id="h-sec">Which problem should it fix?</h2>
     <div class="sect auto-pick" id="auto" hidden><p><b>It will prove:</b> <span id="auto-text"></span></p>
-      <p class="foot"><span id="auto-from"></span> · <button type="button" class="linkbtn" id="auto-change">Change</button></p></div>
+      <p class="foot"><span id="auto-from"></span></p></div>
     <div class="sect" id="sections" role="radiogroup" aria-labelledby="h-sec"></div></section>
   <section class="group" aria-labelledby="h-ai" style="margin-top:28px"><h2 id="h-ai">Which AI?</h2>
     <div class="seg glass" role="radiogroup" aria-labelledby="h-ai">
@@ -914,7 +929,6 @@ if (acct) acct.addEventListener("toggle", ev => {{   // under the name, its righ
   acct.style.left = Math.max(16, Math.min(innerWidth - acct.offsetWidth - 16, r.right - acct.offsetWidth)) + "px";
 }});
 addEventListener("resize", () => {{ if (acct && acct.matches(":popover-open")) acct.hidePopover(); }});
-$("auto-change").onclick = () => {{ $("auto").hidden = true; $("sections").hidden = false; }};
 const busy = (b, on, text) => {{ b.disabled = on; b.classList.toggle("busy", on); const l = b.querySelector("span") || b;
   if (on) {{ b.dataset.was = l.textContent; l.textContent = text; }} else if (b.dataset.was) l.textContent = b.dataset.was; }};
 $("check").onclick = async () => {{
@@ -938,6 +952,7 @@ $("check").onclick = async () => {{
     }};
     const pickH = (j.auto || {{}}).heading || "";
     add("", "The problem in the title", j.title, pickH === "");
+    if (pickH === {json.dumps(plain.INTRO)}) add(pickH, "The issue's description", j.auto.preview, true);
     j.sections.forEach(x => add(x.heading, x.heading, x.preview, x.heading === pickH));
     const one = j.auto && j.auto.single;          // one problem: say what it will prove; the list stays one tap away
     $("auto").hidden = !one; box.hidden = !!one;

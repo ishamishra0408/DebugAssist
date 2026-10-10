@@ -129,6 +129,8 @@ def test_focus_comes_from_the_issue_section_or_is_given():
     assert graph.focus_of(issue, None, "Secondary observation") == "Flush emits a half call."
     assert graph.focus_of(issue, "given", "Secondary observation") == "given"
     assert graph.focus_of(issue, None, "Not there") == ""
+    told = {"body": "`useChat` keeps old messages.\n\n### Reproduction\npnpm add"}   # #22543: told before any heading
+    assert graph.focus_of(told, None, "(description)") == "`useChat` keeps old messages."
 
 
 def test_a_missing_focus_section_stops_for_a_person(monkeypatch):

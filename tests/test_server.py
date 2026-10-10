@@ -500,12 +500,23 @@ def test_the_problem_is_picked_from_the_issue_and_the_list_shows_only_when_it_ho
            {"heading": "Reproduction", "preview": "pnpm add ai@7"}]
     texts = {"Description": "the replayed `text-start` chunk adds a second text part", "Reproduction": "```sh\npnpm add ai\n```"}
     got = server.pick_focus("Chat.resumeStream duplicates text parts", one, texts)
-    assert got == {"single": True, "heading": "Description", "preview": one[0]["preview"], "from": "the Description section"}
+    assert got == {"single": True, "heading": "Description", "preview": "the replayed `text-start` chunk adds a second text part",
+                   "from": "the Description section"}
     two = one + [{"heading": "Secondary observation", "preview": "Also, the gateway drops Error.message"}]
     assert server.pick_focus("t", two, {**texts, "Secondary observation": "x"})["single"] is False   # #21439's shape
     plain = [{"heading": "Description", "preview": "it breaks"}]
     assert server.pick_focus("The title", plain, {"Description": "it breaks"}) == {
         "single": True, "heading": "", "preview": "The title", "from": "the title"}            # no code quoted: the title
+    # Isha 2026-10-10 (#22543): one problem, told before the first heading; "Current main and source" is where the
+    # reporter reproduced it, not the problem. The pick is the opening text, whole, and nothing else to choose from.
+    told = "`useChat` from `@ai-sdk/vue` keeps the old messages after `setMessages([])` " + "and so on " * 60
+    shape = [{"heading": "Current main and source", "preview": "checked on main"},
+             {"heading": "Reproduction", "preview": "pnpm add"}]
+    got = server.pick_focus("useChat keeps old messages", shape,
+                            {"Current main and source": "on `main` at ba05943", "Reproduction": "x"}, intro=told)
+    assert (got["single"], got["heading"], got["from"]) == (True, "(description)", "the issue's description")
+    assert got["preview"].startswith("`useChat` from") and got["preview"].endswith(" …") and len(got["preview"]) <= 602
+    assert server.preview("short text") == "short text"
 
 
 def test_your_pointers_are_paths_in_the_repo():

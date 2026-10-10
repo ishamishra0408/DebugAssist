@@ -41,7 +41,7 @@ from .issue_text import TRIAGE_QUESTIONS, clean
 from .guardrails import (GuardrailViolation, assert_no_names, fingerprint, freeze_condition, now,
                          record_approval, verify_approval, verify_condition_frozen)
 from .models import decide, embedder, write
-from . import profiles
+from . import plain, profiles
 from .profiles import PROFILES, profile_for
 from .sandbox import secrets_visible
 from .store import client, db
@@ -242,6 +242,9 @@ def focus_of(issue: dict, focus: str | None, heading: str | None) -> str:
         return focus.strip()
     if not heading:
         return ""
+    if heading == plain.INTRO:   # the issue's opening description, before its first heading
+        import re
+        return re.split(r"^#{1,6}[ \t]+", issue.get("body", ""), maxsplit=1, flags=re.M)[0].strip()
     import re
     m = re.search(rf"^#+\s*{re.escape(heading)}\s*$\n(.*?)(?=^#+\s|\Z)", issue.get("body", ""), re.M | re.S | re.I)
     return m.group(1).strip() if m else ""
