@@ -487,6 +487,12 @@ def tracked(checkout: Path, rel: str) -> bool:
                           capture_output=True, timeout=60).returncode == 0
 
 
+def _head(checkout: Path) -> str:
+    """The commit the code was at (main when the run started, fresh.py), short."""
+    r = subprocess.run(["git", "-C", str(checkout), "rev-parse", "--short=12", "HEAD"], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def write_proof(proof_dir: Path, rel: str, content: str | None, cmd: str, code: int, out: str, outcome: str, line: str,
                 profile, checkout: Path, name: str | None = None) -> Path:
     """The proof that a test fails (or passes) on the unfixed code, as plain text anyone can check: the test's
@@ -504,7 +510,7 @@ def write_proof(proof_dir: Path, rel: str, content: str | None, cmd: str, code: 
     f = proof_dir / f"{name or Path(rel).name}.txt"
     f.write_text(f"test file   {rel}\n"
                  f"sha256      {hashlib.sha256(content.encode()).hexdigest() if content is not None else '-'}\n"
-                 f"code        {profile.repo} at {(profile.base_commit or '')[:12]}: source unchanged, only new test files\n"
+                 f"code        {profile.repo} at {_head(checkout) or (profile.base_commit or '')[:12]}: source unchanged, only new test files\n"
                  f"ran         {cmd}\n"
                  f"where       {where}, internet off\n"
                  f"when        {datetime.now(timezone.utc).isoformat(timespec='seconds')}\n"

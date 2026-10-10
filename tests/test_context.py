@@ -69,7 +69,7 @@ def test_gather_context_stops_plainly_when_no_code_matches(tmp_path, monkeypatch
     from debug_assist import graph
     import dataclasses as dc
     monkeypatch.setattr(graph, "CFG", dc.replace(graph.CFG, runs_dir=tmp_path))
-    monkeypatch.setattr(graph, "run_copy", lambda prof, dest: dest)
+    monkeypatch.setattr(graph, "run_copy", lambda prof, dest, code=None: dest)
     monkeypatch.setattr(graph.context, "collect", lambda *a: (_ for _ in ()).throw(
         testwriter.WriterRefused("no source file contains any exact string from the issue")))
     out = graph.gather_context({"run_id": "r", "profile": {"repo": "vercel/ai"}, "issue": {"title": "t"}})

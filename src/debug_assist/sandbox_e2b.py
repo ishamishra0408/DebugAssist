@@ -48,6 +48,15 @@ def _sandbox(workdir: Path, run_id: str | None):
     sbx = Sandbox.create(template=template, timeout=3600, allow_internet_access=False,
                          metadata={"run": run_id or "", "dir": Path(workdir).name})
     _live[key], _synced[key], _owner[key] = sbx, {}, run_id
+    build = Path(workdir) / ".git" / "da-build-cmd"
+    if build.exists():   # the copy is on a newer main than the machine: its changed packages are built first (fresh.py)
+        sync(sbx, workdir)
+        _, CommandExitException, _ = _sdk()
+        try:
+            sbx.commands.run(f"bash -o pipefail -c {shlex.quote(build.read_text())}", cwd=WORK, user=USER, timeout=900)
+        except CommandExitException as e:
+            close(workdir)
+            raise SandboxUnavailable(f"building main's changed packages failed (exit {e.exit_code}): {(e.stderr or e.stdout or '')[-300:]}")
     return sbx
 
 
@@ -63,6 +72,14 @@ def changed_files(workdir: Path) -> set[str]:
     out = subprocess.run(["git", "-C", str(workdir), "status", "--porcelain", "--untracked-files=all", "-z"],
                          capture_output=True, text=True, timeout=60).stdout
     paths, entries = set(), out.split("\0")
+    built = Path(workdir) / ".git" / "da-built-from"   # the copy is on a newer main than the machine (fresh.py)
+    if built.exists():
+        t = built.read_text().strip()
+        head = subprocess.run(["git", "-C", str(workdir), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        if t and head and t != head:
+            diff = subprocess.run(["git", "-C", str(workdir), "diff", "--name-only", "-z", t, head],
+                                  capture_output=True, text=True, timeout=120).stdout
+            paths |= {p for p in diff.split("\0") if p}
     i = 0
     while i < len(entries):
         e = entries[i]

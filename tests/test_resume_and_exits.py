@@ -50,7 +50,7 @@ def _repro_state(tmp_path, monkeypatch):
     monkeypatch.setattr(graph, "secrets_visible", lambda work, image: [])
     monkeypatch.setattr(graph, "_existing_tests", lambda *a: {"status": "NONE FAIL", "passed": 12, "failed": 0})
     monkeypatch.setattr(graph, "CFG", dataclasses.replace(graph.CFG, runs_dir=tmp_path))
-    monkeypatch.setattr(graph, "run_copy", lambda prof, dest: dest)
+    monkeypatch.setattr(graph, "run_copy", lambda prof, dest, code=None: dest)
     monkeypatch.setattr(graph.testwriter, "locate", lambda *a: SimpleNamespace(
         source="packages/x/src/y.ts", fixtures=["packages/x/src/__fixtures__/a.chunks.txt"]))  # recorded data beside it
     return {"run_id": "r1", "issue": {"number": 1, "title": "t", "body": "b"},
@@ -174,7 +174,7 @@ def test_only_the_judging_test_stays_in_the_code(tmp_path):
 def test_only_a_fix_confirmed_by_two_tests_counts_toward_the_fix_clock(tmp_path, monkeypatch, holdout, validated,
                                                                        judges, stopped):
     monkeypatch.setattr(graph, "CFG", dataclasses.replace(graph.CFG, runs_dir=tmp_path))
-    monkeypatch.setattr(graph, "run_copy", lambda prof, dest: dest)
+    monkeypatch.setattr(graph, "run_copy", lambda prof, dest, code=None: dest)
     monkeypatch.setattr(graph.testwriter, "locate", lambda *a: SimpleNamespace(source="packages/p/src/x.ts"))
     monkeypatch.setattr(graph.fixer, "_git", lambda *a: "")
     monkeypatch.setattr(graph.fixer, "write_fix", lambda *a, **k: {"status": "VALIDATED", "attempts": [{"evidence": ""}],
@@ -198,7 +198,7 @@ def test_only_a_fix_confirmed_by_two_tests_counts_toward_the_fix_clock(tmp_path,
 def test_a_round_two_fix_needs_a_fresh_third_test_for_two_judges(tmp_path, monkeypatch, third, judges):
     """Ruled 2026-10-07 (north-star-v1.2): the round-2 fixer saw the second test fail, so that test is not blind."""
     monkeypatch.setattr(graph, "CFG", dataclasses.replace(graph.CFG, runs_dir=tmp_path))
-    monkeypatch.setattr(graph, "run_copy", lambda prof, dest: dest)
+    monkeypatch.setattr(graph, "run_copy", lambda prof, dest, code=None: dest)
     monkeypatch.setattr(graph.testwriter, "locate", lambda *a: SimpleNamespace(source="packages/p/src/x.ts"))
     monkeypatch.setattr(graph.fixer, "_git", lambda *a: "")
     monkeypatch.setattr(graph.fixer, "revert", lambda *a: None)

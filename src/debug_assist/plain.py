@@ -61,6 +61,19 @@ def happened(x: dict) -> str | None:
         return f"Old version {str(x.get('commit', ''))[:7]}: {OLD_CODE.get(x.get('state'), str(x.get('state')).lower())}"
     if k == "embed":
         return "Saved, so similar bugs can be found later"
+    if k == "code" and x.get("key") == "rebuild":
+        return "Rebuilding the test machine on the latest main: the package list changed since it was built"
+    if k == "code" and x.get("error"):
+        return "Could not read the latest main; using the saved copy of the code"
+    if k == "code":
+        n = len(x.get("build") or [])
+        return (f"On main at {str(x.get('commit', ''))[:7]}, fetched just now"
+                + (f"; rebuilt {n} changed package{'s' * (n != 1)}" if n else "")
+                + ("; installed the new package list" if x.get("installed") else ""))
+    if k == "install" and str(x.get("key", "")).endswith("-built"):
+        return f"Installed {x.get('package')} on the test machine"
+    if k == "install":
+        return f"You answered {x.get('answer')}: install {x.get('package')}"
     if k == "advisor":
         return f"Advisor {x.get('seat')}: " + {"OFF": "not asked (advisors are off)", "BLOCKED": "not asked (server not reviewed yet)",
                                                "ANSWERED": "answered", "FAILED": "could not be reached"}.get(x.get("status"), "not asked")

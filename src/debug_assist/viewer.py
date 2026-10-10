@@ -285,6 +285,30 @@ def headline(phase: str, cur: int | None, rows: list[dict]) -> str:
             "idle": "Not running"}[phase]
 
 
+def fresh_line(s: dict) -> str:
+    """Which code the run is on (Isha 2026-10-10): branched from main, its commit and when it was fetched, so no one
+    wonders whether it is behind. Runs before then used the saved copy, and say so."""
+    code = s.get("code") or {}
+    repo = (s.get("profile") or {}).get("repo", "")
+    if code.get("commit"):
+        when = code.get("fetched_at", "")
+        try:
+            when = datetime.fromisoformat(when).strftime("%-d %b, %H:%M UTC")
+        except ValueError:
+            pass
+        link = (f'<a href="https://github.com/{e(repo)}/commit/{e(code["commit"])}" target="_blank" rel="noopener noreferrer">'
+                f'<code>{e(code["commit"][:7])}</code></a>' if re.fullmatch(r"[\w.-]+/[\w.-]+", repo) else f'<code>{e(code["commit"][:7])}</code>')
+        extra = (" · the test machine was rebuilt (the package list changed)" if code.get("rebuilt") else
+                 f" · {len(code['build'])} changed package{'s' * (len(code['build']) != 1)} rebuilt" if code.get("build") else "")
+        return (f'<p class="fresh"><span class="fresh-dot"></span>Branched from <b>{e(code.get("branch", "main"))}</b> at {link} · '
+                f'fetched {e(when)}, the latest when this run started{e(extra)}</p>')
+    if code.get("error"):
+        return f'<p class="fresh warn"><span class="fresh-dot"></span>{e(code["error"])}</p>'
+    if s.get("issue"):
+        return '<p class="fresh muted"><span class="fresh-dot"></span>On the saved copy of the code (runs before 10 Oct 2026)</p>'
+    return ""
+
+
 def _k(key: str, markup: str) -> str:
     """Mark a piece of the page for in-place updates: the served page swaps it only when its hash changes."""
     h = hashlib.sha1(markup.encode()).hexdigest()[:10]
@@ -369,6 +393,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
   <p class="eyebrow">{f'{e(who)} · Issue #{e(issue.get("number"))} · {e(model)}' if issue else 'New run'}{last_seen}</p>
   <h1>{e(issue.get('title') or ('Getting ready' if not s else 'Run ' + rid))}</h1>
   <p class="status {cls}" role="status"><span class="dot"></span><span>{e("Waiting for your answer: install a package?" if d.get("ask") and phase == "waiting" else headline(phase, cur, rows))}</span>{f'<span class="sub">· {_since(d, running_since, is_replay)}</span>' if running_since else ''}</p>
+  {fresh_line(s)}
   <ol class="track" style="--n:{len(rows)}" aria-label="The {len(rows)} steps">{nodes}</ol>
 </header>"""
 
@@ -377,7 +402,8 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
     proof_html = _proof(s, rid, ai_use(use, "reproduce"))
     pr_btn = '<button type="button" class="tbtn proof-btn" popovertarget="check-pr"><span>Check PR</span></button>'
     prof = s.get("profile") or {}
-    ctx_html = context_sheet(d.get("pack") or {}, s.get("context") or {}, prof.get("repo") or "", prof.get("base_commit") or "")
+    ctx_html = context_sheet(d.get("pack") or {}, s.get("context") or {}, prof.get("repo") or "",
+                             (s.get("code") or {}).get("commit") or prof.get("base_commit") or "")
     change_html = code_change_sheet(s, rid, d.get("patch") or "", ai_use(use, "find_cause", "write_fix"))
     report_html, guard_html = report_sheet(s, ai_use(use, "why_it_shipped")), guard_sheet(s, ai_use(use, "lasting_guard"))
     def btn(target: str, label: str) -> str:
@@ -765,12 +791,14 @@ def _check_pr(d: dict, rid: str, can_decide: bool, approve_cmd: str, reject_cmd:
                 f'Restore the recommendation</button></p></div>') if can_decide else
                f'<div class="gh-box"><pre class="gh-pre">{e(msg)}</pre></div>')
     who = "debugassist"
+    based = (f'<span class="gh-muted">· branched from main at {e(str(st["code"]["commit"])[:7])}</span>'
+             if (st.get("code") or {}).get("commit") else "")
     return (f'<div id="check-pr" popover class="pop sheet gh" aria-label="Pull request">'
             f'<div class="gh-top"><button type="button" class="gh-close" popovertarget="check-pr" popovertargetaction="hide" '
             f'aria-label="Close">{icons.cross(16)}</button>'
             f'<h3 class="gh-title"><span id="pr-title">{e(title)}</span> <span class="gh-muted">#{e(issue.get("number", ""))}</span></h3>'
             f'<p class="gh-meta">{badge}<b>{who}</b> wants to merge 1 commit into '
-            f'<code class="gh-ref">main</code> from <code class="gh-ref">{e(head)}</code>'
+            f'<code class="gh-ref">main</code> from <code class="gh-ref">{e(head)}</code>{based}'
             f'<span class="gh-diffstat"><span class="plus">+{add}</span> <span class="minus">−{rem}</span></span></p>'
             f'{ai_use(usage_by_step(d), "find_cause", "write_fix", what=": cause and fix")}'
             f'<nav class="gh-tabs" role="tablist">'
@@ -957,7 +985,7 @@ def _proof(s: dict, rid: str, ai: str = "") -> str:
              f'<button type="button" class="pg next" aria-label="Next try">{icons.chevron(14)}</button></div></div>'
              f'<div class="pages" tabindex="0" data-start="{start or 0}">{"".join(pages)}</div></div>') if pages else ""
     shown = next((a["n"] for a in tries if a.get("outcome") == "RED"), None)
-    base = str(prof.get("base_commit") or "")[:7]
+    base = str((s.get("code") or {}).get("commit") or prof.get("base_commit") or "")[:7]
     title = (f'<h3 class="gh-title">Reproduce issue <span class="gh-muted">#{e(issue.get("number", ""))}</span></h3>'
              f'<p class="gh-meta"><span class="gh-state failure">Bug shown</span> on <code class="gh-ref">main</code>'
              + (f' at <code class="gh-ref">{e(base)}</code>' if base else "")

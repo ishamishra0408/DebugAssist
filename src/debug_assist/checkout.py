@@ -34,8 +34,9 @@ def check_base(profile) -> tuple[bool, str]:
     return True, f"{b.name}, clean, installed"
 
 
-def run_copy(profile, dest: Path) -> Path:
-    """The run's own copy. Reused as-is on resume (its earlier attempts' files are part of the record)."""
+def run_copy(profile, dest: Path, code: dict | None = None) -> Path:
+    """The run's own copy. Reused as-is on resume (its earlier attempts' files are part of the record). With `code`
+    (fresh.py: main's commit for this run), the copy is moved to that commit and, on this Mac, built or installed."""
     dest = Path(dest)
     if dest.exists():
         return dest
@@ -47,7 +48,34 @@ def run_copy(profile, dest: Path) -> Path:
         ensure_base(profile)
     subprocess.run(["cp", *flags, str(base_path(profile)), str(dest)], check=True, timeout=600)
     mark_template(dest, profile)
+    if code and code.get("commit"):
+        on_commit(profile, dest, code)
     return dest
+
+
+def on_commit(profile, dest: Path, code: dict) -> None:
+    """Move a copy to the run's commit (main, fetched at the start of the run): hosted, the sandbox sends the files
+    that changed and builds what needs building when it starts; on this Mac, the copy is built here, once."""
+    from . import fresh
+    from .config import CFG
+    fresh.move(dest, code["commit"], code.get("built_from") or profile.base_commit)
+    if code.get("build_cmd"):
+        (Path(dest) / ".git" / "da-build-cmd").write_text(code["build_cmd"])
+    if CFG.sandbox_backend == "e2b":
+        return
+    from .sandbox import run_in_sandbox
+    if code.get("lock_changed"):   # the package list changed: install into this copy, network on, once
+        env = profile.env.rstrip()
+        cmd = (f"{env} {profile.install_cmd.format(filters=profile.filters)} && "
+               f"{profile.build_cmd.format(filters=profile.filters)}")
+        r = run_in_sandbox(cmd, Path(dest), network=True, timeout=1800, image=profile.image)
+    elif code.get("build_cmd"):
+        r = run_in_sandbox(code["build_cmd"], Path(dest), network=False, timeout=900, image=profile.image)
+    else:
+        return
+    if r.returncode != 0:
+        raise RuntimeError(f"preparing main at {code['commit'][:7]} failed (exit {r.returncode}): "
+                           f"{((r.stdout or '') + (r.stderr or ''))[-400:]}")
 
 
 def mark_template(checkout: Path, profile) -> None:

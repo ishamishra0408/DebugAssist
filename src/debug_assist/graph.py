@@ -78,6 +78,8 @@ class RunState(TypedDict, total=False):
     focus: str          # the ONE problem in the issue this run reproduces (--focus, or a section via --focus-heading)
     focus_heading: str
     hints: dict         # the person's optional pointers: {"look_in": [files for the cause], "test_in": test file}
+    code: dict          # the code this run is on: main's newest commit when it started (fresh.py), what the test
+                        # machine was built at, and what moving to main needed (an install, or packages to build)
     context: dict       # Gather context: where the pack is, its sha256, the counts, and the brief later steps read
     advisors: Annotated[dict, lambda a, b: {**(a or {}), **(b or {})}]  # per step: what its seat said (advice only)
     attempts: Annotated[list, operator.add]  # append-only: every attempt and how it ended (also in the event log)
@@ -173,25 +175,58 @@ CONTEXT_NOT_FOUND = "CONTEXT NOT FOUND"
 def gather_context(s: RunState):
     """One step, no AI: collect what the later steps read (context.py), save it with the run, lock it with a sha256."""
     prof = profiles.get(s["profile"]["repo"])
-    checkout = run_copy(prof, run_dir(s) / "checkout")  # this run's own unmodified code (reused as-is on resume)
+    code = s.get("code") or _fresh_code(s, prof)   # main's newest commit, and what moving to it needs (fresh.py)
+    checkout = run_copy(prof, run_dir(s) / "checkout", code)  # this run's own unmodified code (reused as-is on resume)
     focus = s.get("focus") or s["issue"]["title"]
     try:
-        pack = context.collect(s["issue"], focus, checkout, prof.base_commit, prof, s.get("hints"))
+        pack = context.collect(s["issue"], focus, checkout, code.get("commit") or prof.base_commit, prof, s.get("hints"))
     except testwriter.WriterRefused as e:
-        return {"context": {"status": "NOT FOUND", "checkout": str(checkout), "why": str(e)},
+        return {"code": code, "context": {"status": "NOT FOUND", "checkout": str(checkout), "why": str(e)},
                 "outcome": stop(CONTEXT_NOT_FOUND, f"{e}; there is no code to show the bug in"),
                 "log": [f"gather_context: STOPPED {CONTEXT_NOT_FOUND}: {e}"]}
     path = run_dir(s) / "context.json"
     sha = context.save(pack, path)
     c = pack["counts"]
     events.log("context", key="pack", sha256=sha[:12], **c, missing=pack["missing"], cut=pack["cut"])
-    return {"context": {"status": "GATHERED", "path": str(path), "sha256": sha, "checkout": str(checkout),
+    return {"code": code, "context": {"status": "GATHERED", "path": str(path), "sha256": sha, "checkout": str(checkout),
                         "located": pack["code"]["best"], "counts": c, "brief": pack["brief"],
                         "missing": pack["missing"], "cut": pack["cut"]},
             "log": [f"gather_context: {c['comments']} comments, {c['linked']} linked, {c['files']} files "
                     f"(best {pack['code']['best']}), {c['related']} shared definitions, {c['changes']} recent changes; "
                     f"brief {c['brief_chars']} chars; sha256 {sha[:12]}"
                     + (f"; missing: {', '.join(pack['missing'])}" if pack["missing"] else "")]}
+
+
+def _fresh_code(s: RunState, prof) -> dict:
+    """Every run on the latest main (Isha 2026-10-10). Read main's newest commit; make the run's copy at the test
+    machine's commit and compare: a lockfile change rebuilds the machine at main (hosted) or installs into the copy (this
+    Mac); otherwise only the changed packages and those using them are built. If main can't be read, the run says so and
+    uses the pinned commit."""
+    import dataclasses
+    from . import fresh, pkgcheck
+    from .checkout import on_commit
+    try:
+        top = fresh.latest(prof)
+    except Exception as ex:
+        events.log("code", key="main", commit=prof.base_commit, error=str(ex)[:300])
+        return {"commit": "", "error": f"could not read the latest main ({str(ex)[:160]}); the saved copy was used"}
+    built = fresh.machine(prof) if CFG.sandbox_backend == "e2b" else prof.base_commit
+    copy = run_copy(prof, run_dir(s) / "checkout")          # at the saved copy; moved to main below
+    fresh.move(copy, top["commit"], built)
+    p = fresh.plan(prof, copy, built, top["commit"])
+    code = {**top, "built_from": built, "files_changed": p["files"], "lock_changed": p["lock_changed"],
+            "build": p["build"], "build_cmd": p["build_cmd"]}
+    if p["lock_changed"] and CFG.sandbox_backend == "e2b":   # the package list changed: rebuild the machine at main
+        events.log("code", key="rebuild", commit=top["commit"], reason="the package list changed since the test machine was built")
+        pkgcheck.rebuild(dataclasses.replace(prof, base_commit=top["commit"]), copy)
+        fresh.record_machine(prof.repo, top["commit"])
+        code.update(built_from=top["commit"], build=[], build_cmd="", lock_changed=False, rebuilt=True)
+        fresh.move(copy, top["commit"], top["commit"])
+    on_commit(prof, copy, code)
+    events.log("code", key="main", commit=top["commit"], fetched_at=top["fetched_at"], built_from=code["built_from"],
+               files_changed=p["files"], build=code["build"], rebuilt=bool(code.get("rebuilt")),
+               installed=bool(code.get("lock_changed")))
+    return code
 
 
 def _ctx(s: RunState, checkout: Path):
@@ -313,7 +348,8 @@ def _install_if_missing(s: RunState, checkout: Path, ctx, plan: dict, seen) -> d
         events.log("install", key=f"{gap['name']}-no", package=gap["name"], answer="no")
         return stopped(f"{gap['name']} is not installed on the test machine, and you chose not to install it")
     events.log("install", key=f"{gap['name']}-yes", package=gap["name"], answer="yes")
-    plus = dataclasses.replace(prof, filters=(prof.filters + f" --filter '{gap['name']}...'").strip())
+    machine_at = (s.get("code") or {}).get("built_from") or prof.base_commit   # rebuild where the machine is now
+    plus = dataclasses.replace(prof, filters=(prof.filters + f" --filter '{gap['name']}...'").strip(), base_commit=machine_at)
     t0 = time.monotonic()
     try:
         pkgcheck.rebuild(plus, checkout)
@@ -355,7 +391,7 @@ def reproduce(s: RunState):
     work = run_dir(s) / "sandbox"
     work.mkdir(exist_ok=True)
     image = s["profile"]["image"]
-    checkout = run_copy(profiles.get(s["profile"]["repo"]), run_dir(s) / "checkout")  # made by Gather context; reused
+    checkout = run_copy(profiles.get(s["profile"]["repo"]), run_dir(s) / "checkout", s.get("code"))  # made by Gather context
     # in the repo's own image (node for vercel/ai, python otherwise); hosted: in the repo's own E2B template
     seen = secrets_visible(checkout if CFG.sandbox_backend == "e2b" else work, image)
     if seen:
@@ -472,7 +508,7 @@ def write_fix(s: RunState):
                           stale=dirty, drafts=run_dir(s) / "fixer")
     ho = None
     if fix["status"] == "VALIDATED":  # a second, independent judge written without seeing the fix
-        base_copy = run_copy(prof, run_dir(s) / "holdout-base")
+        base_copy = run_copy(prof, run_dir(s) / "holdout-base", s.get("code"))
         ctx = testwriter.locate(base_copy, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"], prof)
         ctx.extra = (s.get("context") or {}).get("brief", "")  # the second test reads the same gathered context
         ho = fixer.holdout(s, prof, checkout, base_copy, ctx, [judge], drafts=run_dir(s) / "holdout")
@@ -488,7 +524,7 @@ def write_fix(s: RunState):
             if fix["status"] == "VALIDATED":
                 # Ruled 2026-10-07 (north-star-v1.2): this fix saw the second test fail, so that test no longer judges
                 # it blind. A fresh third test, written without seeing either fix, must also pass for two judges.
-                third_copy = run_copy(prof, run_dir(s) / "holdout3-base")
+                third_copy = run_copy(prof, run_dir(s) / "holdout3-base", s.get("code"))
                 ctx3 = testwriter.locate(third_copy, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"], prof)
                 ctx3.extra = ctx.extra
                 third = fixer.holdout(s, prof, checkout, third_copy, ctx3, [judge, ho["test"]],
@@ -569,7 +605,7 @@ def lasting_guard(s: RunState):
     say which parts of the class this fix closed and which it left open. Plus every other site with the same line."""
     prof = profiles.get(s["profile"]["repo"])
     fixed = Path(s["repro"]["checkout"])
-    unfixed = run_copy(prof, run_dir(s) / "holdout-base")
+    unfixed = run_copy(prof, run_dir(s) / "holdout-base", s.get("code"))
     judge = s["repro"].get("oracle_test") or s["repro"]["failing_test"]
     ctx = testwriter.locate(unfixed, s["issue"].get("body", ""), s.get("focus") or s["issue"]["title"], prof)
     patch = _fix_patch(s)
@@ -805,7 +841,11 @@ def compose_pr_body(s: RunState, patch: str = "") -> str:
     two = fixer.judge_count(f.get("status", ""), ho) == 2
     out = ["## Summary",
            f"{_sentence(c.get('why'))} {_sentence(c.get('plan'))}".strip() or i["title"], "",
-           f"Fixes #{i['number']}", "", "## Changes"]
+           f"Fixes #{i['number']}", ""]
+    code = s.get("code") or {}
+    if code.get("commit"):   # Isha 2026-10-10: say which main this was made and tested on
+        out += [f"Made and tested on `main` at {code['commit'][:7]} (fetched {code.get('fetched_at', '')[:16].replace('T', ' ')} UTC).", ""]
+    out += ["## Changes"]
     out += [f"- `{x['path']}` (+{x['added']} −{x['removed']})" for x in src] or ["- (no source change)"]
     out += ["", "## Tests"]
     skipped = (r.get("ladder_plan") or {}).get("skipped") or {}
@@ -895,11 +935,15 @@ def open_pr(s: RunState):
     msg = run_dir(s) / "commit-message.txt"
     title = (msg.read_text().splitlines() or [f"fix: #{i['number']}"])[0] if msg.exists() else f"fix: #{i['number']}"
     branch = f"debugassist/fix-{i['number']}"
+    code = s.get("code") or {}
+    start = ([f"echo git fetch origin {code['commit']}",   # the branch starts at the main this run was made and tested on
+              f"echo git switch -c {branch} {code['commit']}"] if code.get("commit") else [f"echo git switch -c {branch}"])
     script.write_text("\n".join([
         "#!/bin/sh",
         "# You run this, with your own GitHub login. The pipeline holds a read-only token and cannot publish.",
         "# It prints the steps; run them yourself in a clone of the repo (the change is pr.patch, the message is yours).",
-        f"echo git switch -c {branch}",
+        *([f"# Branches from main at {code['commit'][:7]}, fetched {code.get('fetched_at', '')} (the run's code)"] if code.get("commit") else []),
+        *start,
         f"echo git apply \"{run_dir(s) / 'pr.patch'}\"",
         f"echo git commit -a -F \"{msg}\"",
         f"echo gh pr create --repo {i['owner']}/{i['repo']} --draft --head {branch} --title \"{title}\" "

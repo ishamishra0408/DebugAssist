@@ -36,6 +36,16 @@ def sign_in_off(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_fetching_main(monkeypatch):
+    """Tests never ask GitHub for main's newest commit (2026-10-10: a test reached the real vercel/ai). A run then uses
+    the saved copy and says so; a test of the fetch sets its own."""
+    from debug_assist import fresh
+    def offline(profile):
+        raise RuntimeError("offline in tests")
+    monkeypatch.setattr(fresh, "latest", offline)
+
+
+@pytest.fixture(autouse=True)
 def no_profile_extras(monkeypatch):
     """Tests see the profiles as written, never packages chosen on this Mac (pkgcheck.extras reads MongoDB)."""
     from debug_assist import pkgcheck

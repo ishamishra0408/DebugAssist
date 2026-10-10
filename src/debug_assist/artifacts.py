@@ -88,7 +88,7 @@ def restore_run(run_id: str) -> int:
         dest = run_dir / name
         if not dest.exists():
             prof = prof or _profile_of(run_id) or next(iter(PROFILES.values()))
-            run_copy(prof, dest)  # the pinned commit, unmodified; the run's changes follow
+            run_copy(prof, dest, _code_of(run_id))  # the run's commit (main when it started), unmodified; its changes follow
             for d in docs:
                 if d["kind"] == "change" and d["path"].startswith(name + "/"):
                     f = run_dir / d["path"]
@@ -106,6 +106,14 @@ def restore_run(run_id: str) -> int:
                 f.write_bytes(bytes(d["data"]))
                 wrote += 1
     return wrote
+
+
+def _code_of(run_id: str) -> dict | None:
+    try:
+        from .viewer import _app
+        return (_app().get_state({"configurable": {"thread_id": run_id}}).values or {}).get("code")
+    except Exception:
+        return None
 
 
 def _profile_of(run_id: str):

@@ -20,7 +20,7 @@ def test_a_wiped_run_folder_comes_back(scratch_db, monkeypatch, tmp_path):
     monkeypatch.setattr(artifacts, "CFG", dataclasses.replace(artifacts.CFG, runs_dir=runs))
     monkeypatch.setattr(artifacts, "_coll", lambda: scratch_db["run_files"])
     monkeypatch.setattr(artifacts, "_profile_of", lambda rid: object())
-    monkeypatch.setattr("debug_assist.checkout.run_copy", lambda prof, dest: shutil.copytree(base, dest) and dest)
+    monkeypatch.setattr("debug_assist.checkout.run_copy", lambda prof, dest, code=None: shutil.copytree(base, dest) and dest)
     run = runs / "r1"
     shutil.copytree(base, run / "checkout")
     (run / "checkout/packages/p/src/a.ts").write_text("fixed\n")                 # the fix

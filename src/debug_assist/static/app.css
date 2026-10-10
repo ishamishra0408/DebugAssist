@@ -834,3 +834,10 @@ body.auth { min-height: 100vh; min-height: 100dvh; display: grid; place-items: c
   font-size: 12px; color: var(--gh-accent-fg); white-space: nowrap; }
 
 .gh .Label--attention { color: var(--gh-warn); border-color: color-mix(in srgb, var(--gh-warn) 45%, transparent); }
+
+/* which main the run is on (Isha 2026-10-10: "so they know they are not behind") */
+.hero .fresh { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0 0; font-size: 13px; color: var(--label-2); }
+.hero .fresh code { font-size: 12px; padding: 1px 6px; border-radius: 6px; background: color-mix(in srgb, var(--blue) 14%, transparent); color: var(--blue); }
+.hero .fresh a { text-decoration: none; } .hero .fresh b { color: var(--label); font-weight: 600; }
+.fresh-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex: none; }
+.fresh.warn .fresh-dot { background: var(--orange); } .fresh.muted .fresh-dot { background: var(--label-3); }
