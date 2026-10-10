@@ -375,7 +375,8 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
     use = usage_by_step(d)
     proof_html = _proof(s, rid, ai_use(use, "reproduce"))
     pr_btn = '<button type="button" class="tbtn proof-btn" popovertarget="check-pr"><span>Check PR</span></button>'
-    ctx_html = context_sheet(d.get("pack") or {}, s.get("context") or {})
+    prof = s.get("profile") or {}
+    ctx_html = context_sheet(d.get("pack") or {}, s.get("context") or {}, prof.get("repo") or "", prof.get("base_commit") or "")
     change_html = code_change_sheet(s, rid, d.get("patch") or "", ai_use(use, "find_cause", "write_fix"))
     report_html, guard_html = report_sheet(s, ai_use(use, "why_it_shipped")), guard_sheet(s, ai_use(use, "lasting_guard"))
     def btn(target: str, label: str) -> str:
@@ -1010,7 +1011,15 @@ def _blob(snippets: str, marks: list) -> str:
     return f'<div class="dscroll"><table class="dtable blob">{"".join(rows)}</table></div>'
 
 
-def context_sheet(pack: dict, c: dict) -> str:
+def _gh_link(repo: str, path: str, text: str, cls: str = "") -> str:
+    """A link to the repo on GitHub, in a new tab; plain text when the repo is unknown."""
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo or "") or not re.fullmatch(r"[\w./@+-]+", path or ""):
+        return f'<span class="{cls}">{e(text)}</span>' if cls else e(text)
+    return (f'<a class="gh-a {cls}" href="https://github.com/{e(repo)}/{e(path)}" target="_blank" rel="noopener noreferrer" '
+            f'onclick="event.stopPropagation()">{e(text)}</a>')
+
+
+def context_sheet(pack: dict, c: dict, repo: str = "", base: str = "") -> str:
     """Everything Gather context read, GitHub's way (Isha 2026-10-09): the comments as comments, the history as a
     commit list, the code as files with the issue's strings marked, the shared code. Collected by code, not AI."""
     if not pack:
@@ -1032,8 +1041,9 @@ def context_sheet(pack: dict, c: dict) -> str:
     hist = pack.get("history") or []
     commits = "".join(
         f'<div class="gh-box"><div class="gh-box-head"><span>Commits on <code>{e(h["path"])}</code></span></div>'
-        + ("".join(f'<div class="gh-commit-row"><span class="gh-cname"><b>{e(x.get("title", ""))}</b>'
-                   f'<span class="gh-muted">committed on {e(x.get("date", ""))}</span></span><code class="gh-sha">{e(str(x.get("sha", ""))[:7])}</code></div>'
+        + ("".join(f'<div class="gh-commit-row"><span class="gh-cname"><b>{_gh_link(repo, "commit/" + str(x.get("sha", "")), x.get("title", ""))}</b>'
+                   f'<span class="gh-muted">committed on {e(x.get("date", ""))}</span></span>'
+                   f'{_gh_link(repo, "commit/" + str(x.get("sha", "")), str(x.get("sha", ""))[:7], "gh-sha")}</div>'
                    for x in h.get("changes") or []) or '<p class="gh-muted gh-pad">No recent changes found.</p>') + '</div>'
         for h in hist) or '<p class="gh-muted">No history was read.</p>'
     ranking = code.get("ranking") or []
@@ -1046,7 +1056,8 @@ def context_sheet(pack: dict, c: dict) -> str:
             why += f" · tied (score {f.get('score')}) with {', '.join(Path(x).name for x in f['tied_with'])}: ordered by file name"
         lines = ctx.get("snippets", "") if f["path"] == ctx.get("source") and ctx.get("snippets") else f.get("snippets", "")
         head = (f'<span class="dpath">{e(f["path"])}</span>'
-                f'<span class="dtag">{"best match · " if i == 0 else ""}{e(why)}</span>')
+                f'<span class="dtag">{"best match · " if i == 0 else ""}{e(why)}</span>'
+                + (_gh_link(repo, f"blob/{base}/{f['path']}", "View on GitHub", "gh-ext") if base else ""))
         files += (f'<details class="dfile"{" open" if i == 0 else ""}><summary>{head}</summary>{_blob(lines, f.get("matched") or [])}</details>'
                   if lines else   # nothing kept to show: a plain row, not one that looks like it opens
                   f'<div class="dfile"><div class="dfile-head">{head}</div></div>')

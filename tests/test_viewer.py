@@ -342,6 +342,7 @@ def _rich_state():
     story = ("### What broke?\nText parts were doubled after a resume.\n### Why didn't the tests catch it?\nNo test resumed twice.\n"
              "CONDITION: resume reused retained state")
     st = {**_data()["state"], "issue_url": "https://github.com/vercel/ai/issues/7", "context": {"sha256": "44b296c220e8aa"},
+          "profile": {"repo": "vercel/ai", "base_commit": "e7f55a4"},
           "second_story": {"text": story},
           "guard": {"status": "CATCHES THE BUG", "covers": "every way a resumed stream can repeat a part",
                     "repo_path": "packages/ai/src/ui/da-guard-7.test.ts", "siblings": ["packages/react/src/x.ts:12"],
@@ -369,7 +370,10 @@ def test_the_steps_open_their_own_sheets_github_style():
     assert "The problem it is fixing" not in page and "<h2>What it read</h2>" not in page and 'id="story"' not in page
     ctx = _sheet(page, "ctxinfo")
     assert '<span class="Label">No AI</span><b>debugassist</b> read 1 comment, 2 files' in ctx and 'data-md="Still happens on **7.0.1**"' in ctx and "Comment 1" in ctx
-    assert "Commits on <code>packages/ai/src/ui/chat.ts</code>" in ctx and ">abc1234</code>" in ctx and "feat: resume" in ctx
+    assert "Commits on <code>packages/ai/src/ui/chat.ts</code>" in ctx and "feat: resume" in ctx
+    # Isha 2026-10-09: each commit opens on GitHub; each file opens on GitHub at the pinned version
+    assert 'href="https://github.com/vercel/ai/commit/abc1234567" target="_blank"' in ctx and ">abc1234</a>" in ctx
+    assert 'href="https://github.com/vercel/ai/blob/e7f55a4/packages/ai/src/ui/chat.ts"' in ctx and "View on GitHub" in ctx
     assert '<tr class="hit"><td class="ln">883</td>' in ctx and '<tr class=""><td class="ln">881</td>' in ctx
     # a listed file with no lines kept is a plain row, not one that looks like it opens (Isha 2026-10-09)
     assert '<div class="dfile"><div class="dfile-head"><span class="dpath">packages/ai/src/ui/x.ts</span>' in ctx
