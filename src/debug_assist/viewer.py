@@ -43,6 +43,26 @@ def _t(iso: str) -> datetime:
     return datetime.fromisoformat(iso)
 
 
+def answered(ask: dict, evs: list[dict], since: str | None) -> dict | None:
+    """The answer to "install this package?", once given (Isha 2026-10-10: "when I click install, it should show that
+    it is now installing"). The run's checkpoint keeps the question until Show the bug ends, minutes later, so the
+    answer is read from the events: the page's own record, written as you tap, or the run's. installing: yes, and the
+    test machine is not rebuilt yet."""
+    pkg = ask.get("package")
+    if ask.get("kind") != "install" or not pkg:
+        return None
+    for x in reversed(evs):   # events come without their key; the fields tell them apart
+        mine = x.get("package") == pkg and ((x.get("kind") == "decision" and str(x.get("decision", "")).startswith("install"))
+                                            or (x.get("kind") == "install" and x.get("answer")))
+        if mine and (since is None or _t(x["at"]) >= _t(since)):
+            yes = "yes" in str(x.get("decision") or x.get("answer") or "")
+            built = any(y.get("kind") == "install" and y.get("package") == pkg and "seconds" in y and _t(y["at"]) >= _t(x["at"])
+                        for y in evs)
+            return {"package": pkg, "answer": "yes" if yes else "no", "at": x["at"], "minutes": ask.get("minutes", 3),
+                    "installing": yes and not built}
+    return None
+
+
 def pick(history: list, at: datetime):
     """The checkpoint a run was at, at time `at` (history newest first, as LangGraph returns it); None before it began."""
     return next((h for h in history if _t(h.created_at) <= at), None)
@@ -95,6 +115,9 @@ def gather(run_id: str, at: datetime | None = None) -> dict:
         calls = [c for c in calls if c.get("at") and _t(c["at"]) <= at]
         mtr = {**mtr, "spent_usd": sum((c.get("actual_micro") or 0) for c in calls) / 1e6,
                "sandbox_used_s": round(sum(x.get("seconds") or 0 for x in evs if x["kind"] == "sandbox"))}
+    told = answered(intr, evs, snap.created_at)
+    if told:   # answered: the run is going again, though its checkpoint still holds the question
+        intr = {}
     pack = {}
     cpath = ((snap.values or {}).get("context") or {}).get("path")
     if cpath and Path(cpath).exists():
@@ -106,6 +129,7 @@ def gather(run_id: str, at: datetime | None = None) -> dict:
             "pr_text": pr_text, "pr_matches": pr_ok, "patch": patch, "pr_patch": pr_patch, "commit_message": commit_msg,
             "decided_by": next((x.get("by") for x in reversed(evs) if x.get("kind") == "decision" and x.get("by")), ""),
             "ask": intr if intr.get("kind") == "install" else None,   # the run asks whether to install a package
+            "installing": told if told and told["installing"] else None,
             "events": evs,
             "trials": events.trials_of(run_id), "meter": mtr, "calls": calls,
             "built": datetime.now().strftime("%H:%M:%S"),
@@ -370,6 +394,9 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
     w = where_now(d, rows, live)
     phase, cur, states = w["phase"], w["cur"], w["states"]
     served, is_replay = mode in ("live", "replay"), mode == "replay"
+    inst = d.get("installing") if phase == "working" else None   # you said yes; the test machine is being rebuilt
+    status_line = ("Waiting for your answer: install a package?" if d.get("ask") and phase == "waiting" else
+                   f"Installing {inst['package']} on the test machine" if inst else headline(phase, cur, rows))
     final = (bool(outcome) or phase == "could not start") if mode == "live" else \
         bool((replay or {}).get("final")) if is_replay else not live
     cls = PHASE_CLASS.get(phase, "s-idle")
@@ -392,7 +419,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
   {replay_bar}
   <p class="eyebrow">{f'{e(who)} · Issue #{e(issue.get("number"))} · {e(model)}' if issue else 'New run'}{last_seen}</p>
   <h1>{e(issue.get('title') or ('Getting ready' if not s else 'Run ' + rid))}</h1>
-  <p class="status {cls}" role="status"><span class="dot"></span><span>{e("Waiting for your answer: install a package?" if d.get("ask") and phase == "waiting" else headline(phase, cur, rows))}</span>{f'<span class="sub">· {_since(d, running_since, is_replay)}</span>' if running_since else ''}</p>
+  <p class="status {cls}" role="status"><span class="dot"></span><span>{e(status_line)}</span>{f'<span class="sub">· {_since(d, running_since, is_replay)}</span>' if running_since else ''}</p>
   {fresh_line(s)}
   <ol class="track" style="--n:{len(rows)}" aria-label="The {len(rows)} steps">{nodes}</ol>
 </header>"""
@@ -424,6 +451,9 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
             trail = step_btns.get(r["key"], "") + trail
             if r["key"] == "approval" and d["pr_text"]:
                 trail = pr_btn + trail
+        elif st == "running" and inst and r["key"] == "reproduce":
+            sub = f"Installing {inst['package']} on the test machine · about {inst['minutes']} minutes"
+            trail = _since(d, inst["at"], is_replay)
         elif st == "running":
             sub = " · ".join(chips[-2:] + ([cnt] if cnt else [])) or "Starting this step"
             trail = _since(d, d.get("since"), is_replay)
@@ -489,7 +519,9 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
             "starting": ("Getting ready", "Checking that everything it needs is running.", ""),
             "could not start": ("Could not start", "Fix the items listed on this page, then start again.",
                                 _link("/", "New run", icons.plus(16), True) if served else ""),
-            "working": ("Nothing to do right now", "This page updates by itself.", ""),
+            "working": ((f"Installing {inst['package']}", f"The test machine is being rebuilt with it, about "
+                         f"{inst['minutes']} minutes. Then the run goes on. This page updates by itself.", "")
+                        if inst else ("Nothing to do right now", "This page updates by itself.", "")),
             "interrupted": ("Interrupted", f"Nothing has happened for {quiet}. Continue it from your terminal.", _copy(resume, "Copy resume command", True)),
             "crashed": ("Crashed", "Continue it from your terminal.", _copy(resume, "Copy resume command", True)),
             "waiting": (("Install a package?", f"{(d.get('ask') or {}).get('package')} isn't installed on the test machine, so "
@@ -548,7 +580,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
 
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 {'<meta http-equiv="refresh" content="3">' if live and not served else ''}
-<title>{e("Waiting for your answer" if d.get("ask") and phase == "waiting" else headline(phase, cur, rows))} · {plain.NAME}</title>
+<title>{e("Waiting for your answer" if d.get("ask") and phase == "waiting" else status_line)} · {plain.NAME}</title>
 <meta name="color-scheme" content="dark light">
 {css}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>

@@ -71,7 +71,7 @@ def happened(x: dict) -> str | None:
         return (f"On main at {str(x.get('commit', ''))[:7]}, fetched just now"
                 + (f"; rebuilt {n} changed package{'s' * (n != 1)}" if n else "")
                 + ("; installed the new package list" if x.get("installed") else ""))
-    if k == "install" and str(x.get("key", "")).endswith("-built"):
+    if k == "install" and "seconds" in x:   # the rebuild finished (events come without their key)
         return f"Installed {x.get('package')} on the test machine"
     if k == "install":
         return f"You answered {x.get('answer')}: install {x.get('package')}"

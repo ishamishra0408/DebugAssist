@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from debug_assist import graph, pkgcheck, profiles, server, viewer
+from debug_assist import graph, pkgcheck, plain, profiles, server, viewer
 from debug_assist.profiles import PROFILES
 from test_viewer import _data, _sheet
 
@@ -94,6 +94,33 @@ def test_the_page_asks_in_a_popup_and_a_saved_page_gives_the_commands():
     assert 'a.showPopover()' in page                                                      # it opens by itself
     saved = viewer.render(d)
     assert "data-install" not in saved and "uv run debug-assist answer ai-1-x yes" in saved
+
+
+def test_once_you_say_install_the_page_says_it_is_installing_until_the_machine_is_rebuilt():
+    """Isha 2026-10-10 (#22543): "when I click install, it should show that it is now installing". The checkpoint still
+    holds the question until Show the bug ends, so the answer is read from the events."""
+    ask = {"kind": "install", "package": "@ai-sdk/vue", "dir": "packages/vue", "repo": "vercel/ai", "minutes": 3}
+    asked_at = "2026-10-10T19:20:00+00:00"
+    # as the run's records hold them (the key is folded into the record's id)
+    tapped = {"kind": "decision", "decision": "install yes", "package": "@ai-sdk/vue", "at": "2026-10-10T19:25:00+00:00"}
+    built = {"kind": "install", "package": "@ai-sdk/vue", "seconds": 149, "at": "2026-10-10T19:28:00+00:00"}
+    assert viewer.answered(ask, [], asked_at) is None                                             # not answered yet
+    assert viewer.answered(ask, [{**tapped, "at": "2026-10-10T19:00:00+00:00"}], asked_at) is None   # an older question's
+    got = viewer.answered(ask, [tapped], asked_at)
+    assert (got["answer"], got["installing"], got["at"]) == ("yes", True, tapped["at"])
+    assert viewer.answered(ask, [tapped, built], asked_at)["installing"] is False                 # rebuilt: tests go on
+    assert viewer.answered(ask, [{**tapped, "decision": "install no"}], asked_at)["answer"] == "no"
+    run_said = {"kind": "install", "package": "@ai-sdk/vue", "answer": "yes", "at": "2026-10-10T19:25:01+00:00"}
+    assert viewer.answered(ask, [run_said], asked_at)["installing"] is True                       # answered in the terminal
+    assert plain.happened(built) == "Installed @ai-sdk/vue on the test machine"
+    assert plain.happened(run_said) == "You answered yes: install @ai-sdk/vue"
+    st = {k: v for k, v in _data()["state"].items() if k not in ("repro", "attempts", "fix_clock", "second_story")}
+    d = _data(state=st, interrupt={}, next=["reproduce"], ask=None, installing=got, events=[tapped],
+              since=asked_at, now="2026-10-10T19:26:00+00:00")
+    page = viewer.render(d, mode="live", token="t")
+    assert "Installing @ai-sdk/vue on the test machine · about 3 minutes" in page
+    assert "Installing @ai-sdk/vue on the test machine</span>" in page and "Install it?" not in page
+    assert 'data-install="yes"' not in page and "being rebuilt with it" in page
 
 
 def test_the_answer_continues_the_run_as_the_terminal_would(tmp_path, monkeypatch):
