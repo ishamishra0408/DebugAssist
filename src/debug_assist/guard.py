@@ -57,7 +57,9 @@ def sibling_sites(checkout: Path, lines, fixed_file: str, profile=None) -> list[
 def system(lang: langs.Lang) -> str:
     return f"""You write a LASTING GUARD: ONE {lang.framework} test file that fails whenever this CLASS of bug exists, not only the
 one case that was reported. {lang.guard_rules()}
-(for example every way a stream can end before a value is complete). Each case asserts the CORRECT behaviour and
+(for example every way a stream can end before a value is complete), every form the input can take (a plain object
+and a class instance of it, empty), and input that also sets what the code sets by default (the caller's value must
+win; review of run #22543: the fix kept its own default over the caller's). Each case asserts the CORRECT behaviour and
 shows the evidence on failure (compare the actual parts, not counts).
 Use only the setup and helpers shown. No network, no env vars. Fixture paths are relative to the package directory.
 Reply exactly:

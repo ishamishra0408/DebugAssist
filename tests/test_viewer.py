@@ -387,8 +387,15 @@ def test_the_steps_open_their_own_sheets_github_style():
     assert "not changed by this fix" in g and "kept with the run, not added to the pull request" in g
     from debug_assist import plain
     assert plain.result("lasting_guard", st) == "A 3-case test for bugs like this one: 2 covered by the fix, 1 still open; the same code is in 1 other files"
-    assert plain.result("test_past_bugs", {"backtest": {"state": "NO PAST SIBLING FOUND", "candidates": []}}).startswith(
-        "Saved how this bug slipped through, for finding similar bugs. Older versions were not checked")
+    hosted = {"backtest": {"state": "NO PAST SIBLING FOUND", "candidates": [],
+                           "detail": {"why": "the back-test runs only with the local sandbox for now"}}}
+    assert plain.result("test_past_bugs", hosted) == ("Saved how this bug slipped through, for finding similar bugs. "
+                                                      "Older versions were not checked: that works on the Mac only for now")
+    # review of run #22543: on the Mac, the real reason, not "Mac only"
+    no_anchor = {"backtest": {"state": "NO PAST SIBLING FOUND", "candidates": [], "detail": {
+        "why": "Why it slipped found no commit that wrote the line, so there is no older version to start from"}}}
+    assert plain.result("test_past_bugs", no_anchor).endswith("not checked: Why it slipped found no commit that wrote "
+                                                              "the line, so there is no older version to start from")
 
 
 def test_a_stopped_run_can_run_again_with_the_same_choices():
@@ -452,3 +459,13 @@ def test_code_change_shows_the_code_at_fault_and_the_fix_git_style(tmp_path, mon
     assert 'class="ddel"' in sh and "line 30 fixed" in sh and "Files changed <span class=cnt>1</span>" in sh
     none = viewer.render(_data(state={**st, "fix": {}}, patch=""), mode="live", token="t")
     assert "No change yet: Fix it writes it next." in _sheet(none, "codechange")
+
+
+def test_the_guard_says_which_cases_pass_on_the_old_code_on_purpose_and_what_it_checked():
+    """Review of run #22543 (F9): 2 of 10 cases (controls) pass on the old code; the page said every case failed, and
+    the words the symptom check used were dropped from the state."""
+    g = {"on_fixed": {"passed": [f"case {i}" for i in range(10)], "failed": [], "broken": []}, "covers": "headers in each form",
+         "checked_against": ["headers", "authorization"], "symptom_checked": True, "unfixed_passed": ["plain object", "empty Headers"]}
+    sheet = viewer.guard_sheet({"guard": g})
+    assert "8 of 10 cases failed on the old code" in sheet and "the other 2 pass there too, on purpose" in sheet
+    assert "<code>headers</code>, <code>authorization</code>" in sheet

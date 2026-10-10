@@ -216,12 +216,10 @@ def _fresh_code(s: RunState, prof) -> dict:
     p = fresh.plan(prof, copy, built, top["commit"])
     code = {**top, "built_from": built, "files_changed": p["files"], "lock_changed": p["lock_changed"],
             "build": p["build"], "build_cmd": p["build_cmd"]}
-    if p["lock_changed"] and CFG.sandbox_backend == "e2b":   # the package list changed: rebuild the machine at main
-        events.log("code", key="rebuild", commit=top["commit"], reason="the package list changed since the test machine was built")
-        pkgcheck.rebuild(dataclasses.replace(prof, base_commit=top["commit"]), copy)
-        fresh.record_machine(prof.repo, top["commit"])
-        code.update(built_from=top["commit"], build=[], build_cmd="", lock_changed=False, rebuilt=True)
-        fresh.move(copy, top["commit"], top["commit"])
+    if p["lock_changed"] and CFG.sandbox_backend == "e2b":
+        # the package list changed: the machine is rebuilt at main once, at the start of Show the bug, together with
+        # any package that turns out to be missing (review of run #22543: rebuilt here, then again for @ai-sdk/vue)
+        code.update(rebuild_pending=True)
     on_commit(prof, copy, code)
     events.log("code", key="main", commit=top["commit"], fetched_at=top["fetched_at"], built_from=code["built_from"],
                files_changed=p["files"], build=code["build"], rebuilt=bool(code.get("rebuilt")),
@@ -271,7 +269,7 @@ def _existing_tests(s: RunState, checkout: Path, ctx, prof) -> dict:
     pkg = getattr(ctx, "package_dir", "") or lang.package_of(ctx.source)
     focus = s.get("focus") or s["issue"]["title"]
     try:
-        cmd = lang.test_command(pkg)
+        cmd = lang.test_command(pkg, where=checkout)
     except ValueError as ex:
         return {"status": "NOT CHECKED", "why": str(ex), "package": pkg}
     r = run_in_sandbox(cmd, checkout, network=False, timeout=600, image=prof.image)
@@ -310,12 +308,14 @@ def _after_fix(s: RunState, prof, checkout: Path, paths: list) -> list[dict]:
             dest.write_text(shelved.read_text())
             put_back = True
         try:
-            cmd = lang.test_command(lang.package_of(rel), rel)
+            cmd = lang.test_command(lang.package_of(rel), rel, where=checkout)
             r = run_in_sandbox(cmd, checkout, network=False, timeout=300, image=prof.image)
             text = (r.stdout or "") + (r.stderr or "")
             outcome, line = ladder.classify(prof.language, r.returncode, text)
+            changed = [p for p in diffview.changed_paths(checkout) if not diffview.is_test(p)]
+            line = line.replace("on the unfixed code", "with the fix")
             proof = testwriter.write_proof(run_dir(s) / "proof", rel, dest.read_text(), cmd, r.returncode, text, outcome,
-                                           line, prof, checkout, name=f"after-fix-{Path(rel).name}")
+                                           line, prof, checkout, name=f"after-fix-{Path(rel).name}", fixed=changed or ["source"])
             out.append({"test_path": rel, "outcome": outcome, "line": line, "proof": str(proof)})
             events.log("after_fix", key=rel, test=rel, outcome=outcome)
         finally:
@@ -338,6 +338,8 @@ def _install_if_missing(s: RunState, checkout: Path, ctx, plan: dict, seen) -> d
     pkg = getattr(ctx, "package_dir", "") or langs.of(prof).package_of(ctx.source)
     gap = pkgcheck.missing(prof, checkout, pkg)
     if not gap:
+        if (s.get("code") or {}).get("rebuild_pending"):
+            return _rebuild_at_main(s, prof, checkout, plan, seen)
         return None
     answer = interrupt({"kind": "install", "package": gap["name"], "dir": gap["dir"], "repo": prof.repo,
                        "minutes": pkgcheck.MINUTES})
@@ -351,7 +353,9 @@ def _install_if_missing(s: RunState, checkout: Path, ctx, plan: dict, seen) -> d
         events.log("install", key=f"{gap['name']}-no", package=gap["name"], answer="no")
         return stopped(f"{gap['name']} is not installed on the test machine, and you chose not to install it")
     events.log("install", key=f"{gap['name']}-yes", package=gap["name"], answer="yes")
-    machine_at = (s.get("code") or {}).get("built_from") or prof.base_commit   # rebuild where the machine is now
+    code = s.get("code") or {}
+    pending = code.get("rebuild_pending")   # hosted, the package list changed too: one rebuild, at main
+    machine_at = code["commit"] if pending else code.get("built_from") or prof.base_commit
     plus = dataclasses.replace(prof, filters=(prof.filters + f" --filter '{gap['name']}...'").strip(), base_commit=machine_at)
     t0 = time.monotonic()
     try:
@@ -359,9 +363,59 @@ def _install_if_missing(s: RunState, checkout: Path, ctx, plan: dict, seen) -> d
     except Exception as ex:
         return stopped(f"installing {gap['name']} failed: {str(ex)[:300]}")
     events.log("install", key=f"{gap['name']}-built", package=gap["name"], seconds=round(time.monotonic() - t0))
+    if pending:
+        _machine_at_main(s, prof, checkout)
     if pkgcheck.missing(plus, checkout, pkg, trust_list=False):
         return stopped(f"{gap['name']} is still not installed after the rebuild")
     pkgcheck.add(prof.repo, gap["name"])   # for good: later runs of this repo never ask again
+    return None
+
+
+def time_away(evs: list[dict], start: str, stop_: str) -> dict:
+    """Time inside the fix clock that is not the pipeline fixing (review of run #22543: 62 s waiting for the install
+    answer and 149 s of installing were counted): waiting for a person's answer, and installing packages."""
+    t = datetime.fromisoformat
+    mine = [x for x in evs if start <= x["at"] <= stop_]
+    waiting = 0.0
+    for i, x in enumerate(mine):
+        if x.get("kind") == "step" and x.get("ended") == "paused for approval":
+            answer = next((y for y in mine[i + 1:] if y.get("kind") in ("decision", "install") and
+                           (y.get("answer") or y.get("decision"))), None)
+            waiting += (t(answer["at"]) - t(x["at"])).total_seconds() if answer else 0.0
+    installing = sum(float(x.get("seconds") or 0) for x in mine
+                     if (x.get("kind") == "install" and "answer" not in x) or (x.get("kind") == "prepare" and x.get("what") == "install")
+                     or (x.get("kind") == "code" and "seconds" in x))
+    return {"waiting_for_you": round(waiting, 1), "installing": round(installing, 1)}
+
+
+def _machine_at_main(s: RunState, prof, checkout: Path) -> None:
+    """The test machine now stands at main: recorded for later runs, and in this run's copy and state."""
+    from . import fresh
+    code = s["code"]
+    fresh.record_machine(prof.repo, code["commit"])
+    fresh.move(checkout, code["commit"], code["commit"])
+    s["code"] = {**code, "built_from": code["commit"], "build": [], "build_cmd": "", "lock_changed": False,
+                 "rebuild_pending": False, "rebuilt": True}
+
+
+def _rebuild_at_main(s: RunState, prof, checkout: Path, plan: dict, seen) -> dict | None:
+    """Hosted: the package list changed since the test machine was built; rebuild it at main, once."""
+    import dataclasses
+    import time
+    from . import pkgcheck
+    code = s["code"]
+    events.log("code", key="rebuild", commit=code["commit"], reason="the package list changed since the test machine was built")
+    t0 = time.monotonic()
+    try:
+        pkgcheck.rebuild(dataclasses.replace(prof, base_commit=code["commit"]), checkout)
+    except Exception as ex:
+        why = f"rebuilding the test machine at main failed: {str(ex)[:300]}"
+        return {"repro": {"status": "NOT RUN", "ladder_plan": plan, "attempts_used": 0, "failing_test": None,
+                          "oracle_test": None, "checkout": str(checkout), "sandbox_secrets_visible": seen},
+                "outcome": stop(TEST_MACHINE_NOT_READY, f"{why}; no test was written"),
+                "log": [f"reproduce: STOPPED {TEST_MACHINE_NOT_READY}: {why}"]}
+    events.log("code", key="rebuilt", commit=code["commit"], seconds=round(time.monotonic() - t0))
+    _machine_at_main(s, prof, checkout)
     return None
 
 
@@ -391,6 +445,15 @@ def shelve_drafts(checkout: Path, rdir: Path, paths: list, keep: str | None) -> 
 
 
 def reproduce(s: RunState):
+    s = dict(s)
+    before = s.get("code")
+    out = _reproduce(s)
+    if s.get("code") is not before and isinstance(out, dict):   # the test machine was rebuilt at main in this step
+        out["code"] = s["code"]
+    return out
+
+
+def _reproduce(s: RunState):
     work = run_dir(s) / "sandbox"
     work.mkdir(exist_ok=True)
     image = s["profile"]["image"]
@@ -540,8 +603,9 @@ def write_fix(s: RunState):
         fix["after_fix"] = _after_fix(s, prof, checkout, [r.get("failing_test"), r.get("oracle_test")])
     clock = dict(s["fix_clock"])
     clock["stopped_at"] = now()
-    clock["seconds"] = round((datetime.fromisoformat(clock["stopped_at"])
-                              - datetime.fromisoformat(clock["started_at"])).total_seconds(), 1)
+    total = (datetime.fromisoformat(clock["stopped_at"]) - datetime.fromisoformat(clock["started_at"])).total_seconds()
+    clock["excluded"] = time_away(events.for_run(s["run_id"]), clock["started_at"], clock["stopped_at"])
+    clock["seconds"] = round(max(0.0, total - sum(clock["excluded"].values())), 1)
     # ⏱ counts only a fix confirmed by TWO independent tests (its judge + a fresh one written without seeing it), with
     # every suite green. Dev run 2026-10-07: a one-judge "validated" fix failed all 3 by-hand reference tests.
     clock["judges"] = fixer.judge_count(fix["status"], ho)
@@ -637,7 +701,11 @@ def lasting_guard(s: RunState):
                       "repo_path": g["repo_path"], "on_fixed": g["on_fixed"], "open_cases": open_cases,
                       "broken_cases": g.get("broken_cases", []) + g["on_fixed"].get("broken", []),
                       "siblings": siblings, "created_at": created, "a1_class": a["choice"],
-                      "a1_p": a["answer_confidence"]},
+                      "a1_p": a["answer_confidence"],
+                      # what its symptom check used, and the cases that pass on the old code too (controls; review of
+                      # run #22543: both were dropped, and the page said every case failed there)
+                      "checked_against": g.get("checked_against") or [], "symptom_checked": g.get("symptom_checked"),
+                      "unfixed_passed": (g.get("on_unfixed") or {}).get("passed") or []},
             "log": [f"lasting_guard: catches the bug on the unfixed code; fixed code passes "
                     f"{len(g['on_fixed']['passed'])}, still open {len(open_cases)}; {len(siblings)} sibling site(s); "
                     f"Laya A1 → {a['choice']} p={a['answer_confidence']}"]}
@@ -659,6 +727,9 @@ def _ensure_vector_index(dims: int, wait_s: int = 90) -> bool:
     return False
 
 
+SIMILAR_MIN = 0.8   # a stored bug this close (vector score) counts as the same kind; below, only "nearest"
+
+
 def test_past_bugs(s: RunState):
     cond = s["condition"]["text"]
     verify_condition_frozen(LEDGER, s["run_id"], cond, s["guard"]["created_at"])  # guardrail 3
@@ -677,6 +748,7 @@ def test_past_bugs(s: RunState):
                 {"$project": {"_id": 0, "run_id": 1, "issue_url": 1, "text": 1,
                               "score": {"$meta": "vectorSearchScore"}}}])
                     if h["issue_url"] != s["issue_url"]]  # a sibling is a DIFFERENT issue, not an earlier run of this one
+    close = [h for h in hits if h.get("score", 0) >= SIMILAR_MIN]
     stored = not cond.startswith("PLACEHOLDER")  # placeholders would show up as false siblings for every issue
     if stored:  # upsert: a resumed run that re-runs this step must not store its condition twice
         CONDITIONS.update_one({"run_id": s["run_id"]}, {"$set": {
@@ -686,12 +758,14 @@ def test_past_bugs(s: RunState):
         state = "UNEVALUABLE (the corpus holds no other issue to search; not the same as no siblings)"
     elif not can_look:
         state = "UNEVALUABLE (search index not ready; not the same as no siblings)"
-    elif hits:
-        state = "CANDIDATES FOUND (back-test runs Friday)"
+    elif close:
+        state = "CANDIDATES FOUND"
+    elif hits:   # review of run #22543: "1 similar bug" was the only other issue stored, about something else
+        state = f"NO PAST SIBLING FOUND (nearest of {others} stored: {hits[0]['score']:.2f}, below {SIMILAR_MIN})"
     else:
         state = "NO PAST SIBLING FOUND"
     bt = _backtest_guard(s)
-    result = {"state": state, "searched_conditions": searched, "other_issues": others, "candidates": hits[:3],
+    result = {"state": state, "searched_conditions": searched, "other_issues": others, "candidates": close[:3],
               "would_have_caught": bt.get("would_have_caught") if bt else None,
               "false_alarms": bt.get("false_alarms") if bt else None, "detail": bt}
     fa = (bt or {}).get("false_alarms") or {}
@@ -700,7 +774,7 @@ def test_past_bugs(s: RunState):
                 f"bug already there {fa['bug_already_there']}, unevaluable {fa['unevaluable']} over "
                 f"{fa['commits_covered']} of {fa['window']} commits")
     else:
-        note = "; back-test not run: " + ((bt or {}).get("why") or "no guard or no anchor commit")
+        note = "; back-test not run: " + ((bt or {}).get("why") or "")
     return {"backtest": result, "log": [f"test_past_bugs: {state} ({len(hits)} candidates){note}"]}
 
 
@@ -722,8 +796,11 @@ def _backtest_guard(s: RunState) -> dict | None:
     """🎯 would-have-caught + false alarms (backtest.py): the guard at the commit that wrote the bug, and before it."""
     g = s.get("guard") or {}
     w = ((s.get("second_story") or {}).get("evidence") or {}).get("written") or {}
-    if g.get("status") != "CATCHES THE BUG" or not w.get("sha"):
-        return None
+    if g.get("status") != "CATCHES THE BUG":   # the page says the real reason (review of run #22543)
+        return {"would_have_caught": None, "why": "there is no guard that catches the bug to test"}
+    if not w.get("sha"):
+        return {"would_have_caught": None, "why": "Why it slipped found no commit that wrote the line, so there is no "
+                                                  "older version to start from"}
     prof = profiles.get(s["profile"]["repo"])
     return backtest.backtest(s["issue"], prof, base_path(prof), run_dir(s) / "history", langs.of(prof).package_of(g["repo_path"]),
                              judges=incident_tests(s),
@@ -839,8 +916,11 @@ def compose_pr_body(s: RunState, patch: str = "") -> str:
     files = diffview.parse(patch)
     src = [x for x in files if not diffview.is_test(x["path"])]
     tests = [x for x in files if diffview.is_test(x["path"])]
+    src = [x for x in src if not x["path"].startswith(".changeset/")]
     ho = f.get("holdout") or {}
     held = {ho.get("test"), (ho.get("third") or {}).get("test")} - {None}
+    judge = r.get("oracle_test") or r.get("failing_test")
+    named = {pr_test_name(judge, s): judge} if judge else {}   # the PR's name for the judge → the run's
     two = fixer.judge_count(f.get("status", ""), ho) == 2
     out = ["## Summary",
            f"{_sentence(c.get('why'))} {_sentence(c.get('plan'))}".strip() or i["title"], "",
@@ -857,18 +937,25 @@ def compose_pr_body(s: RunState, patch: str = "") -> str:
     for kind, label in (("unit", "Unit"), ("integration", "Integration"), ("automation", "Automation (end-to-end)")):
         mine = [x for x in tests if diffview.kind_of_test(x["path"]) == kind]
         for x in mine:
+            x = {**x, "path": named.get(x["path"], x["path"])}
             if x["path"] in held:
                 out.append(f"- **{label} test**, added `{x['path']}`: a second test of the same problem, written without "
                            "seeing this change; fails on `main`, passes with it.")
             else:
                 ev = r.get("oracle_evidence") if x["path"] == r.get("oracle_test") else r.get("evidence")
-                out.append(f"- **{label} test**, added `{x['path']}`: fails on `main` with `{_first_failure(ev)}`, "
-                           "passes with this change.")
+                out.append(f"- **{label} test**, added `{pr_test_name(x['path'], s)}`: fails on `main` with "
+                           f"`{_first_failure(ev)}`, passes with this change.")
         if not mine:
             reason = skipped.get("end_to_end" if kind == "automation" else kind)
             out.append(f"- **{label} test**: none added. " + (
                 f"{why_not.get(kind, reason)[:1].upper()}{why_not.get(kind, reason)[1:]}." if reason else
                 "The tests above show the problem and its fix."))
+    kept = [t for t in sorted(held) if t != judge and t not in [x["path"] for x in tests]]
+    if kept:
+        out.append("- **Also checked, kept with the run** (not added here): " + "; ".join(f"`{Path(t).name}`" for t in kept)
+                   + ", written without seeing this change; fails on `main`, passes with it.")
+    if any(x["path"].startswith(".changeset/") for x in files):
+        out.append("- **Changeset**: a patch release note for the changed package, as the repo asks.")
     ex = r.get("existing_tests") or {}
     if f.get("suites"):
         out.append(f"- **Existing tests**: still pass in {', '.join(f['suites'])}"
@@ -896,17 +983,58 @@ def _sentence(text) -> str:
     return t if not t or t.endswith((".", "!", "?")) else t + "."
 
 
+def pr_test_name(rel: str, s: RunState) -> str:
+    """The name a run's test takes in the pull request: after the file it tests and the issue, not the pipeline
+    (review of run #22543: `da-repro-22543-unit-2.ui.test.ts` → `use-object.issue-22543.ui.test.ts`)."""
+    stem = Path((s.get("cause") or {}).get("file") or "x").stem.split(".")[0]
+    n = s["issue"]["number"]
+    if Path(rel).name.startswith("test_da_"):   # pytest
+        return str(Path(rel).with_name(f"test_{stem}_issue_{n}.py"))
+    return re.sub(rf"da-repro-{n}(?:-[a-z]+)?(?:-\d+)?(?=\.)", f"{stem}.issue-{n}", rel)
+
+
+def _split_patch(patch: str) -> list[tuple[str, str]]:
+    parts = re.split(r"(?m)^(?=diff --git )", patch or "")
+    return [(m.group(1), p) for p in parts if (m := re.match(r"diff --git a/(.+?) b/", p))]
+
+
+def _changeset(s: RunState, checkout: Path, src_paths: list[str]) -> str:
+    """A repo that keeps a `.changeset/` folder wants one with every package change (vercel/ai's CONTRIBUTING; review
+    of run #22543: the PR had none). A patch release of each package the fix changed."""
+    if not (checkout / ".changeset").is_dir() or not src_paths:
+        return ""
+    lang, names = langs.of(profiles.get(s["profile"]["repo"])), []
+    for path in src_paths:
+        try:
+            name = json.loads((checkout / lang.package_of(path) / "package.json").read_text()).get("name")
+        except (OSError, ValueError):
+            name = None
+        if name and name not in names:
+            names.append(name)
+    if not names:
+        return ""
+    text = "---\n" + "".join(f"'{n}': patch\n" for n in names) + "---\n\n" + commit_message(s).splitlines()[0] + "\n"
+    return diffview.new_file_diff(f".changeset/debugassist-fix-{s['issue']['number']}.md", text)
+
+
 def _pr_change(s: RunState) -> str:
-    """The change the PR carries: the fix and the run's new tests in the fixed code, plus a test that was moved out of
-    the code but passes on the fix (the first one that showed the bug), each as a new file."""
+    """The change the PR carries: the fix, ONE test (the one that judged it), named after the file it tests, and a
+    changeset where the repo keeps them. Review of run #22543: two near-identical run tests in src/ and no changeset
+    made the PR unmergeable as written; the other tests are named in the PR text and stay with the run."""
     checkout = Path((s.get("repro") or {}).get("checkout") or run_dir(s) / "checkout")
     patch = diffview.pr_patch(checkout) if (checkout / ".git").exists() else ""
-    have = {x["path"] for x in diffview.parse(patch)}
-    for af in (s.get("fix") or {}).get("after_fix") or []:
-        shelved = run_dir(s) / "attempt-tests" / Path(af["test_path"]).name
-        if af.get("outcome") == "GREEN" and af["test_path"] not in have and shelved.exists():
-            patch += diffview.new_file_diff(af["test_path"], shelved.read_text(errors="replace"))
-    return patch
+    r = s.get("repro") or {}
+    judge = r.get("oracle_test") or r.get("failing_test")
+    out, src = "", []
+    for path, part in _split_patch(patch):
+        if diffview.is_test(path) and "new file mode" in part.split("@@", 1)[0] and path != judge:
+            continue   # another run test: named in the PR text, kept with the run
+        if diffview.is_test(path) and path == judge and "new file mode" in part.split("@@", 1)[0]:
+            part = part.replace(path, pr_test_name(path, s))
+        elif not diffview.is_test(path):
+            src.append(path)
+        out += part if part.endswith("\n") else part + "\n"
+    return out + _changeset(s, checkout, src)
 
 
 def approval(s: RunState):

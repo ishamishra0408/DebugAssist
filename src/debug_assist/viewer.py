@@ -1128,13 +1128,17 @@ def context_sheet(pack: dict, c: dict, repo: str = "", base: str = "") -> str:
     iss, code = pack.get("issue") or {}, pack.get("code") or {}
     ctx = code.get("ctx") or {}
     cs, links = iss.get("comments") or [], iss.get("linked") or []
+    fixes = {p["number"]: p.get("files") or [] for p in iss.get("fix_prs") or []}   # PRs read in full (review of #22543)
     conv = "".join(f'<div class="gh-comment"><div class="gh-comment-head"><b>Comment {i}</b> · commented on {e(str(x.get("at") or "")[:10])}</div>'
                    f'{_md(x.get("text", ""))}</div>' for i, x in enumerate(cs, 1)) or '<p class="gh-muted">The issue has no comments.</p>'
     if links:
         conv += ('<div class="gh-box"><div class="gh-box-head"><span>Linked issues and pull requests</span></div>'
                  + "".join(f'<div class="gh-check"><span class="gh-dot {"ok" if x.get("merged") else "muted"}"></span>'
-                           f'<span class="gh-cname"><b>{e(x.get("title", ""))}</b><span class="gh-muted">{e(x.get("repo", ""))}#{e(x.get("number", ""))} · '
-                           f'{"pull request" if x.get("pull_request") else "issue"} · {e(x.get("state", ""))}{" · merged" if x.get("merged") else ""}</span></span></div>'
+                           f'<span class="gh-cname"><b>{_gh_link(x.get("repo", ""), ("pull/" if x.get("pull_request") else "issues/") + str(x.get("number", "")), x.get("title", ""))}</b>'
+                           f'<span class="gh-muted">{e(x.get("repo", ""))}#{e(x.get("number", ""))} · '
+                           f'{"pull request" if x.get("pull_request") else "issue"} · {e(x.get("state", ""))}{" · merged" if x.get("merged") else ""}'
+                           f'{" · " + e(x["found"]) if x.get("found") else ""}'
+                           f'{" · changes " + e(", ".join(Path(f).name for f in fixes[x.get("number")][:4])) if fixes.get(x.get("number")) else ""}</span></span></div>'
                            for x in links) + '</div>')
     errs = (iss.get("errors") or {})
     if errs.get("errors") or errs.get("frames"):
@@ -1173,6 +1177,15 @@ def context_sheet(pack: dict, c: dict, repo: str = "", base: str = "") -> str:
     shared = "".join(f'<details class="dfile"><summary><span class="dpath">{e(r["name"])}</span><span class="dtag">from {e(r.get("module", ""))} · '
                      f'used in {e(r.get("used_in", 0))} files</span></summary><pre class="gh-pre">{e(str(r.get("definition", ""))[:6000])}</pre></details>'
                      for r in rel) or '<p class="gh-muted">No shared code was called near the problem.</p>'
+    par, hp = code.get("parallels") or [], code.get("helpers") or []
+    if par:   # how the repo already does the same thing (review of run #22543)
+        shared += ('<p class="gh-muted gh-pad">The same file in other packages</p>' + "".join(
+            f'<details class="dfile"><summary><span class="dpath">{e(x["path"])}</span><span class="dtag">how this repo '
+            f'already does it</span></summary>{_blob(x.get("snippets", ""), [])}</details>' for x in par))
+    if hp:
+        shared += ('<p class="gh-muted gh-pad">Helpers the repo already exports for these names</p>' + "".join(
+            f'<details class="dfile"><summary><span class="dpath">{e(h["name"])}</span><span class="dtag">{e(h["path"])}:{e(h["line"])}'
+            f'</span></summary><pre class="gh-pre">{e(str(h.get("definition", ""))[:3000])}</pre></details>' for h in hp))
     n = pack.get("counts") or {}
     def many(k, one, more):
         return f"{k} {one if k == 1 else more}"
@@ -1184,7 +1197,7 @@ def context_sheet(pack: dict, c: dict, repo: str = "", base: str = "") -> str:
              f'<p class="gh-muted gh-fp">Show the bug, Find the cause and Fix it read only this context.</p>')
     return _sheet("ctxinfo", "Context info", f'Context for issue <span class="gh-muted">#{e(iss.get("number", ""))}</span>', meta, panes,
                   [("conv", "Conversation", len(cs)), ("commits", "Commits", sum(len(h.get("changes") or []) for h in hist)),
-                   ("code", "Code", len(ranking)), ("shared", "Shared code", len(rel))])
+                   ("code", "Code", len(ranking)), ("shared", "Shared code", len(rel) + len(par) + len(hp))])
 
 
 def _file_at_fault(rid: str, path: str) -> str:
@@ -1278,8 +1291,12 @@ def guard_sheet(s: dict, ai: str = "") -> str:
         return "".join(f'<div class="gh-check"><span class="gh-dot {dot}"></span><span class="gh-cname"><b>{e(str(n)[:200])}</b>'
                        f'<span class="gh-muted">{why}</span></span><span class="gh-st {dot}">{word}</span></div>' for n in names)
     sib = g.get("siblings") or []
+    controls = g.get("unfixed_passed") or []
+    on_old = (f"{total - len(controls)} of {total} cases failed on the old code, so the test would have caught this bug; "
+              f"the other {len(controls)} pass there too, on purpose: they check that input that already worked keeps working."
+              if controls else "Every case failed on the old code, so the test would have caught this bug.")
     body = (f'<div class="gh-annot muted"><b>What it is</b><p>One extra test with {total} cases. Each case is a different way '
-            f'this kind of bug can happen. Every case failed on the old code, so the test would have caught this bug. On the '
+            f'this kind of bug can happen. {e(on_old)} On the '
             f'fixed code, a passing case is covered by the fix; a failing one is a gap the fix leaves open.</p>'
             f'<p><span class="gh-muted">What it checks:</span> {e(g.get("covers") or g.get("text") or "")}</p>'
             + (f'<p><span class="gh-muted">A failing case counts when its failure shows one of:</span> '

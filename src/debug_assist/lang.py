@@ -92,19 +92,22 @@ class Lang:
         return path if pkg_dir in (".", "") else str(Path(path).relative_to(pkg_dir))
 
     # ── running ──────────────────────────────────────────────────────────────────────────────────
-    def test_command(self, pkg_dir: str, test_path: str = "", extra: str = "") -> str:
-        """One test file (test_path repo-relative) or, with no test_path, the package's whole suite."""
+    def test_command(self, pkg_dir: str, test_path: str = "", extra: str = "", where=None) -> str:
+        """One test file (test_path repo-relative) or, with no test_path, the package's whole suite. where: the copy of
+        the code it runs in (its package.json says which script), else the repo's prepared copy."""
         rel = self.within(test_path, pkg_dir) if test_path else ""
         return (self.p.env + self.p.test_cmd.format(package=Path(pkg_dir).name, package_dir=pkg_dir,
                                                     test_path=f"{rel} {extra}".strip(),
-                                                    script=self.test_script(pkg_dir))).rstrip()
+                                                    script=self.test_script(pkg_dir, where))).rstrip()
 
-    def test_script(self, pkg_dir: str) -> str:
+    def test_script(self, pkg_dir: str, where=None) -> str:
         """The package's own script for its node tests: `test:node` where it has one, else `test` (vercel/ai's vue,
-        react, svelte and otel have only `test`; found 2026-10-10). Read from the repo's prepared copy."""
+        react, svelte and otel have only `test`; found 2026-10-10). Read from the run's own copy, on main (review of run
+        #22543: it was read from the saved copy, which can be days older), else the repo's prepared copy."""
         try:
             from .checkout import base_path
-            scripts = json.loads((base_path(self.p) / pkg_dir / "package.json").read_text()).get("scripts") or {}
+            root = Path(where) if where else base_path(self.p)
+            scripts = json.loads((root / pkg_dir / "package.json").read_text()).get("scripts") or {}
         except (OSError, ValueError, AttributeError, TypeError):
             return "test:node"
         return "test:node" if "test:node" in scripts or "test" not in scripts else "test"
@@ -459,7 +462,7 @@ class NodeScripts(JS):
     def example_test(self, checkout, source):
         return Lang.example_test(self, checkout, source)  # tests sit in their own folder, not beside the source
 
-    def test_command(self, pkg_dir, test_path="", extra=""):
+    def test_command(self, pkg_dir, test_path="", extra="", where=None):
         rel = self.within(test_path, pkg_dir) if test_path else self.p.test_glob
         if not rel:
             raise ValueError("no test files to run (the profile lists none)")

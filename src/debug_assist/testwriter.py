@@ -352,15 +352,26 @@ def check_terms(focus: str, evidence: str = "") -> list[str]:
     return terms + [t for t in evidence_terms(evidence) if t not in terms]
 
 
+def _forms(term: str) -> set[str]:
+    """A term and its singular (`headers` also matches a dropped `x-repro-header`; review of run #22543)."""
+    t = term.lower()
+    return {t, t[:-1]} if len(t) > 5 and t.endswith("s") and not t.endswith("ss") else {t}
+
+
+def matched(focus: str, output: str, evidence: str = "") -> list[str]:
+    """Which of the check's terms the failing assertion shows (the page says so)."""
+    said = [re.sub(r"AssertionError", "", a).lower() for a in assertion_text(output)]
+    hits = [t for t in check_terms(focus, evidence) if any(f in a for a in said for f in _forms(t))]
+    return [t for i, t in enumerate(hits) if t.lower() not in {h.lower() for h in hits[:i]}]
+
+
 def right_reason(focus: str, output: str, evidence: str = "") -> bool | None:
     """Does the failing assertion show the bug? Checked against the focus's code strings and, once the bug has been
     shown, against what the reproducing test's failure showed (`evidence`). Trial 2026-10-07: a test of the issue's
     OTHER problem failed on a wrong expectation and read as RED. None = nothing to check against (can't tell)."""
-    terms = check_terms(focus, evidence)
-    if not terms:
+    if not check_terms(focus, evidence):
         return None
-    said = [re.sub(r"AssertionError", "", a).lower() for a in assertion_text(output)]
-    return any(t.lower() in a for a in said for t in terms)
+    return bool(matched(focus, output, evidence))
 
 
 def shows_bug(focus: str, output: str, evidence: str = "") -> tuple[bool, bool]:
@@ -376,22 +387,31 @@ def shows_bug(focus: str, output: str, evidence: str = "") -> tuple[bool, bool]:
 NOT_CHECKED = "symptom check: not possible (the issue quotes no code); counted because it failed on an assertion"
 
 
+# chai's "AssertionError: <the test's own message>: expected …": the message is the writer's words, not the code's
+_OWN_MESSAGE = re.compile(r"^(.*?AssertionError(?: \[\w+\])?:\s*)(?!expected\b)\S.*?:\s+(expected\b.*)$")
+
+
 def assertion_text(output: str) -> list[str]:
     """Only what the failed assertions SAY about what was RECEIVED: the message line plus the "+" (received) side of
     its diff, never the expected side and never the source lines the runner prints around them.
+    Review of run #22543 (2026-10-10): (1) a bug that DROPS something leaves nothing on the received side: when the
+    diff has no "+" line, its "-" lines (what went missing) are the evidence; (2) the test's own message is the
+    writer's words, so it never counts (two correct tests were thrown away, and the kept ones passed on their message).
     Trial 2026-10-07 (1): "tool-call" in a code comment beside the assertion made a wrong-reason failure look right.
     Trial 2026-10-07 (2): vitest abbreviates the message (`{ toolCallParts: [ { …(4) } ] }`) and the evidence sits in
     the diff after a blank line; stopping at the blank line called a correct guard broken."""
     clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
     found = []
     for m in re.finditer(r"^.*AssertionError.*$", clean, re.M):
-        block = [m.group(0)]
+        block, dropped = [_OWN_MESSAGE.sub(r"\1\2", m.group(0))], []
         for line in clean[m.end() + 1:].splitlines()[:60]:
             if re.match(r"\s*(❯|\d+\||at |>\s|\S+\.(ts|js|py):\d+|⎯|FAIL\b)", line):
                 break  # vitest's source pointer / numbered source / stack frame / separator / next failure
             if line.startswith("+") and not line.startswith("+ Received"):
                 block.append(line)
-        found.append("\n".join(block))
+            elif line.startswith("-") and not line.startswith("- Expected"):
+                dropped.append(line)
+        found.append("\n".join(block + (dropped if len(block) == 1 else [])))   # only what went missing
     found += [l for l in clean.splitlines() if l.startswith("E   ")]  # pytest's assertion explanation lines
     found += _tap_errors(clean)
     return found
@@ -449,7 +469,7 @@ def attempt(state: dict, rung: ladder.Rung, n: int, history: list, ctx: Context,
     base = original(Path(checkout), into) if into else ""
     written = (base.rstrip("\n") + "\n\n" + content) if into else content
     (Path(checkout) / rel).write_text(written)
-    cmd = lang.test_command((lang.package_of(rel) if into else ctx.package_dir) or lang.package_of(rel), rel)
+    cmd = lang.test_command((lang.package_of(rel) if into else ctx.package_dir) or lang.package_of(rel), rel, where=checkout)
     r = (run_cmd or run_in_sandbox)(cmd, Path(checkout), network=False, timeout=300, image=profile.image)
     out = (r.stdout or "") + (r.stderr or "")
     outcome, line = ladder.classify(profile.language, r.returncode, out)
@@ -460,9 +480,10 @@ def attempt(state: dict, rung: ladder.Rung, n: int, history: list, ctx: Context,
     r0 = state.get("repro") or {}   # once the bug has been shown, a later test is checked against that failure too
     known = "" if step == "reproduce" else (r0.get("oracle_evidence") or r0.get("evidence") or "")
     focus_now = state.get("focus") or issue["title"]
-    checked = None
+    checked, hits = None, []
     if outcome == ladder.RED:
         shown, checked = shows_bug(focus_now, out, known)
+        hits = matched(focus_now, out, known) if shown and checked else []
         if not shown:
             terms = ", ".join(check_terms(focus_now, known))
             outcome, line = ladder.ERROR, (f"RED for another reason: the failure shows none of these: {terms}. A "
@@ -472,6 +493,7 @@ def attempt(state: dict, rung: ladder.Rung, n: int, history: list, ctx: Context,
     return ladder.Attempt(rung=rung.name, n=n, outcome=outcome,
                           evidence=(f"{line}" + (f"\n{detail}" if detail else "") +
                                     (f"\n{NOT_CHECKED}" if outcome == ladder.RED and checked is False else "") +
+                                    (f"\nsymptom check: the failure shows {', '.join(hits)}" if hits else "") +
                                     (f"\nwriter's symptom: {symptom}" if symptom else ""))[:1500],
                           test_path=rel)
 
@@ -494,10 +516,12 @@ def _head(checkout: Path) -> str:
 
 
 def write_proof(proof_dir: Path, rel: str, content: str | None, cmd: str, code: int, out: str, outcome: str, line: str,
-                profile, checkout: Path, name: str | None = None) -> Path:
+                profile, checkout: Path, name: str | None = None, fixed: list[str] | None = None) -> Path:
     """The proof that a test fails (or passes) on the unfixed code, as plain text anyone can check: the test's
     fingerprint, the code it ran against, the exact command, where and when it ran, the exit code and the whole
-    output. runs/<id>/proof/<test file name>.txt (Isha 2026-10-08: "attach proof that the bug reproduces")."""
+    output. runs/<id>/proof/<test file name>.txt (Isha 2026-10-08: "attach proof that the bug reproduces").
+    fixed: the source files the fix changed, when it ran on the fixed code (review of run #22543: the after-fix proof
+    said "source unchanged" and "passed on the unfixed code")."""
     import hashlib
     from datetime import datetime, timezone
     from .config import CFG
@@ -510,12 +534,13 @@ def write_proof(proof_dir: Path, rel: str, content: str | None, cmd: str, code: 
     f = proof_dir / f"{name or Path(rel).name}.txt"
     f.write_text(f"test file   {rel}\n"
                  f"sha256      {hashlib.sha256(content.encode()).hexdigest() if content is not None else '-'}\n"
-                 f"code        {profile.repo} at {_head(checkout) or (profile.base_commit or '')[:12]}: source unchanged, only new test files\n"
+                 f"code        {profile.repo} at {_head(checkout) or (profile.base_commit or '')[:12]}: "
+                 + (f"with the fix ({', '.join(fixed)} changed)" if fixed else "source unchanged, only new test files") + "\n"
                  f"ran         {cmd}\n"
                  f"where       {where}, internet off\n"
                  f"when        {datetime.now(timezone.utc).isoformat(timespec='seconds')}\n"
                  f"exit code   {code}\n"
-                 f"verdict     {outcome}: {line}\n"
+                 f"verdict     {outcome}: {line.replace('on the unfixed code', 'with the fix') if fixed else line}\n"
                  f"--- output ---\n{ANSI.sub('', out)[-40000:]}")
     if content is not None:  # the test as a change to the code, git style: a new file, or the cases added to a file
         from . import diffview

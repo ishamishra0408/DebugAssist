@@ -95,13 +95,30 @@ def test_the_run_starts_on_mains_newest_commit_and_rebuilds_the_machine_when_pac
     monkeypatch.setattr(fresh, "machine", lambda p: t)
     recorded, built = [], []
     monkeypatch.setattr(fresh, "record_machine", lambda repo_, c: recorded.append(c))
-    monkeypatch.setattr("debug_assist.pkgcheck.rebuild", lambda prof, co, log=print: built.append(prof.base_commit))
+    monkeypatch.setattr("debug_assist.pkgcheck.rebuild", lambda prof, co, log=print: built.append((prof.base_commit, prof.filters)))
     monkeypatch.setattr(graph, "run_copy", lambda prof, dest, code=None: repo)
-    from debug_assist import events
+    from types import SimpleNamespace
+    from debug_assist import events, pkgcheck
     with events.bind("r1", "gather_context"):
         code = graph._fresh_code({"run_id": "r1"}, PROF)
-    assert code["commit"] == m and code["built_from"] == m and code.get("rebuilt") and built == [m] and recorded == [m]
+    # review of run #22543 (F10): not rebuilt here, but once, at Show the bug, with any package the person adds
+    assert code["commit"] == m and code["rebuild_pending"] and code["built_from"] == t and built == []
     assert _git(repo, "rev-parse", "HEAD") == m
+    ctx = SimpleNamespace(package_dir="packages/vue", source="packages/vue/src/use-object.ts")
+    monkeypatch.setattr(pkgcheck, "missing", lambda *a, **k: None)
+    s = {"run_id": "r1", "profile": {"repo": "vercel/ai"}, "code": dict(code)}
+    with events.bind("r1", "reproduce"):
+        assert graph._install_if_missing(s, repo, ctx, {}, []) is None
+    assert [b[0] for b in built] == [m] and recorded == [m] and s["code"]["built_from"] == m and not s["code"]["rebuild_pending"]
+    built.clear(); recorded.clear()
+    gaps = iter([{"dir": "packages/vue", "name": "@ai-sdk/vue"}, None])
+    monkeypatch.setattr(pkgcheck, "missing", lambda *a, **k: next(gaps))
+    monkeypatch.setattr(pkgcheck, "add", lambda repo_, name: None)
+    monkeypatch.setattr(graph, "interrupt", lambda ask: "yes")
+    s = {"run_id": "r1", "profile": {"repo": "vercel/ai"}, "code": dict(code)}
+    with events.bind("r1", "reproduce"):
+        assert graph._install_if_missing(s, repo, ctx, {}, []) is None
+    assert len(built) == 1 and built[0][0] == m and "--filter '@ai-sdk/vue...'" in built[0][1] and recorded == [m]
 
 
 def test_the_page_says_which_main_the_run_is_on():

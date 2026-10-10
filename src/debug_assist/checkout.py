@@ -63,12 +63,17 @@ def on_commit(profile, dest: Path, code: dict) -> None:
         (Path(dest) / ".git" / "da-build-cmd").write_text(code["build_cmd"])
     if CFG.sandbox_backend == "e2b":
         return
+    import time
+    from . import events
     from .sandbox import run_in_sandbox
     if code.get("lock_changed"):   # the package list changed: install into this copy, network on, once
         env = profile.env.rstrip()
         cmd = (f"{env} {profile.install_cmd.format(filters=profile.filters)} && "
                f"{profile.build_cmd.format(filters=profile.filters)}")
+        t0 = time.monotonic()
         r = run_in_sandbox(cmd, Path(dest), network=True, timeout=1800, image=profile.image)
+        # not the fix's own time (review of run #22543): the fix clock leaves installs out
+        events.log("prepare", what="install", copy=Path(dest).name, seconds=round(time.monotonic() - t0, 1))
     elif code.get("build_cmd"):
         r = run_in_sandbox(code["build_cmd"], Path(dest), network=False, timeout=900, image=profile.image)
     else:

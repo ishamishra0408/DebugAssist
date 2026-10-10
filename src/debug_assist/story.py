@@ -30,17 +30,31 @@ class StoryRefused(ValueError):
     pass
 
 
+def _code(l: str) -> bool:
+    return bool(l) and not l.startswith(("//", "#", "*", "/*")) and bool(re.search(r"[A-Za-z]", l))
+
+
 def signature_lines(patch: str) -> list[str]:
     """The DISTINCTIVE code the fix removed: no blank, comment-only or bare lines like `index,` or `});` (Opus run
-    2026-10-07: those matched hundreds of files). At least 12 characters with an identifier of 8+ characters."""
-    out = []
-    for l in patch.splitlines():
-        if l.startswith("-") and not l.startswith("---"):
-            t = l[1:].strip()
-            if (len(t) >= 12 and re.search(r"[A-Za-z_]\w{7,}", t) and not t.startswith(("//", "#", "*", "/*"))
-                    and t not in out):
-                out.append(t)
-    return out
+    2026-10-07: those matched hundreds of files). At least 12 characters with an identifier of 8+ characters; when no
+    removed line has one, an identifier of 5+ (review of run #22543: `...(headers as any),` was the only removed line,
+    "headers" has 7 letters, and Why it slipped, the sibling search and the back-test all came out empty); then the
+    longest removed line. A fix that only adds lines: the unchanged line just before the addition, the code it changes."""
+    removed = [l[1:].strip() for l in patch.splitlines() if l.startswith("-") and not l.startswith("---")]
+    for ident in (r"[A-Za-z_]\w{7,}", r"[A-Za-z_]\w{4,}"):
+        out = list(dict.fromkeys(t for t in removed if len(t) >= 12 and re.search(ident, t) and _code(t)))
+        if out:
+            return out
+    longest = sorted((t for t in removed if len(t) >= 8 and _code(t)), key=len, reverse=True)[:1]
+    if longest or removed:
+        return longest
+    lines, before = patch.splitlines(), []
+    for i, l in enumerate(lines):
+        if l.startswith("+") and not l.startswith("+++") and i and lines[i - 1].startswith(" "):
+            t = lines[i - 1][1:].strip()
+            if len(t) >= 12 and re.search(r"[A-Za-z_]\w{4,}", t) and _code(t) and t not in before:
+                before.append(t)
+    return before
 
 
 def blank_handles(text: str) -> str:
@@ -131,8 +145,10 @@ def gather(issue: dict, checkout: Path, cause_file: str, fix_patch: str, profile
                                                   "labels": issue.get("labels", []), "comments": issue.get("comments", 0)},
           "written": None, "shaped": [], "stops": [], "_names": {issue.get("reporter", "")}}
     if not needle:
-        ev["stops"].append("the fix removed no line, so there is no line whose history to trace")
+        ev["stops"].append("the fix changed no line distinctive enough to trace (only blank, comment or bracket lines)")
         return ev
+    if not any(l.startswith("-") and not l.startswith("---") for l in fix_patch.splitlines()):
+        ev["stops"].append(f"the fix only adds lines; traced the line just before them, `{needle}`")
     history = file_history(owner, repo, path)
     order = [h["sha"] for h in history]
     # every line the fix changed, and the call behind each: the story starts from the OLDEST origin (Opus run
@@ -199,6 +215,7 @@ QUESTIONS = [
 
 SYSTEM = f"""You write the SECOND STORY of a bug: how it came to ship, told through conditions, never people.
 Use ONLY the evidence given. Do not invent PRs, dates, versions or reviews. Never name or describe a person.
+Never say a type checker, linter or test would have caught it unless the evidence shows that tool on this code.
 Write for a reader who never saw the evidence: plain words, no field names (written, shaped, stops, ...).
 Answer each question below under its own heading, exactly as written, in this order. Each answer is one to three short
 sentences (bullets only for conditions and stopping points). When the evidence does not say, write

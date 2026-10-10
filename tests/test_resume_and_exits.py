@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from debug_assist import events, graph, ladder, meter
+from debug_assist import diffview, events, graph, ladder, meter
 from conftest import TEST_DB
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "debug_assist"
@@ -258,7 +258,9 @@ def test_the_repos_own_tests_run_first_and_each_repro_test_runs_again_after_the_
     res = graph._after_fix(s, PROFILES["vercel/ai"], tmp_path / "co", ["packages/openai-compatible/src/da-repro-1-unit-2.test.ts", None])
     assert res[0]["outcome"] == "GREEN" and "da-repro-1-unit-2.test.ts" in ran[-1]
     assert not (tmp_path / "co/packages/openai-compatible/src/da-repro-1-unit-2.test.ts").exists()       # taken out again
-    assert (tmp_path / "ai-1-x/proof/after-fix-da-repro-1-unit-2.test.ts.txt").exists()
+    proof = (tmp_path / "ai-1-x/proof/after-fix-da-repro-1-unit-2.test.ts.txt").read_text()
+    assert "with the fix" in proof and "source unchanged" not in proof and "unfixed" not in proof   # review of #22543
+    assert res[0]["line"] == "exit 0: the test passed with the fix"
     assert testwriter.counts("====== 2 failed, 40 passed in 3.1s ======") == {"passed": 40, "failed": 2}
     assert testwriter.counts("# pass 7\n# fail 0") == {"passed": 7, "failed": 0} and testwriter.counts("nothing") == {}
 
@@ -304,12 +306,44 @@ def test_the_pr_is_written_the_way_github_prs_are(monkeypatch):
     heads = [l for l in body.splitlines() if l.startswith("## ")]
     assert heads == ["## Summary", "## Changes", "## Tests", "## Why this slipped through", "## Follow-ups (not in this PR)"]
     assert "Fixes #9" in body and "- `packages/ai/src/ui/chat.ts` (+1 −1)" in body and "```diff" not in body   # no pasted patch
-    assert "**Unit test**, added `packages/ai/src/ui/da-repro-9-unit-1.test.ts`: fails on `main` with `AssertionError: expected two parts`" in body
+    assert "**Unit test**, added `packages/ai/src/ui/chat.issue-9.test.ts`: fails on `main` with `AssertionError: expected two parts`" in body
     assert "a second test of the same problem, written without seeing this change" in body
     assert "**Integration test**: none added. There is no recorded real data beside this code" in body
     assert "**Automation (end-to-end) test**: none added. It would need live provider keys" in body
     assert "still pass in packages/ai (4252 tests in packages/ai before the change)" in body
     assert body.rstrip().endswith(f"<!-- debugassist: change sha256 {fingerprint(patch)} -->")
+
+
+def test_the_pr_carries_the_fix_one_test_named_for_its_file_and_a_changeset(tmp_path):
+    """Review of run #22543 (2026-10-10): two near-identical run tests in src/ and no changeset; vercel/ai asks for one."""
+    import subprocess
+    co = tmp_path / "checkout"
+    (co / "packages/vue/src").mkdir(parents=True)
+    (co / ".changeset").mkdir()
+    (co / ".changeset/config.json").write_text("{}")
+    (co / "packages/vue/package.json").write_text('{"name": "@ai-sdk/vue"}')
+    (co / "packages/vue/src/use-object.ts").write_text("a\n")
+    subprocess.run(["git", "init", "-q"], cwd=co, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=co, check=True)
+    subprocess.run(["git", "-c", "user.name=x", "-c", "user.email=x@x", "commit", "-qm", "base"], cwd=co, check=True)
+    (co / "packages/vue/src/use-object.ts").write_text("b\n")
+    (co / "packages/vue/src/da-repro-22543-unit-2.ui.test.ts").write_text("it('judge')\n")
+    (co / "packages/vue/src/da-repro-22543-holdout-2.ui.test.ts").write_text("it('second')\n")
+    s = {"run_id": "r", "issue": {"number": 22543, "owner": "vercel", "repo": "ai", "title": "t"}, "profile": {"repo": "vercel/ai"},
+         "cause": {"file": "packages/vue/src/use-object.ts", "plan": "Normalize the headers. More."},
+         "repro": {"checkout": str(co), "oracle_test": "packages/vue/src/da-repro-22543-unit-2.ui.test.ts"},
+         "fix": {"holdout": {"status": "PASSED", "test": "packages/vue/src/da-repro-22543-holdout-2.ui.test.ts"}}}
+    patch = graph._pr_change(s)
+    paths = [x["path"] for x in diffview.parse(patch)]
+    assert paths == ["packages/vue/src/use-object.ts", "packages/vue/src/use-object.issue-22543.ui.test.ts",
+                     ".changeset/debugassist-fix-22543.md"]
+    assert "+'@ai-sdk/vue': patch" in patch and "+fix(vue): normalize the headers" in patch
+    body = graph.compose_pr_body({**s, "guard": {"text": "g", "open_cases": [], "siblings": []}, "backtest": {"state": "NONE"},
+                                  "condition": {"text": "c"}, "second_story": {"text": "x"}}, patch)
+    assert "- `packages/vue/src/use-object.ts` (+1 −1)" in body and ".changeset/" not in body.split("## Tests")[0]
+    assert "added `packages/vue/src/use-object.issue-22543.ui.test.ts`" in body
+    assert "**Also checked, kept with the run** (not added here): `da-repro-22543-holdout-2.ui.test.ts`" in body
+    assert "**Changeset**" in body
 
 
 def test_a_package_whose_own_tests_cannot_load_stops_before_any_test_is_written(scratch_db, tmp_path, monkeypatch):
@@ -350,3 +384,15 @@ def test_the_repos_own_failing_tests_say_cant_tell_when_the_issue_quotes_no_code
     with events.bind("ai-22085-y", "reproduce"):
         got = graph._existing_tests(s, tmp_path, ctx, PROFILES["vercel/ai"])
     assert got["status"] == "CAN'T TELL" and got["failed"] == 1 and got["passed"] == 332
+
+
+def test_the_fix_clock_leaves_out_waiting_for_you_and_installing():
+    """Review of run #22543 (F8): the clock counted 62 s waiting for the install answer and 149 s of installing."""
+    evs = [{"kind": "step", "ended": "paused for approval", "at": "2026-10-10T19:21:15.000+00:00"},
+           {"kind": "decision", "decision": "install yes", "at": "2026-10-10T19:22:17.000+00:00"},
+           {"kind": "install", "answer": "yes", "at": "2026-10-10T19:22:18.000+00:00"},
+           {"kind": "install", "seconds": 149, "at": "2026-10-10T19:24:47.000+00:00"},
+           {"kind": "prepare", "what": "install", "seconds": 30.5, "at": "2026-10-10T19:26:00.000+00:00"},
+           {"kind": "install", "seconds": 999, "at": "2026-10-10T20:00:00.000+00:00"}]          # after the clock stopped
+    assert graph.time_away(evs, "2026-10-10T19:18:00+00:00", "2026-10-10T19:30:00+00:00") == {
+        "waiting_for_you": 62.0, "installing": 179.5}

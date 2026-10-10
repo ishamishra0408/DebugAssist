@@ -353,3 +353,17 @@ def test_a_new_test_keeps_the_examples_environment_part():
         "packages/vue/src/da-repro-22543-unit-1.ui.test.tsx"
     assert js.new_test("packages/ai/src/ui/chat.test.ts", "repro", 1, "unit", 1) == "packages/ai/src/ui/da-repro-1-unit-1.test.ts"
     assert js.new_test("packages/workflow/src/a.integration.test.ts", "guard", 2) == "packages/workflow/src/da-guard-2.test.ts"
+
+
+def test_the_test_script_is_read_from_the_runs_own_copy(tmp_path):
+    """Review of run #22543 (F10): the script was read from the saved copy, which can be days older than main."""
+    import json
+    from debug_assist import lang as langs
+    from debug_assist.profiles import PROFILES
+    (tmp_path / "packages/vue").mkdir(parents=True)
+    (tmp_path / "packages/vue/package.json").write_text(json.dumps({"scripts": {"test": "vitest"}}))
+    js = langs.of(PROFILES["vercel/ai"])
+    assert js.test_script("packages/vue", tmp_path) == "test"
+    assert "cd packages/vue && pnpm test src/x.ui.test.ts" in js.test_command("packages/vue", "packages/vue/src/x.ui.test.ts", where=tmp_path)
+    (tmp_path / "packages/vue/package.json").write_text(json.dumps({"scripts": {"test": "x", "test:node": "y"}}))
+    assert js.test_script("packages/vue", tmp_path) == "test:node"

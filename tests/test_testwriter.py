@@ -168,6 +168,22 @@ def test_the_symptom_can_sit_in_the_received_side_of_the_diff():
     assert testwriter.right_reason(FOCUS, expected_only) is False  # the symptom must be in what was RECEIVED
 
 
+def test_a_bug_that_drops_something_shows_it_in_what_went_missing_and_the_tests_own_message_never_counts():
+    """Review of run #22543 (2026-10-10): the headers were dropped, so the received side was empty and two correct
+    tests were thrown away; the kept ones passed only on words the writer put in the assertion's message."""
+    focus = "Vue `useObject` accepts `headers?: Record<string, string> | Headers`, but passing a `Headers` instance drops them"
+    diff = ("\n\n- Expected\n+ Received\n\n  {\n    \"content-type\": \"application/json\",\n"
+            "-   \"authorization\": \"Bearer token\",\n-   \"x-repro-header\": \"example\",\n  }\n ❯ src/x.test.ts:9:3\n")
+    try1 = "AssertionError: expected { 'content-type': 'application/json' } to strictly equal { …(3) }" + diff
+    assert testwriter.right_reason(focus, try1) is True                       # was False: thrown away
+    assert testwriter.matched(focus, try1) == ["headers"]                     # through the dropped x-repro-header
+    told = ("AssertionError: useObject headers passed as a Headers instance were dropped from the request: "
+            "expected { …(1) } to strictly equal { …(1) }")
+    assert testwriter.right_reason(focus, told + "\n ❯ src/x.test.ts:9:3\n") is False   # only the message said it
+    assert testwriter.right_reason(focus, told + diff) is True                            # the diff shows it
+    assert "useObject headers passed" not in testwriter.assertion_text(told + diff)[0]
+
+
 
 def test_the_writer_sees_the_whole_issue_with_its_reproduction_whole():
     """#22085 run 2026-10-09: the writer saw the first 3,000 of 4,861 characters; the repro was cut before the bug."""

@@ -163,9 +163,11 @@ def result(key: str, s: dict) -> str | None:
     if key == "test_past_bugs" and (b := s.get("backtest")):
         # Isha 2026-10-09: "Saved, so similar bugs can be found later -- I don't know exactly what happens here"
         found = len(b.get("candidates") or [])
+        why = ((b.get("detail") or {}).get("why") or "").replace("the back-test runs only with the local sandbox for now",
+                                                                 "that works on the Mac only for now")
         return ("Saved how this bug slipped through, for finding similar bugs"
                 + (f"; {found} similar past bug{'s' * (found != 1)} found" if found else "")
-                + ". Older versions were not checked: that works on the Mac only for now")
+                + (f". Older versions were not checked: {why}" if why else ""))
     if key == "approval" and (a := s.get("approval") or {}).get("status"):
         return "You approved" if a["status"] == "APPROVED" else "You said no"
     if key == "open_pr" and s.get("published"):

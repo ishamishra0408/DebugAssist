@@ -76,3 +76,64 @@ def test_gather_context_stops_plainly_when_no_code_matches(tmp_path, monkeypatch
     assert out["outcome"]["exit"] == "CONTEXT NOT FOUND"
     from debug_assist import plain
     assert plain.exit_text("CONTEXT NOT FOUND") == "Stopped. It could not find any code that matches the issue."
+
+
+def test_a_fix_pull_request_named_in_the_discussion_is_found_when_the_timeline_shows_none(monkeypatch):
+    """Review of run #22543 (2026-10-10): "0 linked" while comment 3 named the open fix PR #22545."""
+    texts = ["see #12 and https://github.com/o/r/pull/45, and o/r#99 &#38;", "same as #1 (this issue)"]
+    assert context.mentioned("o", "r", 1, texts) == [12, 45]
+    prs = {12: {"title": "unrelated", "body": "about something else", "state": "closed"},
+           45: {"title": "fix: keep entries", "body": "Fixes #1. thanks @octocat", "state": "open", "created_at": "2026-10-10T03:22:54Z"}}
+    def api(path):
+        n = int(path.split("/pulls/")[1].split("/")[0])
+        if path.endswith("/files?per_page=30"):
+            return [{"filename": "packages/vue/src/use-object.ts", "patch": "-  ...(headers as any),\n+  ...normalizeHeaders(headers),"}]
+        return prs.get(n)
+    monkeypatch.setattr(context.github_read, "api", api)
+    got = context.fix_prs("o", "r", 1, [], texts, best="packages/vue/src/use-object.ts")
+    assert [(p["number"], p["state"], p["opened"]) for p in got] == [(45, "open", "2026-10-10")]   # #12 doesn't name #1
+    assert "normalizeHeaders" in got[0]["diff"]
+    pack = {"issue": {"comments": [], "linked": [], "fix_prs": got, "errors": {"errors": [], "frames": []}},
+            "related": [], "history": [], "code": {"ranking": [], "parallels": [], "helpers": []}}
+    assert "PULL REQUESTS FOR THIS ISSUE" in context.brief(pack)[0] and "never copy it blindly" in context.brief(pack)[0]
+
+
+def test_the_fixer_sees_the_same_file_in_other_packages_and_the_helpers_it_can_import(tmp_path):
+    """Review of run #22543: react's useObject already used the shared normalizeHeaders; the fix wrote its own."""
+    from debug_assist.profiles import PROFILES
+    files = {"packages/vue/package.json": '{"name": "@x/vue", "dependencies": {"@x/utils": "workspace:*"}}',
+             "packages/vue/src/use-object.ts": "export function useObject(headers) {\n  return { ...(headers as any) };\n}\n",
+             "packages/react/package.json": '{"name": "@x/react"}',
+             "packages/react/src/use-object.ts": "export function useObject(headers) {\n  return normalizeHeaders(headers);\n}\n",
+             "packages/utils/package.json": '{"name": "@x/utils"}',
+             "packages/utils/src/normalize-headers.ts": "export function normalizeHeaders(h) {\n  return h;\n}\n",
+             "packages/otel/package.json": '{"name": "@x/otel"}',
+             "packages/otel/src/span-headers.ts": "export function spanHeaders(h) {\n  return h;\n}\n"}
+    for p, t in files.items():
+        (tmp_path / p).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / p).write_text(t)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    prof = PROFILES["vercel/ai"]
+    focus = "`useObject` accepts `headers?: Record<string, string> | Headers` but drops them"
+    par = context.parallels(tmp_path, "packages/vue/src/use-object.ts", focus, prof)
+    assert [p["path"] for p in par] == ["packages/react/src/use-object.ts"] and "normalizeHeaders" in par[0]["snippets"]
+    got = [h["name"] for h in context.helpers(tmp_path, focus, "packages/vue/src/use-object.ts", prof)]
+    assert got == ["normalizeHeaders"]       # not useObject itself, not otel's (vue can't import it)
+
+
+def test_a_name_imported_from_outside_the_repo_is_not_matched_to_a_same_named_definition(tmp_path):
+    """Review of run #22543: vue's `ref` was shown as shared code from code-mode's `const ref`."""
+    from types import SimpleNamespace
+    from debug_assist.profiles import PROFILES
+    files = {"packages/vue/package.json": '{"name": "@x/vue"}',
+             "packages/vue/src/use-object.ts": "import { ref } from 'vue';\nexport function useObject() {\n  const a = ref(1);\n}\n",
+             "packages/code/package.json": '{"name": "@x/code"}',
+             "packages/code/src/prompt.ts": "export const ref = (x) => x;\n"}
+    for p, t in files.items():
+        (tmp_path / p).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / p).write_text(t)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    ctx = SimpleNamespace(source="packages/vue/src/use-object.ts", snippets="   3  const a = ref(1);")
+    assert context.related(tmp_path, ctx, PROFILES["vercel/ai"]) == []

@@ -19,6 +19,11 @@ def _git(checkout: Path, *args) -> str:
     return subprocess.run(["git", "-C", str(checkout), *args], capture_output=True, text=True, timeout=120).stdout
 
 
+def changed_paths(checkout: Path) -> list[str]:
+    """Tracked files the copy changed (the fix, and any test file cases were added to)."""
+    return [p for p in _git(Path(checkout), "diff", "--name-only").split() if p]
+
+
 def new_file_diff(path: str, text: str) -> str:
     lines = text.splitlines()
     return "\n".join([f"diff --git a/{path} b/{path}", "new file mode 100644", "--- /dev/null", f"+++ b/{path}",

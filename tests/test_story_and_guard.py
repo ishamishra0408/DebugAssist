@@ -252,3 +252,14 @@ def test_the_one_rule_for_whether_a_failure_shows_the_bug():
     assert guard.judged(title, out)["checked"] is False
     other = "AssertionError: expected 'stop' to be 'length'\n"
     assert testwriter.shows_bug(title, other, repro) == (False, True)                       # a different failure: no
+
+
+def test_a_short_removed_line_is_still_traced_and_a_fix_that_only_adds_traces_the_line_before():
+    """Review of run #22543 (2026-10-10): the only removed line, `...(headers as any),`, has no 8-letter name, so Why it
+    slipped had nothing to trace (half its answers "Not known"), the sibling search found 0 and the back-test was
+    skipped."""
+    fix = "diff --git a/packages/vue/src/use-object.ts b/packages/vue/src/use-object.ts\nindex 4a6ebda..20ed39a 100644\n--- a/packages/vue/src/use-object.ts\n+++ b/packages/vue/src/use-object.ts\n@@ -148,11 +148,15 @@ export function useObject<\n       abortController = new AbortController();\n \n       const actualFetch = fetch ?? getOriginalFetch();\n+      const normalizedHeaders: Record<string, string> =\n+        typeof Headers !== 'undefined' && headers instanceof Headers\n+          ? Object.fromEntries(headers.entries())\n+          : ((headers as Record<string, string> | undefined) ?? {});\n       const response = await actualFetch(api, {\n         method: 'POST',\n         headers: {\n           'Content-Type': 'application/json',\n-          ...(headers as any),\n+          ...normalizedHeaders,\n         },\n         credentials: credentials ?? 'same-origin',\n         signal: abortController.signal,\n"
+    assert story.signature_lines(fix) == ["...(headers as any),"]
+    added_only = "@@ -1,2 +1,3 @@\n       const actualFetch = fetch ?? getOriginalFetch();\n+      const x = 1;\n }\n"
+    assert story.signature_lines(added_only) == ["const actualFetch = fetch ?? getOriginalFetch();"]
+    assert story.signature_lines("@@\n-  });\n+  }),\n") == []          # brackets only: nothing worth tracing

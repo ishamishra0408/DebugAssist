@@ -154,7 +154,12 @@ Rules:
 - Change source files only: never a test file, a fixture, or the failing test. The failing test is the judge.
 - Keep behaviour for every other caller unless the bug itself requires a change (prefer an optional, defaulted
   parameter over changing a shared function's meaning).
-- Afterwards the failing test must pass AND every existing test in the affected packages must still pass."""
+- Afterwards the failing test must pass AND every existing test in the affected packages must still pass.
+- Do it the way this repo already does it. If a helper the repo exports already handles this (HELPERS THIS REPO
+  ALREADY EXPORTS), or another package does the same thing (THE SAME FILE IN OTHER PACKAGES), follow it rather than
+  writing your own. A pull request that proposes a fix may be shown: weigh it, it may be incomplete.
+- Fix every case of the input the code accepts, not only the one the test feeds (e.g. each accepted form of it, and
+  input that also sets what the code sets by default: the caller's value must win)."""
 
 
 @dataclass
@@ -350,7 +355,7 @@ def validate(checkout: Path, profile, judges: list[str], built: set, changed_fil
             return out
     out["red_to_green"] = True
     for d in suites:
-        r = run_cmd(lang.test_command(d), checkout, network=False, timeout=900, image=profile.image)
+        r = run_cmd(lang.test_command(d, where=checkout), checkout, network=False, timeout=900, image=profile.image)
         out["suites"][d] = "pass" if r.returncode == 0 else "FAIL"
         if r.returncode != 0:
             out["evidence"] = f"the fix breaks the {d} suite:\n" + _assertion(r)
@@ -361,7 +366,7 @@ def validate(checkout: Path, profile, judges: list[str], built: set, changed_fil
 
 def run_one(checkout: Path, profile, test_path: str, run_cmd, extra: str = ""):
     lang = langs.of(profile)
-    return run_cmd(lang.test_command(lang.package_of(test_path), test_path, extra),
+    return run_cmd(lang.test_command(lang.package_of(test_path), test_path, extra, where=checkout),
                    checkout, network=False, timeout=300, image=profile.image)
 
 
@@ -466,7 +471,9 @@ def holdout(state: dict, profile, fixed: Path, base_copy: Path, ctx, judges: lis
     attempt_fn = attempt_fn or testwriter.attempt
     covered = [ladder.Attempt(rung="unit", n=0, outcome=ladder.RED, test_path=j,
                               evidence=f"ALREADY COVERED by {Path(j).name}. Write a DIFFERENT test of the FOCUS: "
-                                       "trigger it the way the issue itself describes, not the way that test did.")
+                                       "trigger it the way the issue itself describes, not the way that test did. "
+                                       "Where the caller's input can also set something the code sets by default, "
+                                       "include that case too: the caller's value must win.")
                for j in judges]
     tried = []
     for i in range(1, tries + 1):
