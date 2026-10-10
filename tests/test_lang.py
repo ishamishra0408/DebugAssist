@@ -343,3 +343,13 @@ def test_context_shows_what_really_ranked_each_file_and_flags_ties(repo):
     assert all(isinstance(f["tied_with"], list) for f in got)
     if len(got) > 1 and got[0]["score"] == got[1]["score"]:
         assert got[1]["path"] in got[0]["tied_with"]
+
+
+
+def test_a_new_test_keeps_the_examples_environment_part():
+    """vercel/ai's vue and react run only *.ui.test.ts(x): a test named da-repro-…-1.test.tsx would never run there."""
+    js = lang.of(SimpleNamespace(language="typescript"))
+    assert js.new_test("packages/vue/src/use-object.ui.test.tsx", "repro", 22543, "unit", 1) == \
+        "packages/vue/src/da-repro-22543-unit-1.ui.test.tsx"
+    assert js.new_test("packages/ai/src/ui/chat.test.ts", "repro", 1, "unit", 1) == "packages/ai/src/ui/da-repro-1-unit-1.test.ts"
+    assert js.new_test("packages/workflow/src/a.integration.test.ts", "guard", 2) == "packages/workflow/src/da-guard-2.test.ts"

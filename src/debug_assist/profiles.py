@@ -58,7 +58,8 @@ PROFILES = {
         e2b_template=os.getenv("E2B_TEMPLATE", "debugassist-vercel-ai-e7f55a4"),
         install_cmd="pnpm install --frozen-lockfile --store-dir /work/.pnpm-store {filters}",
         build_cmd="pnpm {filters} build",
-        test_cmd="cd packages/{package} && pnpm test:node {test_path}",
+        # {script}: test:node where the package has it, else test (vue, react, svelte, otel... have only `test`; 2026-10-10)
+        test_cmd="cd packages/{package} && pnpm {script} {test_path}",
         env=_PNPM,
         recorded_fixtures=True,
         base_commit="e7f55a481fe2c39bd2540162ee8b45bd8de3354b",  # main on 2026-10-07; baseline green offline

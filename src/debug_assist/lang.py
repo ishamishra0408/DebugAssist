@@ -96,7 +96,18 @@ class Lang:
         """One test file (test_path repo-relative) or, with no test_path, the package's whole suite."""
         rel = self.within(test_path, pkg_dir) if test_path else ""
         return (self.p.env + self.p.test_cmd.format(package=Path(pkg_dir).name, package_dir=pkg_dir,
-                                                    test_path=f"{rel} {extra}".strip())).rstrip()
+                                                    test_path=f"{rel} {extra}".strip(),
+                                                    script=self.test_script(pkg_dir))).rstrip()
+
+    def test_script(self, pkg_dir: str) -> str:
+        """The package's own script for its node tests: `test:node` where it has one, else `test` (vercel/ai's vue,
+        react, svelte and otel have only `test`; found 2026-10-10). Read from the repo's prepared copy."""
+        try:
+            from .checkout import base_path
+            scripts = json.loads((base_path(self.p) / pkg_dir / "package.json").read_text()).get("scripts") or {}
+        except (OSError, ValueError, AttributeError, TypeError):
+            return "test:node"
+        return "test:node" if "test:node" in scripts or "test" not in scripts else "test"
 
     def rebuild_command(self, package_names: list[str]) -> str:
         """Rebuild changed packages after an edit (monorepos whose tests import a sibling's built output)."""
@@ -214,6 +225,9 @@ class JS(Lang):
     def new_test(self, example, kind, issue, label="", n=None):
         suffix = next((s for s in (".test.tsx", ".test.ts", ".spec.ts", ".test.js", ".spec.js", ".test.jsx")
                        if example.endswith(s)), self.p.test_suffix)
+        # keep the example's environment part: vercel/ai's vue and react run only *.ui.test.ts(x) (found 2026-10-10)
+        env = re.search(r"(\.(?:ui|node|edge|browser|dom))\.(?:test|spec)\.[cm]?[tj]sx?$", example)
+        suffix = (env.group(1) + suffix) if env else suffix
         name = f"da-{kind}-{issue}" + (f"-{label}" if label else "") + (f"-{n}" if n is not None else "") + suffix
         return str(Path(example).with_name(name))
 
