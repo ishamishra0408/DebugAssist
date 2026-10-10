@@ -117,6 +117,9 @@ def find_cause(state: dict, checkout: Path, ctx, test_path: str, evidence: str, 
     for _ in range(CAUSE_LOOKUPS + 2):
         msgs = cause_messages(focus, test_path, test_code, evidence, ctx.snippets, ctx.source, looked_up,
                               getattr(ctx, "extra", ""))
+        if state.get("advisor_suspects"):   # you went with the localization advisor (graph._go_with_advisor)
+            msgs[-1] = (msgs[-1][0], msgs[-1][1] + "\n\nA LOCALIZATION ADVISOR KEPT ONLY THESE SUSPECTS, AND THE PERSON "
+                        "RUNNING THIS CHOSE ITS ADVICE: the cause must be in one of " + ", ".join(state["advisor_suspects"]))
         if refusal:
             msgs[-1] = (msgs[-1][0], msgs[-1][1] + f"\n\nYOUR LAST ANSWER WAS REFUSED: {refusal}. Answer again.")
         msg, _ = write(state, "find_cause", msgs, max_tokens=1500)

@@ -90,7 +90,7 @@ def test_the_page_asks_in_a_popup_and_a_saved_page_gives_the_commands():
     assert "Install @ai-sdk/workflow?" in sheet and 'data-install="yes"' in sheet and 'data-install="no"' in sheet
     assert "about 3 minutes and a few cents of E2B credit" in sheet and "Needs your answer" in sheet
     assert "Waiting for you: @ai-sdk/workflow isn&#x27;t installed on the test machine. Install it?" in page
-    assert "Waiting for your answer" in page and "Check PR" not in page and 'fetch("/api/install"' in page
+    assert "Waiting for your answer" in page and "Check PR" not in page and 'fetch(box.dataset.api || "/api/install"' in page
     assert 'a.showPopover()' in page                                                      # it opens by itself
     saved = viewer.render(d)
     assert "data-install" not in saved and "uv run debug-assist answer ai-1-x yes" in saved
@@ -142,5 +142,5 @@ def test_the_answer_continues_the_run_as_the_terminal_would(tmp_path, monkeypatc
     assert "rebuilt" in server.install_answer("ai-22085-z", "yes", by="isha-gh")
     assert calls[-1][2:] == ["debug_assist", "answer", "ai-22085-z", "yes", "--no-view"]
     monkeypatch.setattr(viewer, "_app", lambda: SimpleNamespace(get_state=lambda cfg: SimpleNamespace(tasks=[])))
-    with pytest.raises(server.Refused, match="not asking to install"):
+    with pytest.raises(server.Refused, match="not asking you anything"):
         server.install_answer("ai-22085-z", "yes")

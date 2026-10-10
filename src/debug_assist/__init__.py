@@ -228,16 +228,24 @@ def main() -> None:
     from . import artifacts
     if artifacts.enabled() and cmd in {"resume", "approve", "reject", "answer", "status"}:
         artifacts.restore_run(run_id)  # a host whose disk was wiped: the PR text and code copies come back first
-    if cmd in {"approve", "reject"} and _pause(app, cfg)[1].get("kind") == "install":
+    kind = _pause(app, cfg)[1].get("kind") if cmd in {"approve", "reject", "answer"} else None
+    if cmd in {"approve", "reject"} and kind == "install":
         sys.exit(f"run {run_id} is asking whether to install a package, not for your OK: debug-assist answer {run_id} yes|no")
+    if cmd in {"approve", "reject"} and kind == "advisor":
+        sys.exit(f"run {run_id} is asking whose plan to follow, not for your OK: debug-assist answer {run_id} advisor|run")
     if cmd == "answer":
         _, intr = _pause(app, cfg)
-        if intr.get("kind") != "install":
-            sys.exit(f"run {run_id} is not asking whether to install a package")
         said = (args[2] if len(args) > 2 else "").strip().lower()
-        if said not in ("yes", "no"):
-            sys.exit("answer yes or no")
-        print(f"{'Installing' if said == 'yes' else 'Not installing'} {intr.get('package')}")
+        if kind == "install":
+            if said not in ("yes", "no"):
+                sys.exit("answer yes or no")
+            print(f"{'Installing' if said == 'yes' else 'Not installing'} {intr.get('package')}")
+        elif kind == "advisor":   # an advisor disagreed (Isha 2026-10-10)
+            if said not in ("advisor", "run"):
+                sys.exit("answer advisor (follow the advisor) or run (keep the run's plan)")
+            print(f"Following {'the ' + str(intr.get('role')) + ' advisor' if said == 'advisor' else 'the run'}'s plan")
+        else:
+            sys.exit(f"run {run_id} is not asking you anything (no install or advisor question)")
     if cmd == "approve":
         from .guardrails import fingerprint
         snap, intr = _pause(app, cfg)
@@ -280,7 +288,14 @@ def main() -> None:
     print(_summary(snap.values, run_id))
     if cmd == "approve" and snap.values.get("approval", {}).get("status") == "APPROVED":
         print(f"\nAPPROVED sha256 {snap.values['approval']['sha256'][:12]} (matches the text you read)")
-    if intr:
+    if intr.get("kind") == "install":
+        print(f"\nPAUSED at {snap.next[0]}: {intr.get('package')} isn't installed on the test machine. Install it?")
+        print(f"Yes: uv run debug-assist answer {run_id} yes    No: uv run debug-assist answer {run_id} no")
+    elif intr.get("kind") == "advisor":   # Isha 2026-10-10
+        print(f"\nPAUSED before {snap.next[0]}: the {intr.get('role')} advisor disagrees: {intr.get('why')}.")
+        print(f"The run's plan: {intr.get('run_plan')}\nThe advisor's: {intr.get('said')} If you follow it: {intr.get('if_advisor')}")
+        print(f"Advisor: uv run debug-assist answer {run_id} advisor    Run: uv run debug-assist answer {run_id} run")
+    elif intr:
         print(f"\nPAUSED at {snap.next[0]}. Read {intr.get('pr_body_path')} (sha256 {str(intr.get('sha256'))[:12]})")
         print(f"Approve: uv run debug-assist approve {run_id}    Reject: uv run debug-assist reject {run_id}")
     elif snap.values.get("outcome"):

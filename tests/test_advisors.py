@@ -179,3 +179,85 @@ def test_each_advisor_says_whether_it_agrees_with_the_run_in_plain_words():
     assert advisors.compare("why_it_shipped", blame, s) == {"agrees": False, "why": "1 sentence read as blaming a person"}
     assert advisors.compare("lasting_guard", {"machine_result": {"guard_kind": "instruction"}}, s)["agrees"] is False
     assert advisors.compare("lasting_guard", {}, s)["agrees"] is None
+
+
+def test_a_run_pauses_only_when_an_advisor_disagrees_and_follows_whose_plan_you_choose(monkeypatch):
+    """Isha 2026-10-10: "at those steps, don't implement; give the info that the advisors agree, or their updated plan,
+    and then we select manually and then you build". Only when one disagrees."""
+    from debug_assist import events, graph
+    asked = []
+    monkeypatch.setattr(graph, "interrupt", lambda ask: (asked.append(ask), answers.pop(0))[1])
+    agree = {"status": "ANSWERED", "seat": "cause-locator", "answer": "Kept 1 suspect. Reference judg_1.",
+             "raw": {"machine_result": {"state": "CANDIDATES", "candidates": [{"path": "a/use-object.ts"}]}}}
+    s = {"run_id": "r", "cause": {"file": "a/use-object.ts", "lines": [1, 2], "plan": "Normalize headers."},
+         "advisors": {"find_cause": agree}}
+    answers = []
+    with events.bind("r", "write_fix"):
+        assert graph._advisor_pause(s, "find_cause") == {} and asked == []          # agrees: no pause
+        other = {**agree, "raw": {"machine_result": {"state": "CANDIDATES", "candidates": [{"path": "a/x.vue"}]}}}
+        s2 = {**s, "advisors": {"find_cause": other}}
+        answers = ["run"]
+        got = graph._advisor_pause(s2, "find_cause")
+        assert asked[-1]["kind"] == "advisor" and asked[-1]["run_plan"].startswith("Fix a/use-object.ts lines 1-2")
+        assert asked[-1]["said"] == "Kept 1 suspect." and "drops the file the run blamed" in asked[-1]["why"]
+        assert got["advisor_choices"]["find_cause"]["choice"] == "run" and "cause" not in got
+        assert graph._advisor_pause({**s2, "advisor_choices": got["advisor_choices"]}, "find_cause") == {}   # asked once
+        seen = []
+        monkeypatch.setattr(graph, "find_cause", lambda st: (seen.append(st.get("advisor_suspects")),
+                                                             {"cause": {"status": "FOUND", "file": "a/x.vue", "lines": [5, 9]}})[1])
+        answers = ["advisor"]
+        got = graph._advisor_pause(s2, "find_cause")
+        assert seen == [["a/x.vue"]] and got["cause"]["file"] == "a/x.vue"          # looked for again, in its suspects
+        triage = {"status": "ANSWERED", "seat": "defect-triage", "answer": "a person decides",
+                  "raw": {"machine_result": {"state": "NEEDS_PERSON"}}}
+        answers = ["advisor"]
+        got = graph._advisor_pause({"run_id": "r", "advisors": {"read_issue": triage}}, "read_issue")
+        assert got["outcome"]["exit"] == "NEEDS PERSON" and "triage advisor" in got["outcome"]["why"]
+
+
+def test_the_page_shows_both_plans_and_the_answer_goes_to_the_run(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from debug_assist import server, viewer
+    from test_viewer import _data
+    ask = {"kind": "advisor", "step": "find_cause", "seat": "cause-locator", "role": "Localization",
+           "said": "Kept 1 suspect: a/x.vue.", "why": "it drops the file the run blamed (use-object.ts); it keeps x.vue",
+           "run_plan": "Fix a/use-object.ts lines 1-2: Normalize headers.", "if_advisor": "The cause is looked for again."}
+    d = _data(interrupt=ask, next=["write_fix"], advisor_ask=ask)
+    page = viewer.render(d, mode="live", token="t")
+    assert "Waiting for you: an advisor disagrees" in page and 'id="advisorask"' in page
+    assert "The run's plan" in page and "Fix a/use-object.ts lines 1-2" in page and 'data-install="advisor"' in page
+    assert "uv run debug-assist answer ai-1-x advisor" in viewer.render(d)                   # a saved page: the commands
+    since = "2026-10-10T19:20:00+00:00"
+    tapped = {"kind": "decision", "decision": "advisor run", "reviewed": "find_cause", "at": "2026-10-10T19:21:00+00:00"}
+    assert viewer.answered(ask, [tapped], since)["answer"] == "run" and viewer.answered(ask, [], since) is None
+    (tmp_path / "ai-1-y").mkdir()
+    monkeypatch.setattr(server, "CFG", SimpleNamespace(runs_dir=tmp_path))
+    asking = SimpleNamespace(next=("write_fix",), tasks=[SimpleNamespace(interrupts=[SimpleNamespace(value=ask)])])
+    monkeypatch.setattr(viewer, "_app", lambda: SimpleNamespace(get_state=lambda cfg: asking))
+    calls = []
+    monkeypatch.setattr(server.subprocess, "Popen", lambda argv, **kw: calls.append(argv) or SimpleNamespace(poll=lambda: 0))
+    monkeypatch.setitem(server._child, "proc", None)
+    monkeypatch.setattr("debug_assist.events.log", lambda *a, **k: None)
+    with pytest.raises(server.Refused, match="advisor's plan or the run's"):
+        server.answer_pause("ai-1-y", "yes")
+    assert server.answer_pause("ai-1-y", "advisor").startswith("Following the Localization advisor")
+    assert calls[-1][2:] == ["debug_assist", "answer", "ai-1-y", "advisor", "--no-view"]
+
+
+def test_the_next_step_builds_on_the_plan_you_chose(monkeypatch):
+    """The pause sits before the next step: write_fix starts only after you chose, and fixes the chosen cause."""
+    from debug_assist import graph
+    monkeypatch.setattr("debug_assist.events.log", lambda *a, **k: None)
+    monkeypatch.setattr("debug_assist.artifacts.enabled", lambda: False)
+    monkeypatch.setattr(graph, "interrupt", lambda ask: "advisor")
+    monkeypatch.setattr(graph, "find_cause", lambda st: {"cause": {"status": "FOUND", "file": "a/x.vue", "lines": [5, 9]}})
+    fixed = []
+    def write_fix(s):
+        fixed.append(s["cause"]["file"])
+        return {"fix": {"status": "VALIDATED"}, "log": ["write_fix: done"]}
+    rec = {"status": "ANSWERED", "seat": "cause-locator", "answer": "Kept x.vue",
+           "raw": {"machine_result": {"state": "CANDIDATES", "candidates": [{"path": "a/x.vue"}]}}}
+    out = graph.step(write_fix)({"run_id": "r", "cause": {"file": "a/use-object.ts", "lines": [1, 2]},
+                                 "advisors": {"find_cause": rec}})
+    assert fixed == ["a/x.vue"] and out["cause"]["file"] == "a/x.vue" and out["fix"]["status"] == "VALIDATED"
+    assert out["advisor_choices"]["find_cause"]["choice"] == "advisor" and out["log"][-1] == "write_fix: done"

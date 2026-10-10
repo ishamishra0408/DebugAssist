@@ -48,6 +48,14 @@ def answered(ask: dict, evs: list[dict], since: str | None) -> dict | None:
     it is now installing"). The run's checkpoint keeps the question until Show the bug ends, minutes later, so the
     answer is read from the events: the page's own record, written as you tap, or the run's. installing: yes, and the
     test machine is not rebuilt yet."""
+    if ask.get("kind") == "advisor":   # whose plan to follow: the page's record as you tap, or the run's
+        for x in reversed(evs):
+            mine = x.get("reviewed") == ask.get("step") and (
+                (x.get("kind") == "decision" and str(x.get("decision", "")).startswith("advisor ")) or x.get("kind") == "advisor_choice")
+            if mine and (since is None or _t(x["at"]) >= _t(since)):
+                said = x.get("choice") or str(x.get("decision", "")).split(" ", 1)[-1]
+                return {"kind": "advisor", "answer": said, "at": x["at"], "installing": False}
+        return None
     pkg = ask.get("package")
     if ask.get("kind") != "install" or not pkg:
         return None
@@ -129,6 +137,7 @@ def gather(run_id: str, at: datetime | None = None) -> dict:
             "pr_text": pr_text, "pr_matches": pr_ok, "patch": patch, "pr_patch": pr_patch, "commit_message": commit_msg,
             "decided_by": next((x.get("by") for x in reversed(evs) if x.get("kind") == "decision" and x.get("by")), ""),
             "ask": intr if intr.get("kind") == "install" else None,   # the run asks whether to install a package
+            "advisor_ask": intr if intr.get("kind") == "advisor" else None,   # an advisor disagreed: whose plan?
             "installing": told if told and told["installing"] else None,
             "events": evs,
             "trials": events.trials_of(run_id), "meter": mtr, "calls": calls,
@@ -396,6 +405,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
     served, is_replay = mode in ("live", "replay"), mode == "replay"
     inst = d.get("installing") if phase == "working" else None   # you said yes; the test machine is being rebuilt
     status_line = ("Waiting for your answer: install a package?" if d.get("ask") and phase == "waiting" else
+                   "Waiting for you: an advisor disagrees" if d.get("advisor_ask") and phase == "waiting" else
                    f"Installing {inst['package']} on the test machine" if inst else headline(phase, cur, rows))
     final = (bool(outcome) or phase == "could not start") if mode == "live" else \
         bool((replay or {}).get("final")) if is_replay else not live
@@ -457,6 +467,10 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
         elif st == "running":
             sub = " · ".join(chips[-2:] + ([cnt] if cnt else [])) or "Starting this step"
             trail = _since(d, d.get("since"), is_replay)
+        elif st == "waiting" and d.get("advisor_ask"):   # Isha 2026-10-10: an advisor disagrees; whose plan?
+            aa = d["advisor_ask"]
+            sub = f"Waiting for you: the {aa.get('role')} advisor disagrees: {aa.get('why')}. Choose whose plan to follow."
+            trail = '<button type="button" class="tbtn proof-btn" popovertarget="advisorask"><span>Choose</span></button>'
         elif st == "waiting" and d.get("ask"):   # Isha 2026-10-10: the package isn't installed; may it be?
             sub = f"Waiting for you: {d['ask'].get('package')} isn't installed on the test machine. Install it?"
             trail = '<button type="button" class="tbtn proof-btn" popovertarget="installask"><span>Answer</span></button>'
@@ -529,6 +543,12 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
                          '<span>Answer</span></button>' if served else
                          _copy(f"cd ~/Projects/DebugAssist && uv run debug-assist answer {rid} yes", "Copy install command", True))
                         if d.get("ask") else
+                        ("An advisor disagrees", f"The {(d.get('advisor_ask') or {}).get('role')} advisor disagrees: "
+                         f"{(d.get('advisor_ask') or {}).get('why')}. Choose whose plan to follow.",
+                         '<button type="button" class="btn glass prominent" popovertarget="advisorask"><span>Choose</span></button>'
+                         if served else _copy(f"cd ~/Projects/DebugAssist && uv run debug-assist answer {rid} run",
+                                              "Copy keep-the-run's-plan command", True))
+                        if d.get("advisor_ask") else
                         ("Your OK is needed", "Check the pull request, then approve it or close it. Nothing is posted to GitHub.",
                          '<button type="button" class="btn glass prominent" popovertarget="check-pr"><span>Check PR</span></button>')),
             "stopped": ("Stopped", plain.exit_text(outcome.get("exit")).removeprefix("Stopped. "),
@@ -580,7 +600,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
 
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 {'<meta http-equiv="refresh" content="3">' if live and not served else ''}
-<title>{e("Waiting for your answer" if d.get("ask") and phase == "waiting" else status_line)} · {plain.NAME}</title>
+<title>{e("Waiting for your answer" if (d.get("ask") or d.get("advisor_ask")) and phase == "waiting" else status_line)} · {plain.NAME}</title>
 <meta name="color-scheme" content="dark light">
 {css}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
@@ -605,6 +625,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
 </div>
 {_check_pr(d, rid, served and not is_replay, approve, reject, waiting=phase == "waiting" and not is_replay) if d["pr_text"] else ""}
 {_k("sheet-ask", install_sheet(d, rid, served and not is_replay) if d.get("ask") and phase == "waiting" else '<i id="installask" hidden></i>')}
+{_k("sheet-adv", advisor_sheet(d, rid, served and not is_replay) if d.get("advisor_ask") and phase == "waiting" else '<i id="advisorask" hidden></i>')}
 {_k("sheet-ctx", ctx_html or '<i id="ctxinfo" hidden></i>')}
 {_k("sheet-change", change_html or '<i id="codechange" hidden></i>')}
 {_k("sheet-report", report_html or '<i id="report" hidden></i>')}
@@ -1081,6 +1102,36 @@ def _blob(snippets: str, marks: list) -> str:
     return f'<div class="dscroll"><table class="dtable blob">{"".join(rows)}</table></div>'
 
 
+def advisor_sheet(d: dict, rid: str, can_answer: bool) -> str:
+    """An advisor disagrees (Isha 2026-10-10): the run's plan and the advisor's, side by side; you choose, then it builds."""
+    a = d.get("advisor_ask") or {}
+    step_label = dict((k, v) for k, v, _ in plain.STEPS).get(a.get("step"), a.get("step"))
+    body = (f'<div class="gh-annot warn"><b>The {e(a.get("role"))} advisor disagrees with {e(step_label)}</b>'
+            f'<p>{e(str(a.get("why", ""))[:1].upper() + str(a.get("why", ""))[1:])}. Nothing more has been built: the run '
+            f'waits for your choice.</p></div>'
+            f'<div class="gh-box"><div class="gh-box-head"><span>The run\'s plan</span></div>'
+            f'<div class="gh-check"><span class="gh-cname"><b>{e(a.get("run_plan", ""))}</b>'
+            f'<span class="gh-muted">If you keep it, the run goes on as planned.</span></span></div></div>'
+            f'<div class="gh-box"><div class="gh-box-head"><span>The advisor\'s ({e(a.get("seat"))}, through the Domain '
+            f'Expertise MCP server)</span></div>'
+            f'<div class="gh-check"><span class="gh-cname"><b>{e(a.get("said", ""))}</b>'
+            f'<span class="gh-muted">If you go with it: {e(a.get("if_advisor", ""))}</span></span></div></div>')
+    if can_answer:
+        body += (f'<div class="decide gh-merge" data-run="{e(rid)}" data-api="/api/answer">'
+                 f'<div class="gh-merge-lines"><b>Whose plan should it follow?</b><span class="gh-muted">The advisor is a '
+                 f'rule check, not an AI; you decide.</span></div><div class="gh-merge-btns">'
+                 f'<button type="button" class="gh-btn" data-install="run" data-label="Keep the run\'s plan" '
+                 f'data-confirm="Confirm: keep the run\'s" data-busy="Going on…"><span>Keep the run\'s plan</span></button>'
+                 f'<button type="button" class="gh-btn primary" data-install="advisor" data-label="Go with the advisor" '
+                 f'data-confirm="Confirm: the advisor\'s" data-busy="Following the advisor…"><span>Go with the advisor</span></button></div>'
+                 f'<p class="decide-msg" role="status"></p></div>')
+    else:
+        body += (f'<div class="gh-box"><div class="cmd"><code>cd ~/Projects/DebugAssist && uv run debug-assist answer {e(rid)} advisor</code></div>'
+                 f'<div class="cmd"><code>cd ~/Projects/DebugAssist && uv run debug-assist answer {e(rid)} run</code></div></div>')
+    return _sheet("advisorask", "An advisor disagrees", f"The {e(a.get('role'))} advisor disagrees",
+                  f'<span class="Label Label--attention">Needs your choice</span>{e(step_label)} is reviewed; the next step waits', body)
+
+
 def install_sheet(d: dict, rid: str, can_answer: bool) -> str:
     """The question (Isha 2026-10-10): the package the bug is in isn't installed on the test machine; install it?
     Yes rebuilds the test machine with it, for this and every later run of the repo; No stops, nothing spent."""
@@ -1385,8 +1436,13 @@ def _advisors(s: dict) -> str:
         answer = re.sub(r"\s*Reference judg_\w+\.?", "", rec.get("answer", ""))
         answer = re.sub(r"\s*Its fix verdict reads FAIL only because.*?judgment of the fix\.", "", answer)
         cmp = compare(step, rec.get("raw") or {}, s) if st == "ANSWERED" else None
+        chose = (s.get("advisor_choices") or {}).get(step) or {}
+        then = ("So the run went on by itself." if cmp and cmp["agrees"] is not False else
+                "You chose the advisor's plan." if chose.get("choice") == "advisor" else
+                "You kept the run's plan." if chose.get("choice") == "run" else
+                "The run waits for your choice before the next step.")
         sub = (f'<span>Asked: {e(r["question"].split("?")[0] + "?")}</span><span>Said: {e(answer[:240])}</span>'
-               f'<span>{label[cmp["agrees"]]} {e(cmp["why"][:1].upper() + cmp["why"][1:])}. It changed nothing: advice only.</span>'
+               f'<span>{label[cmp["agrees"]]} {e(cmp["why"][:1].upper() + cmp["why"][1:])}. {e(then)}</span>'
                if cmp else f"<span>{e(said.get(st, 'Not asked'))}</span>")
         ic = icons.check() if st == "ANSWERED" else icons.pause() if st in ("OFF", "BLOCKED") else icons.cross() if st == "FAILED" else icons.list_(18)
         raw, pid = rec.get("raw"), f"advfull-{step}"
@@ -1404,7 +1460,8 @@ def _advisors(s: dict) -> str:
     return (f'<section class="group"><h2>Advisors</h2><div class="sect"><ul class="rows">{"".join(rows)}</ul></div>{"".join(sheets)}'
             '<p class="foot">How they connect: after these four steps, DebugAssistAgent sends the step\'s result to the Domain '
             'Expertise MCP server. Each advisor there is a fixed rule check, not an AI, and answers in seconds. The answer '
-            'is shown here and logged; it never changes the fix, the pull request text or your OK. '
+            'is shown here and logged. When one disagrees with what the run did, the run pauses before the next step and '
+            'you choose whose plan it follows; when it agrees, the run goes on by itself. '
             '<a href="/connect#advisors">How to connect them</a>.</p></section>')
 
 
@@ -1505,16 +1562,16 @@ document.addEventListener("click", async ev => {   // install a missing package?
     return;
   }
   box.querySelectorAll("[data-install]").forEach(x => { x.disabled = true; });
-  msg.textContent = b.dataset.install === "yes" ? "Installing…" : "Stopping…";
+  msg.textContent = b.dataset.busy || (b.dataset.install === "yes" ? "Installing…" : "Stopping…");
   try {
-    const r = await fetch("/api/install", { method: "POST", headers: { "X-DebugAssistAgent-Token": TOKEN, "Content-Type": "application/json" },
+    const r = await fetch(box.dataset.api || "/api/install", { method: "POST", headers: { "X-DebugAssistAgent-Token": TOKEN, "Content-Type": "application/json" },
       body: JSON.stringify({ run_id: box.dataset.run, answer: b.dataset.install }) });
     const j = await r.json();
     msg.textContent = r.ok ? j.said : (j.error || "Something went wrong.");
     if (!r.ok) box.querySelectorAll("[data-install]").forEach(x => { x.disabled = false; });
   } catch (e) { msg.textContent = "Could not reach DebugAssistAgent."; box.querySelectorAll("[data-install]").forEach(x => { x.disabled = false; }); }
 });
-addEventListener("load", () => { const a = document.getElementById("installask"); if (a && a.showPopover) { try { a.showPopover(); } catch (e) {} } });
+addEventListener("load", () => { for (const id of ["installask", "advisorask"]) { const a = document.getElementById(id); if (a && a.showPopover) { try { a.showPopover(); } catch (e) {} } } });
 document.addEventListener("click", async ev => {   // Run again: the same issue, the same choices
   const b = ev.target.closest("[data-again]"); if (!b) return;
   b.disabled = true; const l = b.querySelector("span"); l.textContent = "Starting…";

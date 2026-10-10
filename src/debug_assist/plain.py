@@ -75,6 +75,8 @@ def happened(x: dict) -> str | None:
         return f"Installed {x.get('package')} on the test machine"
     if k == "install":
         return f"You answered {x.get('answer')}: install {x.get('package')}"
+    if k == "advisor_choice":
+        return f"You chose {'the advisor' if x.get('choice') == 'advisor' else 'the run'}'s plan after {LABEL.get(x.get('reviewed'), x.get('reviewed'))}"
     if k == "advisor":
         return f"Advisor {x.get('seat')}: " + {"OFF": "not asked (advisors are off)", "BLOCKED": "not asked (server not reviewed yet)",
                                                "ANSWERED": "answered", "FAILED": "could not be reached"}.get(x.get("status"), "not asked")

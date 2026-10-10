@@ -81,7 +81,8 @@ class RunState(TypedDict, total=False):
     code: dict          # the code this run is on: main's newest commit when it started (fresh.py), what the test
                         # machine was built at, and what moving to main needed (an install, or packages to build)
     context: dict       # Gather context: where the pack is, its sha256, the counts, and the brief later steps read
-    advisors: Annotated[dict, lambda a, b: {**(a or {}), **(b or {})}]  # per step: what its seat said (advice only)
+    advisors: Annotated[dict, lambda a, b: {**(a or {}), **(b or {})}]  # per step: what its seat said
+    advisor_choices: Annotated[dict, lambda a, b: {**(a or {}), **(b or {})}]  # per step: whose plan you chose
     attempts: Annotated[list, operator.add]  # append-only: every attempt and how it ended (also in the event log)
     outcome: dict                            # set when the run stops: {"exit": ..., "why": ..., "at": ...}
     log: Annotated[list, operator.add]
@@ -100,7 +101,12 @@ def step(fn):
         with events.bind(s["run_id"], fn.__name__):
             t0 = time.monotonic()
             try:
-                out = fn(s)
+                chose = _advisor_pause(s, ADVISED_BEFORE[fn.__name__]) if fn.__name__ in ADVISED_BEFORE else {}
+                if chose.get("outcome"):   # you went with an advisor who says stop
+                    out = chose
+                else:
+                    local = {**s, **{k: v for k, v in chose.items() if k not in ("log", "advisors", "advisor_choices")}}
+                    out = _merged(chose, fn(local)) if chose else fn(s)
             except GraphInterrupt:  # the approval pause: time spent waiting for a person is not the step's own
                 events.log("step", seconds=round(time.monotonic() - t0, 2), ended="paused for approval")
                 raise
@@ -115,6 +121,99 @@ def step(fn):
             events.log("step", seconds=round(time.monotonic() - t0, 2), ended=(out or {}).get("outcome", {}).get("exit", "ok"))
             return out
     return bound
+
+
+# ── advisors who disagree: the run pauses before the next step and you choose (Isha 2026-10-10) ──────────────────
+# "the warn nudge should come when the advisor info comes, and then I as user can approve or deny their advice: at those
+# steps, don't implement; give the info that the advisors agree, or their updated plan, and then we select manually and
+# then you build". Only when an advisor disagrees (her choice); when it agrees the run goes on by itself.
+ADVISED_BEFORE = {"gather_context": "read_issue", "write_fix": "find_cause", "lasting_guard": "why_it_shipped",
+                  "test_past_bugs": "lasting_guard"}   # the step that starts → the step whose advisor it waits on
+IF_ADVISOR = {"read_issue": "The run stops here; nothing more is spent.",
+              "find_cause": "The cause is looked for again, only in the advisor's suspects (one more AI call), then fixed.",
+              "why_it_shipped": "The report is written again without the sentences it flagged (one more AI call).",
+              "lasting_guard": "The guard is written again as a test that runs by itself (one more AI call and its test runs)."}
+
+
+def _merged(first: dict, then: dict) -> dict:
+    """Two updates as one: logs joined, advisors' answers combined, the later value otherwise."""
+    out = {**first, **(then or {})}
+    if first.get("log") or (then or {}).get("log"):
+        out["log"] = list(first.get("log") or []) + list((then or {}).get("log") or [])
+    if first.get("advisors") and (then or {}).get("advisors"):
+        out["advisors"] = {**first["advisors"], **then["advisors"]}
+    return out
+
+
+def run_plan(s: RunState, step_: str) -> str:
+    """What the run will do if you keep its plan, in plain words."""
+    c, t, g = s.get("cause") or {}, s.get("triage") or {}, s.get("guard") or {}
+    return {"read_issue": f"Treat it as a real bug ({float(t.get('is_defect_p') or 0):.0%} likely) and go on.",
+            "find_cause": (f"Fix {c.get('file')} lines {'-'.join(map(str, c.get('lines') or []))}: "
+                           f"{c.get('plan') or c.get('why') or ''}").strip(),
+            "why_it_shipped": "Keep the report as written.",
+            "lasting_guard": f"Keep the guard: {g.get('covers') or g.get('text') or ''}".strip()}.get(step_, "Go on as planned.")
+
+
+def _advisor_pause(s: RunState, prior: str) -> dict:
+    """Before the next step: did the advisor of the step before disagree? Then pause and ask whose plan to follow. {} =
+    nothing to ask (it agreed, wasn't asked, or you already chose). Your choice is applied here, before the step runs."""
+    rec = (s.get("advisors") or {}).get(prior) or {}
+    if rec.get("status") != "ANSWERED" or prior in (s.get("advisor_choices") or {}):
+        return {}
+    cmp = advisors.compare(prior, rec.get("raw") or {}, s)
+    if cmp["agrees"] is not False:
+        return {}
+    role = (advisors.ASK.get(rec.get("seat")) or {}).get("role", rec.get("seat"))
+    said = advisors.plain_answer(rec.get("answer", ""))
+    answer = interrupt({"kind": "advisor", "step": prior, "seat": rec.get("seat"), "role": role, "said": said,
+                        "why": cmp["why"], "run_plan": run_plan(s, prior), "if_advisor": IF_ADVISOR[prior]})
+    choice = "advisor" if str(answer).strip().lower() in ("advisor", "yes") else "run"
+    events.log("advisor_choice", key=prior, reviewed=prior, seat=rec.get("seat"), choice=choice)
+    upd = {"advisor_choices": {prior: {"choice": choice, "seat": rec.get("seat"), "role": role, "why": cmp["why"],
+                                       "said": said, "at": now()}},
+           "log": [f"advisor: the {role} advisor disagreed after {prior} ({cmp['why']}); you chose "
+                   + ("the advisor's" if choice == "advisor" else "the run's") + " plan"]}
+    if choice == "run":
+        return upd
+    return _merged(upd, _go_with_advisor(s, prior, rec, cmp))
+
+
+def _go_with_advisor(s: RunState, prior: str, rec: dict, cmp: dict) -> dict:
+    mr = (rec.get("raw") or {}).get("machine_result") or {}
+    verdict = mr.get("state") or (rec.get("raw") or {}).get("verdict")
+    if prior == "read_issue":
+        return {"outcome": stop(NOT_A_DEFECT if verdict == "NOT_A_DEFECT" else NEEDS_PERSON,
+                                f"you went with the triage advisor: {cmp['why']}"),
+                "log": ["read_issue: STOPPED on the triage advisor's advice"]}
+    if prior == "find_cause":
+        kept = [c.get("path") for c in mr.get("candidates") or [] if c.get("path")]
+        again = find_cause({**s, "advisor_suspects": kept})
+        if (again.get("cause") or {}).get("status") != "FOUND":
+            return {"log": ["find_cause again: no cause in the advisor's suspects; the run's cause stays"]}
+        c = again["cause"]
+        return {"cause": c, "advisors": again.get("advisors") or {},
+                "log": [f"find_cause again, in the advisor's suspects: {c['file']}:{c['lines'][0]}-{c['lines'][1]}"]}
+    if prior == "why_it_shipped":
+        blame = mr.get("blame_sentences") or []
+        try:
+            told = story.tell(s, Path(s["repro"]["checkout"]), s["cause"], _fix_patch(s),
+                              feedback="An incident reviewer read these sentences as blaming a person; write the report "
+                                       "again without them, about conditions only: " + " | ".join(blame[:5]))
+            assert_no_names(told["text"], [s["issue"]["reporter"]])
+        except (story.StoryRefused, GuardrailViolation) as ex:
+            return {"log": [f"why_it_shipped again: not rewritten ({ex}); the first report stays"]}
+        # the condition stays the one frozen before the guard (guardrail 3); only the report's text changes
+        return {"second_story": {**(s.get("second_story") or {}), "text": told["text"], "rewritten": "advisor"},
+                "log": ["why_it_shipped again: the report rewritten without the flagged sentences"]}
+    if prior == "lasting_guard":
+        again = lasting_guard({**s, "advisor_feedback": "A quality reviewer read this guard as something a person must "
+                                                         "remember. Make it a test that runs by itself and fails on its own."})
+        if (again.get("guard") or {}).get("status") != "CATCHES THE BUG":
+            return {"log": ["lasting_guard again: the new guard did not catch the bug; the first one stays"]}
+        return {"guard": again["guard"], "advisors": again.get("advisors") or {},
+                "log": ["lasting_guard again, on the quality advisor's advice"] + list(again.get("log") or [])}
+    return {}
 
 
 def stop(exit_: str, why: str) -> dict:

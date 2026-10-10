@@ -10,7 +10,8 @@ here, not in prose: it is on only when BOTH are set where DebugAssistAgent runs,
 An address without the review is refused at preflight. While off, a review returns OFF at once: no network, no
 process, no cost, and no receipt (nothing was asked).
 
-Where seats are asked. Advice only: an answer never changes a run's outcome, its PR text or the approval.
+Where seats are asked. An answer never changes the run by itself: when a seat DISAGREES with what the run did, the run
+pauses before the next step and the person chooses whose plan to follow (Isha 2026-10-10; graph._advisor_pause).
   read_issue       defect-triage   a real defect? its fixed rule over the triage's numbers (sure enough? then by 0.5)
   find_cause       cause-locator   do the suspects hold up? (at most 3, real files, a failing output to locate from)
   why_it_shipped   allspaw         is the "why it slipped" report about conditions, never people?
@@ -258,6 +259,13 @@ def _rpc_message(raw: str, ctype: str) -> dict:
         return json.loads(raw)
     except ValueError:
         raise AdvisorError("the server's reply was not JSON") from None
+
+
+def plain_answer(text: str) -> str:
+    """An answer without its reference id or the note about a verdict this route never asks for."""
+    import re
+    text = re.sub(r"\s*Reference judg_\w+\.?", "", text or "")
+    return re.sub(r"\s*Its fix verdict reads FAIL only because.*?judgment of the fix\.", "", text).strip()
 
 
 def compare(step: str, raw: dict, state: dict) -> dict:

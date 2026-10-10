@@ -135,7 +135,7 @@ def write_guard(state: dict, profile, fixed: Path, unfixed: Path, judge: str, ca
     evidence = r0.get("oracle_evidence") or r0.get("evidence") or ""
     rel = lang.new_test(judge, "guard", state["issue"]["number"])
     judge_code = (Path(fixed) / judge).read_text()
-    feedback, tries = "", []
+    feedback, tries = state.get("advisor_feedback", ""), []   # an advisor's finding the person chose to follow
     for n in range(1, GUARD_TRIES + 1):
         try:
             msg, _ = write(state, "lasting_guard", messages(focus, condition, cause, fix_patch, judge_code, header,

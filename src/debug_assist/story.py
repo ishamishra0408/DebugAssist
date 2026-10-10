@@ -273,7 +273,7 @@ def check(story: str, ev: dict, names: set) -> str:
     return m.group(1).strip()
 
 
-def tell(state: dict, checkout: Path, cause: dict, fix_patch: str) -> dict:
+def tell(state: dict, checkout: Path, cause: dict, fix_patch: str, feedback: str = "") -> dict:
     from . import profiles
     try:
         prof = profiles.get(((state.get("profile") or {}).get("repo")) or "")
@@ -281,7 +281,7 @@ def tell(state: dict, checkout: Path, cause: dict, fix_patch: str) -> dict:
         prof = None
     ev = gather(state["issue"], checkout, cause["file"], fix_patch, prof)
     names = set(ev["_names"])
-    refusal = ""
+    refusal = feedback   # an advisor's finding the person chose to follow (graph._go_with_advisor)
     for _ in range(2):  # the why_it_shipped turn cap is 2
         msg, _ = write(state, "why_it_shipped", messages(state.get("focus") or state["issue"]["title"], cause,
                                                          fix_patch, ev, refusal), max_tokens=3500)
