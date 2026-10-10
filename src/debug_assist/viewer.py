@@ -1114,8 +1114,38 @@ def _who(seat: str) -> dict:
     return {"role": w.get("role", "Advisor"), "motto": w.get("motto", ""), "palette": w.get("palette", "tide")}
 
 
-def _orb(seat: str) -> str:
-    return f'<span class="adv-orb pal-{e(_who(seat)["palette"])}" aria-hidden="true"></span>'
+# An advisor's seal: engraved line-work in its colour, one pattern per advisor (Isha 2026-10-10: "the balls are not
+# pretty; take inspiration from ThreeUI's components": its Engraved Certificate's guilloche rings). Each is drawn from a
+# few SVG shapes, so it stays small; the outer ring turns slowly (still with Reduce Motion).
+def _hexagon(r: float, turn: float = 0) -> str:
+    import math
+    pts = " ".join(f"{16 + r * math.cos(math.radians(60 * i + turn)):.2f},{16 + r * math.sin(math.radians(60 * i + turn)):.2f}"
+                   for i in range(6))
+    return f'<polygon points="{pts}"/>'
+
+
+SEAL_MOTIF = {
+    # Triage: a rosette of currents, sorted around one centre
+    "tide": "".join(f'<ellipse cx="16" cy="16" rx="10.4" ry="3.9" transform="rotate({i * 30} 16 16)"/>' for i in range(6))
+            + '<circle cx="16" cy="16" r="2.2" class="fill"/>',
+    # Localization: rings closing on a point, a crosshair through it
+    "violet": "".join(f'<circle cx="16" cy="16" r="{r}"/>' for r in (3.2, 6.4, 9.6))
+              + '<path d="M16 3.5v6.2M16 22.3v6.2M3.5 16h6.2M22.3 16h6.2"/><circle cx="16" cy="16" r="1" class="fill"/>',
+    # Incident review: three conditions overlapping, none of them a person
+    "ember": "".join(f'<circle cx="{16 + 4.1 * c:.2f}" cy="{16 + 4.1 * s_:.2f}" r="6.1"/>'
+                     for c, s_ in ((0, -1), (0.866, 0.5), (-0.866, 0.5)))
+             + '<circle cx="16" cy="16" r="1.3" class="fill"/>',
+    # Quality gate: nested hexagons, a gate through the middle
+    "moss": _hexagon(10.8, 30) + _hexagon(7.6, 30) + _hexagon(4.4, 30)
+            + '<path d="M13.6 11.4v9.2M18.4 11.4v9.2"/>',
+}
+
+
+def _seal(seat: str) -> str:
+    pal = _who(seat)["palette"]
+    return (f'<span class="adv-seal pal-{e(pal)}" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none" stroke="currentColor">'
+            f'<g class="ring"><circle cx="16" cy="16" r="14.6"/><circle cx="16" cy="16" r="13.2" class="ticks"/></g>'
+            f'<g class="motif">{SEAL_MOTIF.get(pal, SEAL_MOTIF["tide"])}</g></svg></span>')
 
 
 def advisor_sheet(d: dict, rid: str, can_answer: bool) -> str:
@@ -1474,14 +1504,14 @@ def _advisors(s: dict) -> str:
         raw, pid = rec.get("raw"), f"advfull-{step}"
         btn = (f'<button type="button" class="tbtn proof-btn" popovertarget="{pid}">{icons.list_(14)}<span>Full answer</span></button>'
                if raw else "")
-        ic = _orb(r["seat"]) if st == "ANSWERED" else ic   # its identity, as on the Connect page
+        ic = _seal(r["seat"]) if st == "ANSWERED" else ic   # its seal, in its colour
         rows.append(f'<li class="row adv-row {"done" if st == "ANSWERED" else "pending"}"><span class="ic">{ic}</span><span class="t adv">'
                     f'<b>{e(role)} advisor ({e(r["seat"])}) · after {e(step_name.get(step, step))}</b>{sub}</span>'
                     f'<span class="tr">{btn}</span></li>')
         if raw:
             verdict = raw.get("verdict") or (raw.get("machine_result") or {}).get("state") or ""
             sheets.append(_sheet(pid, f'{r["seat"]}: full answer', f'{e(r["seat"])} review',
-                                 f'{_orb(r["seat"])}<span class="Label Label--accent">{e(_who(r["seat"])["role"])}</span><b>{e(r["seat"])}</b> reviewed {e(r["what"])} '
+                                 f'{_seal(r["seat"])}<span class="Label Label--accent">{e(_who(r["seat"])["role"])}</span><b>{e(r["seat"])}</b> reviewed {e(r["what"])} '
                                  f'· via the Domain Expertise MCP server' + (f' · verdict <code class="gh-ref">{e(verdict)}</code>' if verdict else ""),
                                  full_answer(raw)))
     return (f'<section class="group"><h2>Advisors</h2><div class="sect"><ul class="rows">{"".join(rows)}</ul></div>{"".join(sheets)}'

@@ -253,7 +253,7 @@ def test_an_advisors_full_answer_opens_from_its_row_in_plain_sections():
     sheet = page.split('id="advfull-why_it_shipped"')[1]
     for part in ("Verdict", "Checks", "Findings", "Rules", "How this answer will be tested",
                  "Track record", "Raw response (JSON)", "blame scan", "3 answers, 0 checked", "Failed", "Passed",
-                 '<span class="Label Label--accent">Incident review</span>', 'class="adv-orb pal-ember"'):
+                 '<span class="Label Label--accent">Incident review</span>', 'class="adv-seal pal-ember"'):
         assert part in sheet, part
     assert "<b>The reviewer" not in sheet and "&lt;b&gt;The reviewer" in sheet          # the server's text is escaped
     assert sheet.count("<details") >= 7                                                 # each section folds
