@@ -547,7 +547,7 @@ def how_page() -> str:
 <main>
 <header class="hero"><h1>How it works</h1>
   <p class="lede">A run moves through these states, one action at a time. If an action fails, it tries again a fixed number of times, then stops and tells you why.</p></header>
-<p class="legend"><span>Box: where the run is</span><span>Arrow: what it does next</span><span class="a">Amber: it tries again</span><span class="r">Red: it stops, with the reason</span><span class="b">Dot: the run</span><span class="g">Advisor: reviews that step, advice only</span></p>
+<p class="legend"><span>Box: where the run is</span><span>Arrow: what it does next</span><span class="a">Amber: it tries again</span><span class="r">Red: it stops, with the reason</span><span class="b">Dot: the run</span><span class="g">Advisor: reviews that step; if it disagrees, you choose</span></p>
 {chart.section(None)}
 </main>
 <script src="/static/topo.js" defer></script><script src="/static/glass.js" defer></script><script src="/static/chart.js"></script>
@@ -686,7 +686,7 @@ def _advisor_cards() -> str:
         f'<div class="adv-panel" id="adv-panel-{e(r["seat"])}" role="tabpanel" data-seat="{e(r["seat"])}"{"" if k == 0 else " hidden"}>'
         f'<div class="adv-panel-head"><p class="adv-motto">\u201c{e(who.get("motto", ""))}\u201d</p>'
         f'<span class="pill {pill[1]}">{e(pill[0])}</span></div>'
-        f'<dl class="adv-facts"><div><dt>Asked</dt><dd>After step {num[step]}, {e(label[step])}. Advice only.</dd></div>'
+        f'<dl class="adv-facts"><div><dt>Asked</dt><dd>After step {num[step]}, {e(label[step])}. If it disagrees, the run pauses and you choose.</dd></div>'
         f'<div><dt>Checks</dt><dd>{e(r["question"])}</dd></div>'
         f'<div><dt>Gets</dt><dd>{e(who.get("gets", ""))}</dd></div></dl>'
         + (ask_box(r["seat"]) if live and r["seat"] in advisors.ASK else "") + '</div>'
@@ -720,7 +720,8 @@ def _advisor_cards() -> str:
             f'<div class="adv-cards">{cards}</div>'
             f'<details class="adv-connect"{" open" if first is not None else ""}><summary>How to connect them · '
             f'{sum(ok for _, ok, _ in steps)} of {len(steps)} done</summary><div class="sect"><ul class="rows">{rows}</ul></div></details>'
-            '<p class="foot">Advice only. An advisor never changes the fix, the pull request text or your OK.</p></section>')
+            '<p class="foot">An advisor changes nothing by itself. When one disagrees with what a run did, the run pauses '
+            'before the next step and you choose whose plan it follows.</p></section>')
 
 
 def connect_page(repo: str = "") -> str:

@@ -21,7 +21,8 @@ Every real answer is an event in the run's log and a 5-field receipt appended to
 The call (_call) is one MCP JSON-RPC `tools/call` of the server's `advise` tool, over Streamable HTTP. The server's
 seats are deterministic checks, not a model: allspaw scans each sentence for blame wording; qe-ic-advisor says whether
 a guard is a condition (runs by itself) or an instruction (someone must remember it). summarize() turns its
-JudgmentResult into plain sentences. The answer is shown and logged only: it never reaches a prompt or a decision.
+JudgmentResult into plain sentences. The answer is shown and logged. It reaches a prompt only when the person chooses
+the advisor's plan, and then only what we sent it: our own suspect files, sentences of our own report.
 """
 import json
 import os
@@ -103,7 +104,7 @@ def status() -> tuple[str, str]:
 
 def review(state: dict, step: str, evidence: str, question: str = "", context: dict | None = None,
            numbers: dict | None = None) -> dict:
-    """Ask the step's seat about its output. Never raises; never changes the run. question: what the server's template
+    """Ask the step's seat about its output. Never raises; changes nothing by itself. question: what the server's template
     files beside the evidence (allspaw: the fix's summary; qe-ic-advisor: what the guard is; defect-triage: the issue's
     title). context: what some seats also read (repo_name; repo_listing, repro_output, candidates). numbers: the
     triage's is_defect and confidence, for defect-triage's own rule."""
@@ -271,7 +272,7 @@ def plain_answer(text: str) -> str:
 def compare(step: str, raw: dict, state: dict) -> dict:
     """Does the advisor agree with what the run did? (Isha 2026-10-10: "what the advisors are saying I have no idea, and
     it's not evident how the MCP connection is modifying our system".) agrees | disagrees | can't compare, and why, in
-    plain words. Advice only: the run's own answer stands either way."""
+    plain words. Disagrees: the run pauses before the next step and the person chooses (graph._advisor_pause)."""
     mr = (raw or {}).get("machine_result") or {}
     verdict = mr.get("state") or (raw or {}).get("verdict") or ""
     out = state.get("outcome") or {}
@@ -357,6 +358,6 @@ def receipt(seat: str, question: str, answer: str) -> None:
     """One 5-field line appended to the bundle's usage_log.jsonl: the bundle's rule for every seat use."""
     line = {"ts": datetime.now().astimezone().isoformat(timespec="seconds"), "seat": seat,
             "question": question[:300], "output_summary": " ".join(answer.split())[:300],
-            "decision_changed": "none: advice only, recorded with the run"}
+            "decision_changed": "none when asked; if it disagrees, the run pauses and the person chooses (recorded with the run)"}
     with open(CFG.bundle_dir / "usage_log.jsonl", "a") as f:
         f.write(json.dumps(line, ensure_ascii=False) + "\n")

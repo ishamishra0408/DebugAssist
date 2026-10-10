@@ -95,7 +95,7 @@ def svg(adv: dict | None = None) -> str:
         parts.append(f'<path class="ce bad" id="ce-stop-{s}" d="M{X0 + BW} {y} L{PX - 4} {y}" marker-end="url(#cR)"/>')
         parts.append(f'<g class="cpill" id="cp-{s}"><rect x="{PX}" y="{y - 17}" width="{PW}" height="34" rx="17"/>'
                      f'<text x="{PX + PW / 2}" y="{y + 4}" text-anchor="middle">{_e(reason)}</text></g>')
-    # states; a step an advisor reviews carries it as a second line (advice only: it never changes the run)
+    # states; a step an advisor reviews carries it as a second line (it pauses the run only when it disagrees)
     for i, (s, label) in enumerate(STATES):
         y = _y(i)
         step = ADVISED.get(s)

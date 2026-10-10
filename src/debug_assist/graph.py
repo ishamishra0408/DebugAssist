@@ -169,6 +169,9 @@ def _advisor_pause(s: RunState, prior: str) -> dict:
     answer = interrupt({"kind": "advisor", "step": prior, "seat": rec.get("seat"), "role": role, "said": said,
                         "why": cmp["why"], "run_plan": run_plan(s, prior), "if_advisor": IF_ADVISOR[prior]})
     choice = "advisor" if str(answer).strip().lower() in ("advisor", "yes") else "run"
+    # only what we sent the advisor can come back into our prompts: its suspects must be our own candidates, its
+    # flagged sentences must be in our report (the server is outside; review of 2026-10-08 kept its text out of prompts)
+    rec = {**rec, "raw": _only_ours(prior, rec.get("raw") or {}, s)}
     events.log("advisor_choice", key=prior, reviewed=prior, seat=rec.get("seat"), choice=choice)
     upd = {"advisor_choices": {prior: {"choice": choice, "seat": rec.get("seat"), "role": role, "why": cmp["why"],
                                        "said": said, "at": now()}},
@@ -176,7 +179,24 @@ def _advisor_pause(s: RunState, prior: str) -> dict:
                    + ("the advisor's" if choice == "advisor" else "the run's") + " plan"]}
     if choice == "run":
         return upd
-    return _merged(upd, _go_with_advisor(s, prior, rec, cmp))
+    from .budget import BudgetExceeded, TurnCapExceeded
+    try:
+        return _merged(upd, _go_with_advisor(s, prior, rec, cmp))
+    except (TurnCapExceeded, BudgetExceeded) as ex:   # a cap never crashes the step: the run's plan stays
+        return _merged(upd, {"log": [f"{prior} again: not done ({ex}); the run's plan stays"]})
+
+
+def _only_ours(prior: str, raw: dict, s: RunState) -> dict:
+    mr = dict(raw.get("machine_result") or {})
+    if prior == "find_cause":   # a suspect is a real file of the repo, named by a plain relative path, or nothing
+        co = Path((s.get("repro") or {}).get("checkout") or "/nonexistent")
+        mr["candidates"] = [c for c in mr.get("candidates") or [] if isinstance(c, dict) and isinstance(c.get("path"), str)
+                            and re.fullmatch(r"[\w@.+-]+(/[\w@.+-]+)*", c["path"]) and ".." not in c["path"]
+                            and (co / c["path"]).is_file()]
+    if prior == "why_it_shipped":
+        text = (s.get("second_story") or {}).get("text") or ""
+        mr["blame_sentences"] = [b for b in mr.get("blame_sentences") or [] if isinstance(b, str) and b.strip() and b in text]
+    return {**raw, "machine_result": mr}
 
 
 def _go_with_advisor(s: RunState, prior: str, rec: dict, cmp: dict) -> dict:
@@ -188,6 +208,8 @@ def _go_with_advisor(s: RunState, prior: str, rec: dict, cmp: dict) -> dict:
                 "log": ["read_issue: STOPPED on the triage advisor's advice"]}
     if prior == "find_cause":
         kept = [c.get("path") for c in mr.get("candidates") or [] if c.get("path")]
+        if not kept:
+            return {"log": ["find_cause again: none of the advisor's suspects is a file of this repo; the run's cause stays"]}
         again = find_cause({**s, "advisor_suspects": kept})
         if (again.get("cause") or {}).get("status") != "FOUND":
             return {"log": ["find_cause again: no cause in the advisor's suspects; the run's cause stays"]}
@@ -478,8 +500,8 @@ def time_away(evs: list[dict], start: str, stop_: str) -> dict:
     waiting = 0.0
     for i, x in enumerate(mine):
         if x.get("kind") == "step" and x.get("ended") == "paused for approval":
-            answer = next((y for y in mine[i + 1:] if y.get("kind") in ("decision", "install") and
-                           (y.get("answer") or y.get("decision"))), None)
+            answer = next((y for y in mine[i + 1:] if y.get("kind") in ("decision", "install", "advisor_choice") and
+                           (y.get("answer") or y.get("decision") or y.get("choice"))), None)
             waiting += (t(answer["at"]) - t(x["at"])).total_seconds() if answer else 0.0
     installing = sum(float(x.get("seconds") or 0) for x in mine
                      if (x.get("kind") == "install" and "answer" not in x) or (x.get("kind") == "prepare" and x.get("what") == "install")

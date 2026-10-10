@@ -1419,7 +1419,7 @@ def full_answer(raw: dict) -> str:
 
 
 def _advisors(s: dict) -> str:
-    """Where an advisor seat reviews a step's output, and what happened: plain words, advice only."""
+    """Where an advisor seat reviews a step's output, and what happened, in plain words: agrees, or whose plan you chose."""
     from .advisors import ASK, REVIEWS, compare, status
     now, done, rows, sheets = status()[0], s.get("advisors") or {}, [], []
     said = {"OFF": "Not asked: advisors are off (not connected yet)",
