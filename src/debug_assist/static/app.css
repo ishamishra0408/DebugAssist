@@ -166,6 +166,8 @@ a.row:hover { background: var(--surface-2); text-decoration: none; }
 .row.stopped .ic { background: color-mix(in srgb, var(--red) 18%, transparent); color: var(--red); }
 .row .t { min-width: 0; } .row .t b { display: block; font-weight: 600; font-size: 17px; }
 .row .t span { display: block; font-size: 15px; color: var(--label-2); letter-spacing: -.012em; overflow-wrap: anywhere; }
+.row .t.adv > span + span { margin-top: 2px; }
+.row .t .Label { display: inline-block; margin-right: 6px; vertical-align: 1px; }
 .row.pending .t b { color: var(--label-2); font-weight: 500; } .row.pending .t span { color: var(--label-3); }
 .row .tr { font-size: 15px; color: var(--label-2); font-variant-numeric: tabular-nums; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
 .row .tr .i { color: var(--label-3); }

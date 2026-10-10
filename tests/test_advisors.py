@@ -162,3 +162,20 @@ def test_triage_with_numbers_uses_its_own_rule_and_the_locator_reads_suspects(fa
         "Verdict: a person decides. The missing fact to ask the reporter: Which version?")
     assert advisors.summarize("cause-locator", {"machine_result": {"state": "CAUSE_NOT_FOUND", "code": "NO_LOCATING_CUE"}}) == \
         "Not located: no failing output to locate from."
+
+
+def test_each_advisor_says_whether_it_agrees_with_the_run_in_plain_words():
+    """Isha 2026-10-10: "what the advisors are saying I have no idea, and it's not evident how the MCP connection is
+    modifying our system"."""
+    from debug_assist import advisors
+    s = {"cause": {"file": "packages/vue/src/use-object.ts"}, "context": {"path": "x"}}
+    kept = {"machine_result": {"state": "CANDIDATES", "candidates": [{"path": "packages/vue/src/use-object.ts"}]}}
+    assert advisors.compare("find_cause", kept, s) == {"agrees": True, "why": "it keeps the file the run blamed (use-object.ts)"}
+    other = {"machine_result": {"state": "CANDIDATES", "candidates": [{"path": "packages/vue/src/x.vue"}]}}
+    assert advisors.compare("find_cause", other, s)["agrees"] is False
+    assert advisors.compare("read_issue", {"verdict": "NEEDS_PERSON"}, s) == {
+        "agrees": False, "why": "it says a person should decide first; the run went on as a real bug"}
+    blame = {"machine_result": {"blame_sentences": ["The author forgot to test it."]}}
+    assert advisors.compare("why_it_shipped", blame, s) == {"agrees": False, "why": "1 sentence read as blaming a person"}
+    assert advisors.compare("lasting_guard", {"machine_result": {"guard_kind": "instruction"}}, s)["agrees"] is False
+    assert advisors.compare("lasting_guard", {}, s)["agrees"] is None

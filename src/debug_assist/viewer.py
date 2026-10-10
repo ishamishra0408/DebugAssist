@@ -1369,21 +1369,32 @@ def full_answer(raw: dict) -> str:
 
 def _advisors(s: dict) -> str:
     """Where an advisor seat reviews a step's output, and what happened: plain words, advice only."""
-    from .advisors import REVIEWS, status
+    from .advisors import ASK, REVIEWS, compare, status
     now, done, rows, sheets = status()[0], s.get("advisors") or {}, [], []
     said = {"OFF": "Not asked: advisors are off (not connected yet)",
             "BLOCKED": "Not asked: the advisors' server has not been reviewed yet",
             "ON": "Will be asked when this step finishes", "FAILED": "Could not be reached; the run went on without it"}
+    label = {True: '<span class="Label Label--done">Agrees</span>', False: '<span class="Label Label--attention">Disagrees</span>',
+             None: '<span class="Label">Can\'t compare</span>'}
+    step_name = dict((k, v) for k, v, _ in plain.STEPS)
     for step, r in REVIEWS.items():
         rec = done.get(step) or {}
         st = rec.get("status", now)
-        sub = (f"Said: {rec.get('answer', '')[:240]}" if st == "ANSWERED" else said.get(st, "Not asked"))
+        role = (ASK.get(r["seat"]) or {}).get("role", r["seat"])
+        # Isha 2026-10-10: say what it was asked, what it said and whether it agrees with the run, in plain words
+        answer = re.sub(r"\s*Reference judg_\w+\.?", "", rec.get("answer", ""))
+        answer = re.sub(r"\s*Its fix verdict reads FAIL only because.*?judgment of the fix\.", "", answer)
+        cmp = compare(step, rec.get("raw") or {}, s) if st == "ANSWERED" else None
+        sub = (f'<span>Asked: {e(r["question"].split("?")[0] + "?")}</span><span>Said: {e(answer[:240])}</span>'
+               f'<span>{label[cmp["agrees"]]} {e(cmp["why"][:1].upper() + cmp["why"][1:])}. It changed nothing: advice only.</span>'
+               if cmp else f"<span>{e(said.get(st, 'Not asked'))}</span>")
         ic = icons.check() if st == "ANSWERED" else icons.pause() if st in ("OFF", "BLOCKED") else icons.cross() if st == "FAILED" else icons.list_(18)
         raw, pid = rec.get("raw"), f"advfull-{step}"
         btn = (f'<button type="button" class="tbtn proof-btn" popovertarget="{pid}">{icons.list_(14)}<span>Full answer</span></button>'
                if raw else "")
-        rows.append(f'<li class="row {"done" if st == "ANSWERED" else "pending"}"><span class="ic">{ic}</span><span class="t">'
-                    f'<b>{e(r["seat"])} reviews {e(r["what"])}</b><span>{e(sub)}</span></span><span class="tr">{btn}</span></li>')
+        rows.append(f'<li class="row {"done" if st == "ANSWERED" else "pending"}"><span class="ic">{ic}</span><span class="t adv">'
+                    f'<b>{e(role)} advisor ({e(r["seat"])}) · after {e(step_name.get(step, step))}</b>{sub}</span>'
+                    f'<span class="tr">{btn}</span></li>')
         if raw:
             verdict = raw.get("verdict") or (raw.get("machine_result") or {}).get("state") or ""
             sheets.append(_sheet(pid, f'{r["seat"]}: full answer', f'{e(r["seat"])} review',
@@ -1391,8 +1402,10 @@ def _advisors(s: dict) -> str:
                                  f'· via the Domain Expertise MCP server' + (f' · verdict <code class="gh-ref">{e(verdict)}</code>' if verdict else ""),
                                  full_answer(raw)))
     return (f'<section class="group"><h2>Advisors</h2><div class="sect"><ul class="rows">{"".join(rows)}</ul></div>{"".join(sheets)}'
-            '<p class="foot">Advice only. An advisor never changes the fix, the pull request text or your OK. They are '
-            'switched on after the advisors\' server has been reviewed: <a href="/connect#advisors">how to connect them</a>.</p></section>')
+            '<p class="foot">How they connect: after these four steps, DebugAssistAgent sends the step\'s result to the Domain '
+            'Expertise MCP server. Each advisor there is a fixed rule check, not an AI, and answers in seconds. The answer '
+            'is shown here and logged; it never changes the fix, the pull request text or your OK. '
+            '<a href="/connect#advisors">How to connect them</a>.</p></section>')
 
 
 def _engineer_details(d: dict, s: dict, rows: list[dict], live: bool) -> str:

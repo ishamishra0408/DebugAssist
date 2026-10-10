@@ -24,6 +24,7 @@ JudgmentResult into plain sentences. The answer is shown and logged only: it nev
 """
 import json
 import os
+from pathlib import Path
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -257,6 +258,40 @@ def _rpc_message(raw: str, ctype: str) -> dict:
         return json.loads(raw)
     except ValueError:
         raise AdvisorError("the server's reply was not JSON") from None
+
+
+def compare(step: str, raw: dict, state: dict) -> dict:
+    """Does the advisor agree with what the run did? (Isha 2026-10-10: "what the advisors are saying I have no idea, and
+    it's not evident how the MCP connection is modifying our system".) agrees | disagrees | can't compare, and why, in
+    plain words. Advice only: the run's own answer stands either way."""
+    mr = (raw or {}).get("machine_result") or {}
+    verdict = mr.get("state") or (raw or {}).get("verdict") or ""
+    out = state.get("outcome") or {}
+    if step == "read_issue":
+        went_on = out.get("exit") not in ("NOT A DEFECT", "NEEDS PERSON") or bool(state.get("context"))
+        if verdict == "DEFECT":
+            return {"agrees": True, "why": "it also calls it a real bug" + ("" if went_on else ", but the run stopped")}
+        if verdict in ("NOT_A_DEFECT", "NEEDS_PERSON"):
+            return {"agrees": False, "why": ("it says this is not a bug" if verdict == "NOT_A_DEFECT" else
+                                             "it says a person should decide first") + "; the run went on as a real bug"}
+    if step == "find_cause":
+        mine = (state.get("cause") or {}).get("file")
+        kept = [c.get("path") for c in mr.get("candidates") or []]
+        if verdict == "CANDIDATES" and mine:
+            return ({"agrees": True, "why": f"it keeps the file the run blamed ({Path(mine).name})"} if mine in kept else
+                    {"agrees": False, "why": f"it drops the file the run blamed ({Path(mine).name}); it keeps "
+                                             + (", ".join(Path(k).name for k in kept) or "none")})
+        if verdict == "CAUSE_NOT_FOUND":
+            return {"agrees": False, "why": "it could not locate a cause from what it was sent"}
+    if step == "why_it_shipped" and mr.get("blame_sentences") is not None:
+        n = len(mr["blame_sentences"])
+        return ({"agrees": True, "why": "no sentence blames a person; the run's own name check found none either"} if not n else
+                {"agrees": False, "why": f"{n} sentence{'s' * (n != 1)} read as blaming a person"})
+    if step == "lasting_guard" and mr.get("guard_kind"):
+        return {"condition": {"agrees": True, "why": "the guard is a test that runs by itself"},
+                "instruction": {"agrees": False, "why": "it reads the guard as something a person must remember"}}.get(
+                    mr["guard_kind"], {"agrees": None, "why": "it could not tell what kind of guard this is"})
+    return {"agrees": None, "why": "its answer can't be compared with what the run did"}
 
 
 def summarize(seat: str, result: dict) -> str:
