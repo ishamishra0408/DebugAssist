@@ -40,7 +40,7 @@ def test_the_viewer_listens_on_localhost_only_and_only_reads(live):
     assert _get(live, "/health") == (200, "debug-assist viewer")
     code, page = _get(live, "/run/ai-1-x")
     assert code == 200 and 'data-k="step-0"' in page and "fetch(u" in page and 'http-equiv="refresh"' not in page
-    assert "<form" not in page and page.count('method: "POST"') == 2 and 'fetch("/api/decide"' in page  # your OK and Run again
+    assert "<form" not in page and page.count('method: "POST"') == 3 and 'fetch("/api/decide"' in page  # your OK, Run again, install
     assert 'fetch("/api/start"' in page
     for method in ("PUT", "DELETE"):
         assert _get(live, "/run/ai-1-x", method)[0] == 501

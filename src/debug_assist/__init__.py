@@ -14,6 +14,7 @@
   uv run debug-assist connect <repo-url>                            connect a repo: work out its setup, build its test sandbox, prove its tests
   uv run debug-assist advisors-check                                ask both advisors one fixed sample each (needs them switched on)
   uv run debug-assist refresh-pr <run-id>                           re-write a waiting run's PR text with the current layout (no AI)
+  uv run debug-assist answer <run-id> yes|no                        answer a run asking to install a package (rebuilds the test machine)
 
 --focus=TEXT            the one problem in the issue to reproduce (default: the issue's title)
 --focus-heading=HEADING the same, taken from the issue's section under that markdown heading
@@ -29,7 +30,7 @@ import sys
 from contextlib import ExitStack
 from datetime import datetime
 
-COMMANDS = {"preflight", "run", "resume", "approve", "reject", "status", "events", "cleanup", "view", "serve", "laya-serve", "connect", "advisors-check", "refresh-pr"}
+COMMANDS = {"preflight", "run", "resume", "approve", "reject", "status", "events", "cleanup", "view", "serve", "laya-serve", "connect", "advisors-check", "refresh-pr", "answer"}
 
 
 def _tracing():
@@ -225,8 +226,18 @@ def main() -> None:
             sys.exit(0 if ok else 1)
 
     from . import artifacts
-    if artifacts.enabled() and cmd in {"resume", "approve", "reject", "status"}:
+    if artifacts.enabled() and cmd in {"resume", "approve", "reject", "answer", "status"}:
         artifacts.restore_run(run_id)  # a host whose disk was wiped: the PR text and code copies come back first
+    if cmd in {"approve", "reject"} and _pause(app, cfg)[1].get("kind") == "install":
+        sys.exit(f"run {run_id} is asking whether to install a package, not for your OK: debug-assist answer {run_id} yes|no")
+    if cmd == "answer":
+        _, intr = _pause(app, cfg)
+        if intr.get("kind") != "install":
+            sys.exit(f"run {run_id} is not asking whether to install a package")
+        said = (args[2] if len(args) > 2 else "").strip().lower()
+        if said not in ("yes", "no"):
+            sys.exit("answer yes or no")
+        print(f"{'Installing' if said == 'yes' else 'Not installing'} {intr.get('package')}")
     if cmd == "approve":
         from .guardrails import fingerprint
         snap, intr = _pause(app, cfg)
@@ -241,7 +252,7 @@ def main() -> None:
 
     if cmd in {"run", "resume"} and "--no-view" not in flags:
         _open_viewer(run_id, int(opts.get("port", 8777)))
-    if trace and cmd in {"run", "resume", "approve", "reject"}:
+    if trace and cmd in {"run", "resume", "approve", "reject", "answer"}:
         _tracing()
     with _tagged(run_id, trace):
         if cmd == "run":
@@ -257,6 +268,9 @@ def main() -> None:
             app.invoke(None, cfg)
         elif cmd in {"approve", "reject"}:
             app.invoke(Command(resume="go" if cmd == "approve" else "reject"), cfg)
+        elif cmd == "answer":
+            meter.open_run(run_id, run_cap({"demo": demo}), CFG.sandbox_budget_s)  # no-op if it exists
+            app.invoke(Command(resume=args[2].strip().lower()), cfg)
 
     if CFG.sandbox_backend == "e2b":  # the run paused, stopped or finished: end its sandboxes now, not in an hour
         from .sandbox_e2b import close_run

@@ -286,7 +286,7 @@ def test_check_pr_binds_your_ok_to_the_text_shown_and_a_saved_file_cannot_decide
     decide = sheet.split('class="decide gh-merge"')[1]
     assert "<span>Approve</span>" in decide and "<span>Close pull request</span>" in decide and "No checks ran" in decide
     assert "icon" not in decide and "<svg" not in decide and "✓" not in sheet
-    assert 'fetch("/api/decide"' in live and "commit_message:" in live and live.count("fetch(") == 3
+    assert 'fetch("/api/decide"' in live and "commit_message:" in live and live.count("fetch(") == 4
     saved = viewer.render(d)
     assert "fetch(" not in saved and "data-decide" not in saved and "uv run debug-assist approve ai-1-x" in saved
 

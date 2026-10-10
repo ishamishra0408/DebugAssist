@@ -105,6 +105,7 @@ def gather(run_id: str, at: datetime | None = None) -> dict:
     return {"run_id": run_id, "state": snap.values or {}, "next": list(snap.next or []), "interrupt": intr, "pack": pack,
             "pr_text": pr_text, "pr_matches": pr_ok, "patch": patch, "pr_patch": pr_patch, "commit_message": commit_msg,
             "decided_by": next((x.get("by") for x in reversed(evs) if x.get("kind") == "decision" and x.get("by")), ""),
+            "ask": intr if intr.get("kind") == "install" else None,   # the run asks whether to install a package
             "events": evs,
             "trials": events.trials_of(run_id), "meter": mtr, "calls": calls,
             "built": datetime.now().strftime("%H:%M:%S"),
@@ -367,7 +368,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
   {replay_bar}
   <p class="eyebrow">{f'{e(who)} · Issue #{e(issue.get("number"))} · {e(model)}' if issue else 'New run'}{last_seen}</p>
   <h1>{e(issue.get('title') or ('Getting ready' if not s else 'Run ' + rid))}</h1>
-  <p class="status {cls}" role="status"><span class="dot"></span><span>{e(headline(phase, cur, rows))}</span>{f'<span class="sub">· {_since(d, running_since, is_replay)}</span>' if running_since else ''}</p>
+  <p class="status {cls}" role="status"><span class="dot"></span><span>{e("Waiting for your answer: install a package?" if d.get("ask") and phase == "waiting" else headline(phase, cur, rows))}</span>{f'<span class="sub">· {_since(d, running_since, is_replay)}</span>' if running_since else ''}</p>
   <ol class="track" style="--n:{len(rows)}" aria-label="The {len(rows)} steps">{nodes}</ol>
 </header>"""
 
@@ -400,6 +401,9 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
         elif st == "running":
             sub = " · ".join(chips[-2:] + ([cnt] if cnt else [])) or "Starting this step"
             trail = _since(d, d.get("since"), is_replay)
+        elif st == "waiting" and d.get("ask"):   # Isha 2026-10-10: the package isn't installed; may it be?
+            sub = f"Waiting for you: {d['ask'].get('package')} isn't installed on the test machine. Install it?"
+            trail = '<button type="button" class="tbtn proof-btn" popovertarget="installask"><span>Answer</span></button>'
         elif st == "waiting":
             sub = ("Check the pull request, then approve it or close it" if served and not is_replay else
                    "Check the pull request, then approve or say no in your terminal")
@@ -462,8 +466,13 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
             "working": ("Nothing to do right now", "This page updates by itself.", ""),
             "interrupted": ("Interrupted", f"Nothing has happened for {quiet}. Continue it from your terminal.", _copy(resume, "Copy resume command", True)),
             "crashed": ("Crashed", "Continue it from your terminal.", _copy(resume, "Copy resume command", True)),
-            "waiting": ("Your OK is needed", "Check the pull request, then approve it or close it. Nothing is posted to GitHub.",
-                        '<button type="button" class="btn glass prominent" popovertarget="check-pr"><span>Check PR</span></button>'),
+            "waiting": (("Install a package?", f"{(d.get('ask') or {}).get('package')} isn't installed on the test machine, so "
+                         "its tests can't run.", '<button type="button" class="btn glass prominent" popovertarget="installask">'
+                         '<span>Answer</span></button>' if served else
+                         _copy(f"cd ~/Projects/DebugAssist && uv run debug-assist answer {rid} yes", "Copy install command", True))
+                        if d.get("ask") else
+                        ("Your OK is needed", "Check the pull request, then approve it or close it. Nothing is posted to GitHub.",
+                         '<button type="button" class="btn glass prominent" popovertarget="check-pr"><span>Check PR</span></button>')),
             "stopped": ("Stopped", plain.exit_text(outcome.get("exit")).removeprefix("Stopped. "),
                         (_again(s) + _link("/", "New run", icons.plus(16))) if served else ""),
             "done": ("Done", "The pull request text is saved. Nothing has been posted to GitHub.",
@@ -513,7 +522,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
 
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 {'<meta http-equiv="refresh" content="3">' if live and not served else ''}
-<title>{e(headline(phase, cur, rows))} · {plain.NAME}</title>
+<title>{e("Waiting for your answer" if d.get("ask") and phase == "waiting" else headline(phase, cur, rows))} · {plain.NAME}</title>
 <meta name="color-scheme" content="dark light">
 {css}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
@@ -537,6 +546,7 @@ def render(d: dict, mode: str = "file", replay: dict | None = None, token: str =
   <div class="gh-body">{_k("proof", proof_html or '<div class="proof gh-proof"><p class="gh-muted">Not shown yet.</p></div>')}</div>
 </div>
 {_check_pr(d, rid, served and not is_replay, approve, reject, waiting=phase == "waiting" and not is_replay) if d["pr_text"] else ""}
+{_k("sheet-ask", install_sheet(d, rid, served and not is_replay) if d.get("ask") and phase == "waiting" else '<i id="installask" hidden></i>')}
 {_k("sheet-ctx", ctx_html or '<i id="ctxinfo" hidden></i>')}
 {_k("sheet-change", change_html or '<i id="codechange" hidden></i>')}
 {_k("sheet-report", report_html or '<i id="report" hidden></i>')}
@@ -1011,6 +1021,37 @@ def _blob(snippets: str, marks: list) -> str:
     return f'<div class="dscroll"><table class="dtable blob">{"".join(rows)}</table></div>'
 
 
+def install_sheet(d: dict, rid: str, can_answer: bool) -> str:
+    """The question (Isha 2026-10-10): the package the bug is in isn't installed on the test machine; install it?
+    Yes rebuilds the test machine with it, for this and every later run of the repo; No stops, nothing spent."""
+    a = d.get("ask") or {}
+    pkg, folder, mins = a.get("package", ""), a.get("dir", ""), a.get("minutes", 3)
+    body = (f'<div class="gh-annot warn"><b>{e(pkg)} isn\'t installed on the test machine</b><p>The bug is in '
+            f'<code class="gh-ref">{e(folder)}</code>, but that package isn\'t on the test machine, so none of its tests '
+            f'can run, and a test written for this bug couldn\'t either. Nothing has been spent on writing tests yet.</p></div>'
+            f'<div class="gh-box"><div class="gh-box-head"><span>If you install it</span></div>'
+            f'<div class="gh-check"><span class="gh-cname"><b>The test machine is rebuilt with {e(pkg)}</b><span class="gh-muted">about '
+            f'{e(mins)} minutes and a few cents of E2B credit; runs have no internet, so this is how a package is added</span></span></div>'
+            f'<div class="gh-check"><span class="gh-cname"><b>The run goes on to Show the bug</b><span class="gh-muted">with the '
+            f'package\'s own tests first</span></span></div>'
+            f'<div class="gh-check"><span class="gh-cname"><b>It stays installed</b><span class="gh-muted">every later run of '
+            f'{e(a.get("repo", "this repo"))} has it; no one is asked again</span></span></div></div>')
+    if can_answer:
+        body += (f'<div class="decide gh-merge" data-run="{e(rid)}" data-ask="install">'
+                 f'<div class="gh-merge-lines"><b>Install {e(pkg)}?</b><span class="gh-muted">If you say no, the run stops '
+                 f'here with nothing spent.</span></div><div class="gh-merge-btns">'
+                 f'<button type="button" class="gh-btn danger" data-install="no" data-label="No, stop the run" '
+                 f'data-confirm="Confirm: stop the run"><span>No, stop the run</span></button>'
+                 f'<button type="button" class="gh-btn primary" data-install="yes" data-label="Install and continue" '
+                 f'data-confirm="Confirm: install"><span>Install and continue</span></button></div>'
+                 f'<p class="decide-msg" role="status"></p></div>')
+    else:
+        body += (f'<div class="gh-box"><div class="cmd"><code>cd ~/Projects/DebugAssist && uv run debug-assist answer {e(rid)} yes</code></div>'
+                 f'<div class="cmd"><code>cd ~/Projects/DebugAssist && uv run debug-assist answer {e(rid)} no</code></div></div>')
+    return _sheet("installask", "Install a package?", f"Install {e(pkg)}?",
+                  '<span class="Label Label--attention">Needs your answer</span>Show the bug is waiting for you', body)
+
+
 def _gh_link(repo: str, path: str, text: str, cls: str = "") -> str:
     """A link to the repo on GitHub, in a new tab; plain text when the repo is unknown."""
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo or "") or not re.fullmatch(r"[\w./@+-]+", path or ""):
@@ -1372,6 +1413,26 @@ document.addEventListener("click", ev => {
   document.getElementById("commit-title").dispatchEvent(new Event("input", { bubbles: true }));
 });
 const TOKEN = __TOKEN__;
+document.addEventListener("click", async ev => {   // install a missing package? (a second tap confirms)
+  const b = ev.target.closest("[data-install]"); if (!b) return;
+  const box = b.closest(".decide"), msg = box.querySelector(".decide-msg");
+  if (b.dataset.armed !== "1") {
+    box.querySelectorAll("[data-install]").forEach(x => { x.dataset.armed = ""; x.querySelector("span").textContent = x.dataset.label; });
+    b.dataset.armed = "1"; b.querySelector("span").textContent = b.dataset.confirm;
+    setTimeout(() => { if (b.dataset.armed === "1") { b.dataset.armed = ""; b.querySelector("span").textContent = b.dataset.label; } }, 5000);
+    return;
+  }
+  box.querySelectorAll("[data-install]").forEach(x => { x.disabled = true; });
+  msg.textContent = b.dataset.install === "yes" ? "Installing…" : "Stopping…";
+  try {
+    const r = await fetch("/api/install", { method: "POST", headers: { "X-DebugAssistAgent-Token": TOKEN, "Content-Type": "application/json" },
+      body: JSON.stringify({ run_id: box.dataset.run, answer: b.dataset.install }) });
+    const j = await r.json();
+    msg.textContent = r.ok ? j.said : (j.error || "Something went wrong.");
+    if (!r.ok) box.querySelectorAll("[data-install]").forEach(x => { x.disabled = false; });
+  } catch (e) { msg.textContent = "Could not reach DebugAssistAgent."; box.querySelectorAll("[data-install]").forEach(x => { x.disabled = false; }); }
+});
+addEventListener("load", () => { const a = document.getElementById("installask"); if (a && a.showPopover) { try { a.showPopover(); } catch (e) {} } });
 document.addEventListener("click", async ev => {   // Run again: the same issue, the same choices
   const b = ev.target.closest("[data-again]"); if (!b) return;
   b.disabled = true; const l = b.querySelector("span"); l.textContent = "Starting…";

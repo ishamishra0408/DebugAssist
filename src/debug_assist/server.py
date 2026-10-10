@@ -346,6 +346,35 @@ def decide(run_id: str, decision: str, sha: str, commit_message: str = "", by: s
             else "You said no. Ending the run; this page updates in a few seconds.")
 
 
+def install_answer(run_id: str, answer: str, by: str = "") -> str:
+    """Answer a run asking whether to install a missing package (Isha 2026-10-10). Runs `debug-assist answer <run-id>
+    yes|no` in the background, as the run itself: yes rebuilds the test machine and the run goes on."""
+    if answer not in ("yes", "no"):
+        raise Refused("Answer yes or no.")
+    if not RUN_ID.match(run_id) or not (CFG.runs_dir / run_id).is_dir():
+        raise Refused("No such run.")
+    snap = viewer._app().get_state({"configurable": {"thread_id": run_id}})
+    intr = next((i.value for t in (snap.tasks or []) for i in (t.interrupts or [])), None) or {}
+    if intr.get("kind") != "install":
+        raise Refused("This run is not asking to install a package.")
+    with _start_lock:
+        proc = _child["proc"]
+        if proc is not None and proc.poll() is None:
+            raise Refused("A run is already going. Wait for it to finish, then answer.")
+        from . import events
+        with events.bind(run_id, "reproduce"):
+            events.log("decision", key=f"install-{intr.get('package')}", decision=f"install {answer}", by=by,
+                       package=intr.get("package"))
+        with open(CFG.runs_dir / run_id / "console.log", "a") as log:   # the run continues: its output where the page reads it
+            _child["proc"] = subprocess.Popen([sys.executable, "-m", "debug_assist", "answer", run_id, answer, "--no-view"],
+                                              cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                              start_new_session=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
+        _child["run_id"] = run_id
+    return (f"Installing {intr.get('package')}: the test machine is being rebuilt (about {intr.get('minutes', 3)} minutes), "
+            "then the run goes on. This page updates by itself." if answer == "yes" else
+            "You said no. The run stops here, with nothing spent.")
+
+
 # ── connect a repo: one at a time, started the same way the terminal starts it ───────────────────────────────────
 _connector: dict = {"proc": None, "repo": None}
 
@@ -1121,13 +1150,18 @@ class Handler(BaseHTTPRequestHandler):
                 or not (self.headers.get("Content-Type") or "").startswith("application/json")):
             return self._json(403, {"error": "Not allowed. Start runs from the DebugAssistAgent home page."})
         path = urlparse(self.path).path
-        if path not in ("/api/start", "/api/connect", "/api/advisors-ask", "/api/decide"):
+        if path not in ("/api/start", "/api/connect", "/api/advisors-ask", "/api/decide", "/api/install"):
             return self._json(404, {"error": "not found"})
         n = int(self.headers.get("Content-Length") or 0)
         if n > 4096:
             return self._json(413, {"error": "too large"})
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
+            if path == "/api/install":
+                if not owns(self.user(), str(body.get("run_id", ""))):
+                    raise Refused("No such run.")
+                return self._json(200, {"said": install_answer(str(body.get("run_id", "")), str(body.get("answer", "")),
+                                                               by=self.user())})
             if path == "/api/decide":
                 if not owns(self.user(), str(body.get("run_id", ""))):
                     raise Refused("No such run.")

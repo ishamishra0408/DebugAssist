@@ -36,6 +36,13 @@ def sign_in_off(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_profile_extras(monkeypatch):
+    """Tests see the profiles as written, never packages chosen on this Mac (pkgcheck.extras reads MongoDB)."""
+    from debug_assist import pkgcheck
+    monkeypatch.setattr(pkgcheck, "extras", lambda repo: [])
+
+
+@pytest.fixture(autouse=True)
 def advisors_off(monkeypatch, tmp_path):
     """Tests never reach the real advisors or write to the real bundle, whatever .env says (2026-10-08: with the
     advisors switched on in .env, a test could have asked the live server). A test that needs them sets its own."""

@@ -119,11 +119,12 @@ def connected(repo: str) -> RepoProfile | None:
 
 def get(repo: str) -> RepoProfile:
     """The profile for owner/name: built-in first, then connected."""
+    from .pkgcheck import with_extras   # packages a person chose to install for this repo (pkgcheck.py)
     if repo in PROFILES and PROFILES[repo].base_commit:
-        return PROFILES[repo]
+        return with_extras(PROFILES[repo])
     p = connected(repo)
     if p:
-        return p
+        return with_extras(p)
     if repo in PROFILES:
         return PROFILES[repo]
     raise UnknownRepo(f"{repo} is not connected yet. Connect it first (the Connect a repo page).")

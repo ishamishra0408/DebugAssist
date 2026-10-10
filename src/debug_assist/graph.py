@@ -289,6 +289,43 @@ def _after_fix(s: RunState, prof, checkout: Path, paths: list) -> list[dict]:
 TEST_MACHINE_NOT_READY = "TEST MACHINE NOT READY"
 
 
+def _install_if_missing(s: RunState, checkout: Path, ctx, plan: dict, seen) -> dict | None:
+    """Before any test is written: is the package the bug lives in installed on the test machine? If not, the run
+    pauses and asks (Isha 2026-10-10). Yes: rebuild the test machine with it, then add it to the repo's install list for
+    good, and go on. No: stop, nothing spent. None = installed (or nothing to check); else the step's stopped output."""
+    import dataclasses
+    import time
+    from . import pkgcheck
+    prof = profiles.get(s["profile"]["repo"])
+    pkg = getattr(ctx, "package_dir", "") or langs.of(prof).package_of(ctx.source)
+    gap = pkgcheck.missing(prof, checkout, pkg)
+    if not gap:
+        return None
+    answer = interrupt({"kind": "install", "package": gap["name"], "dir": gap["dir"], "repo": prof.repo,
+                       "minutes": pkgcheck.MINUTES})
+    def stopped(why: str) -> dict:
+        return {"repro": {"status": "NOT RUN", "ladder_plan": plan, "attempts_used": 0, "failing_test": None,
+                          "oracle_test": None, "located": ctx.source, "checkout": str(checkout),
+                          "sandbox_secrets_visible": seen, "install": {"package": gap["name"], "answer": str(answer)}},
+                "outcome": stop(TEST_MACHINE_NOT_READY, f"{why}; no test was written"),
+                "log": [f"reproduce: STOPPED {TEST_MACHINE_NOT_READY}: {why}"]}
+    if str(answer).strip().lower() != "yes":
+        events.log("install", key=f"{gap['name']}-no", package=gap["name"], answer="no")
+        return stopped(f"{gap['name']} is not installed on the test machine, and you chose not to install it")
+    events.log("install", key=f"{gap['name']}-yes", package=gap["name"], answer="yes")
+    plus = dataclasses.replace(prof, filters=(prof.filters + f" --filter '{gap['name']}...'").strip())
+    t0 = time.monotonic()
+    try:
+        pkgcheck.rebuild(plus, checkout)
+    except Exception as ex:
+        return stopped(f"installing {gap['name']} failed: {str(ex)[:300]}")
+    events.log("install", key=f"{gap['name']}-built", package=gap["name"], seconds=round(time.monotonic() - t0))
+    if pkgcheck.missing(plus, checkout, pkg, trust_list=False):
+        return stopped(f"{gap['name']} is still not installed after the rebuild")
+    pkgcheck.add(prof.repo, gap["name"])   # for good: later runs of this repo never ask again
+    return None
+
+
 def _record_attempt(s: RunState, a: ladder.Attempt) -> ladder.Attempt:
     a.at = now()
     events.log("attempt", key=f"{a.rung}#{a.n}", **ladder.as_records([a])[0])  # written as it ends: survives a crash
@@ -331,6 +368,9 @@ def reproduce(s: RunState):
     if s["profile"].get("recorded_fixtures") and not beside:
         skipped["integration"] = f"no recorded data beside {Path(ctx.source).parent.as_posix()}"
     plan = {"rungs": [r.name for r in rungs], "skipped": skipped, "cap": REPRO_ATTEMPT_CAP}
+    stopped = _install_if_missing(s, checkout, ctx, plan, seen)
+    if stopped:
+        return stopped
     existing = _existing_tests(s, checkout, ctx, profiles.get(s["profile"]["repo"]))
     if existing.get("status") == "CANNOT RUN":  # a test written here could never run: stop before any AI is spent
         why = f"the test machine cannot run the tests of {existing.get('package')}: {existing.get('why', '')}"
