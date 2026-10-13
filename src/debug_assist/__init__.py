@@ -15,6 +15,7 @@
   uv run debug-assist advisors-check                                ask both advisors one fixed sample each (needs them switched on)
   uv run debug-assist refresh-pr <run-id>                           re-write a waiting run's PR text with the current layout (no AI)
   uv run debug-assist answer <run-id> yes|no                        answer a run asking to install a package (rebuilds the test machine)
+  uv run debug-assist answer <run-id> advisor|run                   an advisor disagreed: follow its plan, or keep the run's
 
 --focus=TEXT            the one problem in the issue to reproduce (default: the issue's title)
 --focus-heading=HEADING the same, taken from the issue's section under that markdown heading

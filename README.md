@@ -1,98 +1,93 @@
-# Debug Assist — a learning machine for bugs
+# DebugAssistAgent
 
-Takes a GitHub bug and returns three things: **the fix**, **why it shipped** (conditions, not blame), and **a lasting
-guard** that catches this kind of bug next time. Design docs: `~/Downloads/debug-assist-pipeline/` (start with
-`ARCHITECTURE.md` and `DECISIONS.md`).
+## [Run it on a real bug →](https://debugassistagent.onrender.com)
 
-## Setup (done 2026-10-06)
-| Piece | How it runs |
-|---|---|
-| Python 3.12 **native arm64** (uv-managed) | `.python-version` pins it. The system Pythons on this Mac are Intel builds under Rosetta, and MLX/Laya need arm64 |
-| LangGraph, LangChain (OpenRouter, MCP, Ollama), MongoDB checkpointer, Phoenix OTel, laya-mlx | `uv sync` |
-| MongoDB Atlas Local (vector search) + Arize Phoenix | `docker compose up -d` (localhost only) |
-| Qwen3-Embedding 0.6B | `ollama pull qwen3-embedding:0.6b` |
-| Laya checkpoint `aac6fef/laya-mlx` (independent MLX port, Apache-2.0, 0.85 GB) | Downloads on first load |
+**A bug report comes in. DebugAssistAgent writes a test that fails because of it, finds the cause, and writes a fix that two separate tests must pass. Then it explains how the bug slipped through (conditions, never people) and adds a guard for bugs like it. Nothing reaches GitHub until you approve the exact text.**
 
-## Every session
+**Live:** [start a run](https://debugassistagent.onrender.com) · [how it works](https://debugassistagent.onrender.com/how) · [system check](https://debugassistagent.onrender.com/checks). Sign in with GitHub; accounts are by invitation.
+
+**Every run starts from the latest main.** The run reads main's newest commit, moves its own copy of the code there, and says so at the top of the page ("Branched from main at ba05943 · fetched 10 Oct, 19:19 UTC"). The test machine is rebuilt only when the package list changed. A package the bug needs but the machine lacks is installed only after you say yes.
+
+**Advisors review four steps through MCP, and you decide.** Advisor seats on the Domain Expertise MCP server check the triage, the cause, the report and the guard. When one disagrees, the run pauses before the next step and shows both plans side by side; you choose whose plan it follows. Only what we sent the advisor can come back into a prompt: our own repo files, our own report's sentences.
+
+**Laya triages; Claude fixes.** Laya, a triage model fine-tuned for this, decides whether the issue is a real bug. Claude Opus writes the tests, the cause and the fix. Every test runs with the network off: in E2B sandboxes when hosted, in Docker on a Mac.
+
+**Result:** on 2 of 2 bugs compared with the maintainers' own fixes, the cause was the same lines they changed. Our fixes passed every test DebugAssistAgent wrote, but not every test the maintainers wrote ([below](#result)).
+
+![A run on vercel/ai#22543: ten steps, waiting for your OK, branched from the latest main](docs/run-page.png)
+
+## The problem
+
+A maintainer gets a bug report. Before anyone writes a fix, someone has to make the bug happen on purpose, find the lines that cause it, and prove the fix works without breaking anything else. vercel/ai, the repo we test on, opened more than a hundred new issues in two days this week.
+
+AI fixers mostly stop at a patch that makes the reporter's example pass. That fails in two quiet ways. The patch is narrow: it passes its own test and misses the cases a maintainer would have tested. And nobody records why the bug got through, so the same kind comes back.
+
+## What it does
+
+Ten steps in a fixed order, each checkpointed, so a crash resumes where it stopped.
+
+1. **Read the issue:** Laya decides whether it is a real bug, and how sure it is.
+2. **Gather context:** comments, linked PRs, error lines, the files that match the issue's exact strings, how other packages do the same thing. No AI.
+3. **Show the bug:** a new test that fails on main *for the issue's reason*. A crash or a wrong failure does not count.
+4. **Find the cause:** the file and lines, read from the failing test's output.
+5. **Fix it:** the smallest change that turns that test green with every affected test suite still passing, confirmed by a second test written without seeing the fix.
+6. **Why it slipped:** the conditions that let it ship, from the line's history on GitHub. Never a person.
+7. **Guard similar bugs:** one test over every way this kind of bug can happen.
+8. **Check old code:** would the guard have caught it when it was written?
+9. **Your OK:** the pull request as GitHub would show it: description, files, tests, commit message. You approve or close it.
+10. **PR ready:** the text and the change are saved. Nothing is posted for you.
+
+It decides on evidence, not on the model's word: a fix counts only when tests that failed on main pass with it.
+
+## Result
+
+Each fix compared with the maintainers' own, on the same commit the run used, with the network off:
+
+| Bug | Cause | Our tests on our fix | Maintainers' tests on our fix |
+|---|---|---|---|
+| [#22085](https://github.com/vercel/ai/issues/22085) WorkflowAgent drops provider tool results when the output is cut off | **Same lines** as the merged fix [#22093](https://github.com/vercel/ai/pull/22093) | 2 of 2 pass | 56 of 59 pass; **3 of their 4 new cases fail** (a broken local tool call in the same step) |
+| [#22543](https://github.com/vercel/ai/issues/22543) Vue `useObject` drops headers given as a `Headers` instance | **Same lines** as the open fix [#22545](https://github.com/vercel/ai/pull/22545) | 2 of 2 pass; the whole vue suite passes (58) | **Fails** their case of a `Headers` instance that sets its own content type |
+
+**We report the maintainers' tests because our own would flatter us.** Both fixes passed every test DebugAssistAgent wrote; neither passed all of the maintainers'. In both cases the cause was right and the fix too narrow: it patched where the symptom showed instead of reusing the code the repo already had. Since then, the fix step is shown how other packages and the repo's own helpers do the same thing, and fix PRs named in the issue's discussion. The next step is to run the upstream fix's tests against every fix before your OK.
+
+The #22543 run: 9 minutes, $0.41 of AI, 8 model calls. Method and full outputs: [`docs/RESULTS.md`](docs/RESULTS.md).
+
+## Run locally
+
+Needs Python 3.12 (uv), Docker, and your own keys in `.env`.
+
 ```bash
-cd ~/Projects/DebugAssist
-docker compose up -d                                                  # MongoDB + Phoenix (UI: http://localhost:6006)
-python3 scripts/doctor.py                                             # layer 0: works even if the package won't import
-uv run debug-assist preflight https://github.com/vercel/ai/issues/21439   # every dependency, named PASS/FAIL, starts nothing
+git clone https://github.com/ishamishra0408/DebugAssist && cd DebugAssist
+uv sync && git config core.hooksPath .githooks
+uv run pytest                                   # 315 tests
+cp .env.example .env                            # fill it in yourself; it is git-ignored
+docker compose up -d                            # MongoDB and Phoenix, localhost only
+uv run debug-assist serve --port=8777           # http://127.0.0.1:8777
 ```
-`run` and `resume` always do the preflight first and refuse to start with every failing check listed. `--demo` uses Claude Opus
-under the $2.50 demo cap; `--no-trace` runs without Phoenix on purpose (recorded as trace OFF).
 
-## Run it
-```bash
-uv run debug-assist run https://github.com/vercel/ai/issues/21439 "--focus-heading=Secondary observation"
-                                                                     # runs until it pauses for approval or stops
-uv run debug-assist resume  <run-id>                                 # after a crash: continues after the last finished step
-uv run debug-assist approve <run-id>                                 # your go-word; prints the sha it approves
-uv run debug-assist reject  <run-id>
-uv run debug-assist events  <run-id>                                 # every model call, sandbox command, decision, attempt
-uv run debug-assist cleanup [--yes]                                  # delete finished runs' code copies (patch kept)
-uv run pytest                                                        # 95 tests (Mongo + Docker ones skip if those are down)
+Hosting it (Render, E2B, MongoDB Atlas, Laya through Tailscale): [`deploy/DEPLOY.md`](deploy/DEPLOY.md). Commands, guardrails and troubleshooting: [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
+
+## Repo map
+
 ```
-`--focus-heading=…` picks the ONE problem to reproduce from a section of the issue (or `--focus="…"` gives it
-outright); without either, the title is the focus. A missing section stops the run as NEEDS PERSON.
-
-## Base checkouts (one per repo, prepared once)
-Each run copies a clean, installed, built checkout of the repo at the commit pinned in `profiles.py`
-(`~/Projects/checkouts/base/<owner>-<repo>@<sha7>`; APFS copy-on-write, ~20 s, little new disk). Preflight refuses a
-run when the base is missing, at another commit, or edited.
-```bash
-uv run python scripts/prepare_base.py vercel/ai      # clone at the pinned commit, install (network on), build (off)
+src/debug_assist/   the pipeline and the web app
+  graph.py          the ten steps, the pauses (install, advisor, your OK), resume
+  context.py        Gather context
+  testwriter.py     Show the bug, and the check that a test fails for the issue's reason
+  fixer.py          Find the cause, Fix it, the second test
+  story.py          Why it slipped
+  guard.py          Guard similar bugs
+  backtest.py       Check old code
+  advisors.py       the advisors on the Domain Expertise MCP server
+  fresh.py          every run on the latest main
+  pkgcheck.py       a missing package, installed on your yes
+  server.py         the home page, sign-in, the APIs
+  viewer.py         the run page
+tests/              315 tests; a commit is refused while any fails
+deploy/             Render, E2B and Laya setup
+scripts/            base checkouts, the E2B template, a doctor for the local setup
+training/           Laya's triage fine-tune
+docs/               results, operations
 ```
-A run ends one of these ways (the `outcome` field, printed as `STOPPED: ...`):
 
-| Outcome | When |
-|---|---|
-| `NEEDS PERSON` | Triage confidence below 0.6: a person reads the issue first |
-| `NOT A DEFECT` | Triage confident it is not a bug (is_defect p < 0.5) |
-| `NEVER REPRODUCED` | The reproduction ladder used its 4 attempts and nothing went red: no fix for a bug we could not see |
-| `CAUSE NOT FOUND` | The model could not name a real source file and lines for the cause |
-| `FIX NOT VALIDATED` | 3 fix attempts, none turned the failing test green with every affected suite still passing |
-| `TEST FLAWED` | The fixer says the judging test cannot be passed (it may never edit it); a person checks the test |
-| `STORY NOT WRITTEN` / `GUARD NOT WRITTEN` | No second story passed the checks (names, 2+ conditions, nothing invented), or no guard failed on the unfixed code |
-| paused at approval | Waiting for your go-word |
-| `REJECTED` / `READY FOR YOU TO PUBLISH` | After your answer |
-
-Status (2026-10-07): **8 of 9 steps are real.** Only the back-test half of `test_past_bugs` is still to build (its
-vector search is real). Use `--demo` (Claude Opus) for runs that matter: the dev model's fixes pass one test but miss
-the issue, and only a fix confirmed by two independent tests counts toward ⏱. Real today: GitHub read, Laya
-triage + typed exits, sandbox secret probe, the ladder's plan and climb logic, the spend meter, resume, the event
-log, condition freeze, vector search, approval fingerprint, read-only publish path (`runs/<id>/publish.sh`).
-
-## Guardrails (code, not prompts)
-| Guardrail | Where | Refuses |
-|---|---|---|
-| Approval fingerprint | `guardrails.py` | Publishing without your go-word, or with text changed after it |
-| Read-only GitHub | `github_read.py` | Any write: the pipeline has no write credential |
-| No secrets in sandbox | `sandbox.py` | Host env vars inside the container (probe vs the image's own env); network off by default |
-| Spend stop that survives a crash | `meter.py`, `budget.py` | A call whose worst case could pass the run cap (checked BEFORE the call, atomically in MongoDB); calls past a step's turn cap; models with no price on file. A crash mid-call leaves the reservation counted |
-| One door to the model | `models.py` | Any generation call that skips the meter: `ChatOpenRouter` is built only in the private `_writer` (a test enforces it) |
-| Sandbox time cap | `meter.py`, `sandbox.py` | Sandbox commands past `SANDBOX_BUDGET_S` (1800 s per run); the last command gets what is left |
-| Reproduction ladder | `ladder.py` | Writing a fix before a test went red; more than 4 attempts; counting an unexplained failure as a reproduction; a made-up-data RED goes unconfirmed (re-run on a recorded stream when the repo has one) |
-| Test writer | `testwriter.py` | A test placed anywhere but a NEW file beside the code; a "recorded stream" test that reads no fixture; a RED whose failing assertion doesn't show the focus's own strings (wrong-reason RED); env vars or real hosts in a test |
-| Validated fix only | `fixer.py` | A fix that edits tests, fixtures or the failing test; a SEARCH that matches 0 or 2+ places; a fix that leaves the test red or breaks any affected suite (the changed packages + every installed package depending on them). The fix clock counts only a validated fix |
-| Pipe exit codes | `sandbox.py` | `tests \| tail` hiding a failure: every command runs under `bash -o pipefail` |
-| Pre-commit hook | `.githooks/pre-commit` | A commit while any test fails (`git config core.hooksPath .githooks` once per clone) |
-| No names in public text | `guardrails.py` | @handles outside code, and known names anywhere |
-| Condition frozen first | `guardrails.py` | A guard older than the condition, or a condition edited after freezing |
-
-## Troubleshooting (all hit on 2026-10-06)
-| Symptom | Cause | Fix |
-|---|---|---|
-| `No module named 'debug_assist'` | iCloud set the macOS *hidden* flag on `.pth` files; Python 3.12 skips hidden `.pth` | `python3 scripts/doctor.py --fix`. The repo moved out of iCloud to `~/Projects/DebugAssist` on 2026-10-06 |
-| Mongo `NotPrimaryError` / "not a member of" replica set | Atlas Local names its replica set after the container hostname | Hostname is pinned in `docker-compose.yml`; never remove that line |
-| Mongo crash-loops "Unable to acquire security key" | The replica-set key lived in an anonymous volume that `docker compose down` orphaned | Now a named volume (`mongo-config`); never remove it |
-| `Index conditions_vec not initialized` | Vector index rebuilding after a restart | The pipeline waits up to 90 s, then reports UNEVALUABLE (never "no siblings") |
-| `Failed to connect to Ollama` | Ollama app not running | `open -a Ollama` |
-| Sandbox tests skipped | Docker Desktop paused | Whale menu ▸ Resume, then `docker compose up -d` |
-| `INTERRUPTED before <step>` | The run died mid-way (laptop slept, provider error, Ctrl-C) | `uv run debug-assist resume <run-id>`. Spend, turns and ladder attempts are in MongoDB, so nothing is double-counted or repeated |
-| `BudgetExceeded ... Refused BEFORE calling` | The next call's worst case would pass the run cap | Working as intended. `events <run-id>` shows where the money went |
-
-## Secrets
-Copy `.env.example` → `.env` and fill it in yourself. `.env` is git-ignored. The pipeline holds **read-only** GitHub
-access only; publishing a PR happens after your go-word.
+Built with Claude Code. GitHub access is read-only: the pipeline holds no write credential, and publishing a pull request is a step you take yourself.
